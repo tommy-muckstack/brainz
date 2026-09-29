@@ -6621,7 +6621,10 @@ impl ThreadView {
                                 .relative()
                                 .max_w_3_4()
                                 .py_3()
-                                .px_3()
+                                .pl_3()
+                                // Room on the right so the copy button never
+                                // covers the last words of a line.
+                                .pr_9()
                                 .rounded_lg()
                                 .rounded_bl(px(0.))
                                 .bg(cx.theme().colors().surface_background)
@@ -6632,8 +6635,8 @@ impl ThreadView {
                                 .child(
                                     div()
                                         .absolute()
-                                        .top_1()
-                                        .right_1()
+                                        .top_1p5()
+                                        .right_1p5()
                                         .visible_on_hover("brainz-agent-bubble")
                                         .child(
                                             IconButton::new(
@@ -6642,7 +6645,7 @@ impl ThreadView {
                                             )
                                             .icon_size(IconSize::XSmall)
                                             .icon_color(Color::Muted)
-                                            .style(ButtonStyle::Filled)
+                                            .style(ButtonStyle::Transparent)
                                             .tooltip(Tooltip::text("Copy"))
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 let entries = this.thread.read(cx).entries();
