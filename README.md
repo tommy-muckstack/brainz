@@ -55,6 +55,15 @@ split button is a plain toggle: on splits right, off joins everything back.
 macOS remembers permission grants across rebuilds. Override it with
 `BRAINZ_SIGNING_IDENTITY`. An ad-hoc signature would prompt every build.
 
+An amber banner above the file tree appears when the brain and GitHub differ.
+With local edits or commits it says "N changes not on GitHub" and **Sync to
+GitHub** reviews them (no secrets, no huge files), commits, pushes a branch,
+opens a pull request, waits for it to be mergeable, merges it into main, and
+brings main back down. When GitHub has commits you don't, it says "N new on
+GitHub" and the button becomes **Pull from GitHub**, a rebase with autostash so
+local edits survive. With work on both sides, Sync pulls first. Errors open a
+popup; success shows a toast that fades on its own.
+
 Claude and Codex connect through the existing ACP integration, with their own
 authentication and permissions. Their adapters install from the ACP registry on
 first use. Brainz gives each one its own config directory

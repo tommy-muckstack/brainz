@@ -24,7 +24,12 @@ const MAX_SCAN_BYTES: u64 = 2 * 1024 * 1024;
 pub enum SyncStatus {
     Unknown,
     Clean,
-    Pending { changed: usize, ahead: usize },
+    Pending {
+        changed: usize,
+        ahead: usize,
+        /// Commits on origin/main that aren't here yet.
+        behind: usize,
+    },
     Syncing(String),
     Error(String),
 }
@@ -112,18 +117,49 @@ fn run(repo: &Path, program: &str, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-fn check_status(repo: &Path) -> Result<SyncStatus> {
+fn check_status(repo: &Path, fetch: bool) -> Result<SyncStatus> {
+    if fetch {
+        // Quiet and best-effort: offline just means "behind" stays stale.
+        run(repo, "git", &["fetch", "--quiet", "origin", "main"]).ok();
+    }
     let porcelain = run(repo, "git", &["status", "--porcelain"])?;
     let changed = porcelain.lines().filter(|line| !line.is_empty()).count();
-    let ahead = run(repo, "git", &["rev-list", "@{u}..HEAD", "--count"])
-        .ok()
-        .and_then(|count| count.trim().parse::<usize>().ok())
-        .unwrap_or(0);
-    Ok(if changed == 0 && ahead == 0 {
+    let count = |range: &str| {
+        run(repo, "git", &["rev-list", range, "--count"])
+            .ok()
+            .and_then(|count| count.trim().parse::<usize>().ok())
+            .unwrap_or(0)
+    };
+    let ahead = count("@{u}..HEAD");
+    let behind = count("HEAD..origin/main");
+    Ok(if changed == 0 && ahead == 0 && behind == 0 {
         SyncStatus::Clean
     } else {
-        SyncStatus::Pending { changed, ahead }
+        SyncStatus::Pending {
+            changed,
+            ahead,
+            behind,
+        }
     })
+}
+
+/// Brings origin/main down. Rebases any local commits on top and stashes
+/// uncommitted edits around it, so nothing local is lost.
+fn pull_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
+    progress("Checking branch".into());
+    let branch = run(repo, "git", &["branch", "--show-current"])?;
+    if branch != "main" {
+        bail!("You're on branch `{branch}`. Switch to `main` first, then pull.");
+    }
+    progress("Pulling from GitHub".into());
+    run(
+        repo,
+        "git",
+        &["pull", "--rebase", "--autostash", "origin", "main"],
+    )
+    .context("Pull didn't finish. If there's a conflict, resolve it in a shell and run `git rebase --continue`.")?;
+    let head = run(repo, "git", &["log", "--oneline", "-1"]).unwrap_or_default();
+    Ok(format!("Pulled the latest from GitHub. Now at {head}"))
 }
 
 /// The review step: refuse to publish secrets or huge files.
@@ -206,10 +242,22 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
     progress("Reviewing changes".into());
     review(repo)?;
 
-    let status = check_status(repo)?;
-    let SyncStatus::Pending { changed, ahead } = status else {
+    let status = check_status(repo, true)?;
+    let SyncStatus::Pending {
+        changed,
+        ahead,
+        behind,
+    } = status
+    else {
         return Ok("Already in sync with GitHub.".into());
     };
+    if behind > 0 {
+        // Bring GitHub's newer work down first so the PR merges cleanly.
+        pull_repo(repo, progress)?;
+    }
+    if changed == 0 && ahead == 0 {
+        return Ok("Pulled the latest from GitHub. Nothing local to push.".into());
+    }
 
     if changed > 0 {
         progress(format!("Committing {changed} change(s)"));
@@ -302,10 +350,16 @@ impl SyncState {
         self.workspace = Some(workspace);
         self.status = SyncStatus::Unknown;
         self._poll = Some(cx.spawn(async move |this, cx| {
+            let mut last_fetch: Option<std::time::Instant> = None;
             loop {
                 let repo = repo.clone();
+                // Fetch every couple of minutes; status alone every poll.
+                let fetch = last_fetch.is_none_or(|at| at.elapsed() > Duration::from_secs(120));
+                if fetch {
+                    last_fetch = Some(std::time::Instant::now());
+                }
                 let status = cx
-                    .background_spawn(async move { check_status(&repo) })
+                    .background_spawn(async move { check_status(&repo, fetch) })
                     .await;
                 let keep_going = this
                     .update(cx, |this, cx| {
@@ -360,7 +414,7 @@ impl SyncState {
         }
     }
 
-    fn sync(&mut self, window_handle: AnyWindowHandle, cx: &mut Context<Self>) {
+    fn sync(&mut self, window_handle: AnyWindowHandle, pull_only: bool, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
@@ -389,7 +443,11 @@ impl SyncState {
                     let mut report = |step: String| {
                         tx.send_blocking(step).ok();
                     };
-                    sync_repo(&repo, &mut report)
+                    if pull_only {
+                        pull_repo(&repo, &mut report)
+                    } else {
+                        sync_repo(&repo, &mut report)
+                    }
                 })
                 .await;
             drop(progress_task);
@@ -537,22 +595,38 @@ pub fn render_banner(
         (state.status().clone(), state.leaving)
     };
 
+    let pull_only = matches!(
+        status,
+        SyncStatus::Pending {
+            changed: 0,
+            ahead: 0,
+            behind
+        } if behind > 0
+    );
     let (text, accent) = match &status {
-        SyncStatus::Pending { changed, ahead } => {
-            let mut parts = Vec::new();
+        SyncStatus::Pending {
+            changed,
+            ahead,
+            behind,
+        } => {
+            let plural = |n: usize, word: &str| {
+                format!("{n} {word}{}", if n == 1 { "" } else { "s" })
+            };
+            let mut local = Vec::new();
             if *changed > 0 {
-                parts.push(format!(
-                    "{changed} change{}",
-                    if *changed == 1 { "" } else { "s" }
-                ));
+                local.push(plural(*changed, "change"));
             }
             if *ahead > 0 {
-                parts.push(format!(
-                    "{ahead} commit{}",
-                    if *ahead == 1 { "" } else { "s" }
-                ));
+                local.push(plural(*ahead, "commit"));
             }
-            (format!("{} not on GitHub", parts.join(", ")), false)
+            let mut parts = Vec::new();
+            if !local.is_empty() {
+                parts.push(format!("{} not on GitHub", local.join(", ")));
+            }
+            if *behind > 0 {
+                parts.push(format!("{} new on GitHub", plural(*behind, "commit")));
+            }
+            (parts.join(" · "), false)
         }
         SyncStatus::Syncing(step) => (format!("{step}…"), true),
         SyncStatus::Error(_) => ("Sync didn't finish".to_owned(), false),
@@ -624,17 +698,22 @@ pub fn render_banner(
             )
         })
         .when(!leaving && !syncing, |this| this.child(
-            Button::new("brainz-sync-to-github", "Sync to GitHub")
+            Button::new(
+                "brainz-sync-to-github",
+                if pull_only { "Pull from GitHub" } else { "Sync to GitHub" },
+            )
                 .full_width()
                 .style(ButtonStyle::Filled)
-                .tooltip(Tooltip::text(
-                    "Review, commit, push, open a pull request, and merge it into main",
-                ))
+                .tooltip(Tooltip::text(if pull_only {
+                    "Bring GitHub's newer commits down (rebases local work on top)"
+                } else {
+                    "Pull anything new, then review, commit, push, open a pull request, and merge it into main"
+                }))
                 .on_click({
                     let state = state.clone();
                     move |_, window, cx| {
                         let handle = window.window_handle();
-                        state.update(cx, |state, cx| state.sync(handle, cx));
+                        state.update(cx, |state, cx| state.sync(handle, pull_only, cx));
                     }
                 }),
         ))
