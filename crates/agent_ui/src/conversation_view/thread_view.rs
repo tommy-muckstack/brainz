@@ -10336,7 +10336,8 @@ impl ThreadView {
                 .into_any_element()
         } else {
             Icon::new(match tool_call.kind() {
-                acp_v2::ToolKind::Read => IconName::ToolSearch,
+                // Brainz: a read shows the document, not a magnifier.
+                acp_v2::ToolKind::Read => IconName::File,
                 acp_v2::ToolKind::Edit => IconName::ToolPencil,
                 acp_v2::ToolKind::Delete => IconName::ToolDeleteFile,
                 acp_v2::ToolKind::Move => IconName::ArrowRightLeft,
