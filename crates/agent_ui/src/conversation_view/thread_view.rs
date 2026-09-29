@@ -6697,12 +6697,8 @@ impl ThreadView {
 
                 // Brainz: consecutive tool calls fold into one quiet line so the
                 // thread reads like chat. Anything that needs attention stays out.
-                let needs_attention = matches!(
-                    tool_call.status(),
-                    ToolCallStatus::WaitingForConfirmation
-                        | ToolCallStatus::Failed
-                        | ToolCallStatus::Rejected
-                );
+                let needs_attention =
+                    matches!(tool_call.status(), ToolCallStatus::WaitingForConfirmation);
                 let (group_start, group_count, group_running, group_last_label) = {
                     let entries = self.thread.read(cx).entries();
                     let is_tool = |ix: usize| {
