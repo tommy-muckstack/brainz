@@ -1423,6 +1423,11 @@ pub struct LoadingContext {
 
 impl Render for LoadingContext {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Brainz: pasted images are shown as thumbnails above the text, so the
+        // inline "Image" chip is just noise.
+        if self.image.is_some() {
+            return div().into_any_element();
+        }
         let is_in_text_selection = self
             .editor
             .update(cx, |editor, cx| editor.is_range_selected(&self.range, cx))
@@ -1458,6 +1463,7 @@ impl Render for LoadingContext {
                     .into()
                 })
             })
+            .into_any_element()
     }
 }
 

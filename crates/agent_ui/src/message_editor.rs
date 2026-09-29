@@ -2185,15 +2185,13 @@ impl MessageEditor {
                     .group("brainz-image-preview")
                     .relative()
                     .flex_none()
-                    .w_32()
                     .h_20()
+                    .max_w_64()
                     .rounded_md()
-                    .border_1()
-                    .border_color(border)
-                    .bg(placeholder_bg)
                     .overflow_hidden()
                     .cursor_pointer()
                     .map(|this| match image {
+                        // Just the picture: no tile, no border, natural width.
                         Some(image) => this
                             .tooltip(Tooltip::text("Open in a tab"))
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -2201,10 +2199,12 @@ impl MessageEditor {
                             }))
                             .child(
                                 gpui::img(image)
-                                    .size_full()
+                                    .h_full()
+                                    .w_auto()
+                                    .rounded_md()
                                     .object_fit(gpui::ObjectFit::Contain),
                             ),
-                        None => this.child(
+                        None => this.w_20().border_1().border_color(border).bg(placeholder_bg).child(
                             h_flex().size_full().justify_center().child(
                                 Icon::new(IconName::Image)
                                     .size(IconSize::Small)
