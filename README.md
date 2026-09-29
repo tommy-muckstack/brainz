@@ -45,7 +45,10 @@ TodoBot tidies checked items into Done on its next pass.
 The MCP button next to it opens an **MCP Connectors** tab listing the servers
 Brainz's Claude and Codex know about, with logos for the ones you use most.
 The first time Claude runs in Brainz, your terminal Claude's MCP servers are
-copied into Brainz's own config so both have the same connectors. The tab bar's
+copied into Brainz's own config so both have the same connectors. Every minute
+Brainz probes each connector (HTTP servers must answer, even with 401; stdio
+commands must exist). Any that are down turn the MCP button red, and their row
+in the tab gets a red dot with the reason. The tab bar's
 split button is a plain toggle: on splits right, off joins everything back.
 
 `script/brainz-local` signs the app with your Apple Development identity so

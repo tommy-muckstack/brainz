@@ -1,13 +1,136 @@
 //! Brainz: an MCP connectors tab. Lists the MCP servers Claude (Brainz's own
 //! config) and Codex know about, with app logos where we have them.
 
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 
 
-use gpui::{App, EventEmitter, FocusHandle, Focusable, Task, Window, actions};
+use gpui::{
+    App, Entity, EventEmitter, FocusHandle, Focusable, Global, Subscription, Task, Window, actions,
+};
 use ui::{Tooltip, prelude::*};
 use workspace::{HideStatusItem, Item, ItemHandle, StatusItemView, Workspace};
+
+const HEALTH_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Brainz: reachability of each connector, refreshed every minute. Keyed by
+/// connector name; `None` means healthy, `Some(reason)` means down.
+pub struct McpHealth {
+    results: BTreeMap<String, Option<String>>,
+    _poll: Option<Task<()>>,
+}
+
+struct GlobalMcpHealth(Entity<McpHealth>);
+
+impl Global for GlobalMcpHealth {}
+
+pub fn health(cx: &App) -> Option<Entity<McpHealth>> {
+    cx.try_global::<GlobalMcpHealth>().map(|g| g.0.clone())
+}
+
+impl McpHealth {
+    pub fn failing(&self) -> Vec<(String, String)> {
+        self.results
+            .iter()
+            .filter_map(|(name, result)| result.clone().map(|reason| (name.clone(), reason)))
+            .collect()
+    }
+
+    fn status_of(&self, name: &str) -> Option<&Option<String>> {
+        self.results.get(name)
+    }
+
+    fn start_polling(&mut self, cx: &mut Context<Self>) {
+        self._poll = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let results = cx
+                    .background_spawn(async move {
+                        load_connectors()
+                            .into_iter()
+                            .map(|connector| {
+                                let reason = probe(&connector);
+                                (connector.name, reason)
+                            })
+                            .collect::<BTreeMap<_, _>>()
+                    })
+                    .await;
+                if this
+                    .update(cx, |this, cx| {
+                        if this.results != results {
+                            this.results = results;
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+                cx.background_executor().timer(HEALTH_INTERVAL).await;
+            }
+        }));
+    }
+}
+
+/// Checks one connector without touching its auth: an HTTP server counts as
+/// up when it answers at all (401/403 from an OAuth server is fine); a stdio
+/// server counts as up when its command can be found.
+fn probe(connector: &Connector) -> Option<String> {
+    if connector.transport == "HTTP" || connector.transport == "SSE" {
+        let url = connector.detail.trim();
+        if url.is_empty() {
+            return Some("no URL configured".into());
+        }
+        let output = std::process::Command::new("/usr/bin/curl")
+            .args([
+                "-sS",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "--max-time",
+                "8",
+                "-X",
+                "POST",
+                "-H",
+                "content-type: application/json",
+                "--data",
+                "{}",
+                url,
+            ])
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {
+                let code = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+                match code.parse::<u16>() {
+                    Ok(code) if code >= 500 => Some(format!("server error (HTTP {code})")),
+                    Ok(0) | Err(_) => Some("no response".into()),
+                    Ok(_) => None,
+                }
+            }
+            Ok(output) => Some(
+                String::from_utf8_lossy(&output.stderr)
+                    .trim()
+                    .trim_start_matches("curl: ")
+                    .to_owned(),
+            ),
+            Err(error) => Some(format!("couldn't run curl: {error}")),
+        }
+    } else {
+        let command = connector.detail.split_whitespace().next().unwrap_or_default();
+        if command.is_empty() {
+            return Some("no command configured".into());
+        }
+        let path = std::env::var("PATH").unwrap_or_default();
+        let search = format!("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:{path}");
+        let found = std::path::Path::new(command).is_file()
+            || std::env::split_paths(&search).any(|dir| dir.join(command).is_file());
+        if found {
+            None
+        } else {
+            Some(format!("command `{command}` not found"))
+        }
+    }
+}
 
 actions!(
     brainz_mcp,
@@ -18,6 +141,15 @@ actions!(
 );
 
 pub fn init(cx: &mut App) {
+    let health = cx.new(|cx| {
+        let mut health = McpHealth {
+            results: BTreeMap::new(),
+            _poll: None,
+        };
+        health.start_polling(cx);
+        health
+    });
+    cx.set_global(GlobalMcpHealth(health));
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenMcp, window, cx| {
             McpView::open(workspace, window, cx);
@@ -319,6 +451,7 @@ pub struct McpView {
     loading: bool,
     error: Option<String>,
     _load: Option<Task<()>>,
+    _health_subscription: Option<Subscription>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -340,12 +473,15 @@ impl McpView {
     }
 
     fn new(cx: &mut Context<Self>) -> Self {
+        let health_subscription =
+            health(cx).map(|health| cx.observe(&health, |_, _, cx| cx.notify()));
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             connectors: Vec::new(),
             loading: true,
             error: None,
             _load: None,
+            _health_subscription: health_subscription,
         };
         this.refresh(cx);
         this
@@ -469,6 +605,15 @@ impl McpView {
                 .color(Color::Muted)
                 .into_any_element(),
         };
+        let status = health(cx).and_then(|health| health.read(cx).status_of(&connector.name).cloned());
+        let (dot_color, status_text): (gpui::Hsla, SharedString) = match &status {
+            Some(Some(reason)) => (
+                cx.theme().status().error,
+                format!("Down: {reason}").into(),
+            ),
+            Some(None) => (cx.theme().status().success, "Reachable".into()),
+            None => (cx.theme().colors().icon_muted, "Checking…".into()),
+        };
         h_flex()
             .id(("brainz-mcp-connector", ix))
             .w_full()
@@ -476,18 +621,36 @@ impl McpView {
             .p_3()
             .rounded_lg()
             .border_1()
-            .border_color(cx.theme().colors().border)
+            .border_color(if matches!(status, Some(Some(_))) {
+                cx.theme().status().error.opacity(0.6)
+            } else {
+                cx.theme().colors().border
+            })
             .bg(cx.theme().colors().surface_background)
             .child(
                 div()
                     .flex_none()
+                    .relative()
                     .size_10()
                     .rounded_md()
                     .flex()
                     .items_center()
                     .justify_center()
                     .bg(cx.theme().colors().element_background)
-                    .child(logo),
+                    .child(logo)
+                    .child(
+                        div()
+                            .id(("brainz-mcp-status", ix))
+                            .absolute()
+                            .bottom_neg_0p5()
+                            .right_neg_0p5()
+                            .size_3()
+                            .rounded_full()
+                            .border_2()
+                            .border_color(cx.theme().colors().surface_background)
+                            .bg(dot_color)
+                            .tooltip(Tooltip::text(status_text)),
+                    ),
             )
             .child(
                 v_flex()
@@ -649,6 +812,7 @@ pub struct McpButton {
     pane_item_focus_handle: Option<FocusHandle>,
     /// The MCP tab is the active item, so the button lights up.
     active: bool,
+    _health_subscription: Option<Subscription>,
 }
 
 impl McpButton {
@@ -656,24 +820,55 @@ impl McpButton {
         Self {
             pane_item_focus_handle: None,
             active: false,
+            _health_subscription: None,
         }
     }
 }
 
 impl Render for McpButton {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focus_handle = self.pane_item_focus_handle.clone();
         let active = self.active;
+        let failing = health(cx)
+            .map(|health| {
+                if self._health_subscription.is_none() {
+                    self._health_subscription =
+                        Some(cx.observe(&health, |_, _, cx| cx.notify()));
+                }
+                health.read(cx).failing()
+            })
+            .unwrap_or_default();
+        let trouble = !failing.is_empty();
+        let tooltip_title: SharedString = if trouble {
+            format!(
+                "MCP: {} down ({})",
+                failing.len(),
+                failing
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+            .into()
+        } else {
+            "MCP Connectors".into()
+        };
         div().child(
             IconButton::new("brainz-mcp-button", IconName::BrainzMcp)
                 .icon_size(IconSize::Small)
                 .toggle_state(active)
-                .icon_color(if active { Color::Accent } else { Color::Default })
+                .icon_color(if trouble {
+                    Color::Error
+                } else if active {
+                    Color::Accent
+                } else {
+                    Color::Default
+                })
                 .tooltip(move |_window, cx| {
                     if let Some(focus_handle) = &focus_handle {
-                        Tooltip::for_action_in("MCP Connectors", &OpenMcp, focus_handle, cx)
+                        Tooltip::for_action_in(tooltip_title.clone(), &OpenMcp, focus_handle, cx)
                     } else {
-                        Tooltip::for_action("MCP Connectors", &OpenMcp, cx)
+                        Tooltip::for_action(tooltip_title.clone(), &OpenMcp, cx)
                     }
                 })
                 .on_click(|_, window, cx| {
