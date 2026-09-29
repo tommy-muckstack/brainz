@@ -562,6 +562,15 @@ pub fn render_banner(
     let syncing = matches!(status, SyncStatus::Syncing(_));
     let errored = matches!(status, SyncStatus::Error(_));
     let colors = cx.theme().colors();
+    // Brainz: the banner is a solid amber strip with dark text, so it reads
+    // as a call to action rather than a panel.
+    let amber = colors.text_accent;
+    let ink = gpui::hsla(0., 0., 0.08, 1.);
+    let banner_bg = if errored {
+        cx.theme().status().warning
+    } else {
+        amber
+    };
 
     let banner = v_flex()
         .id("brainz-github-sync-banner")
@@ -571,9 +580,7 @@ pub fn render_banner(
         .px_2()
         .py_2()
         .gap_1p5()
-        .border_b_1()
-        .border_color(colors.border_variant)
-        .bg(colors.elevated_surface_background)
+        .bg(banner_bg)
         .child(
             h_flex()
                 .gap_1p5()
@@ -584,9 +591,14 @@ pub fn render_banner(
                         IconName::GitBranch
                     })
                     .size(IconSize::Small)
-                    .color(if errored { Color::Warning } else { Color::Accent }),
+                    .color(Color::Custom(ink)),
                 )
-                .child(Label::new(text).size(LabelSize::Small).truncate()),
+                .child(
+                    Label::new(text)
+                        .size(LabelSize::Small)
+                        .color(Color::Custom(ink))
+                        .truncate(),
+                ),
         )
         .when(!leaving, |this| this.child(
             Button::new("brainz-sync-to-github", if syncing { "Syncing…" } else { "Sync to GitHub" })
@@ -609,7 +621,7 @@ pub fn render_banner(
                 h_flex().gap_1p5().child(
                     Icon::new(IconName::Check)
                         .size(IconSize::Small)
-                        .color(Color::Success),
+                        .color(Color::Custom(ink)),
                 ),
             )
         });
