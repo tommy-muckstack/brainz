@@ -6644,8 +6644,10 @@ impl ThreadView {
                                                 if let Some(text) = Self::get_agent_message_content(
                                                     entries, entry_ix, cx,
                                                 ) {
+                                                    // Plain text, so it pastes cleanly
+                                                    // into mail and docs.
                                                     cx.write_to_clipboard(ClipboardItem::new_string(
-                                                        text,
+                                                        markdown::markdown_to_plain_text(&text),
                                                     ));
                                                 }
                                             })

@@ -1738,6 +1738,63 @@ pub struct MarkdownElement {
     on_render: Option<Box<dyn Fn(RenderedText)>>,
 }
 
+/// Brainz: turns Markdown source into plain text for the clipboard: bold and
+/// code markers go, headings lose their hashes, links keep their text (and
+/// the URL in parentheses when it differs). Meant for emails and notes.
+pub fn markdown_to_plain_text(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let indent = &line[..line.len() - trimmed.len()];
+        let body = trimmed.trim_start_matches('#');
+        let body = if body.len() != trimmed.len() {
+            body.trim_start()
+        } else {
+            trimmed
+        };
+        let body = body.strip_prefix("* ").map(|rest| format!("- {rest}")).unwrap_or_else(|| body.to_owned());
+        let mut cleaned = String::with_capacity(body.len());
+        let mut chars = body.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '*' if chars.peek() == Some(&'*') => {
+                    chars.next();
+                }
+                '_' if chars.peek() == Some(&'_') => {
+                    chars.next();
+                }
+                '`' => {}
+                '[' => {
+                    // [text](url) → text (url); anything else is left alone.
+                    let rest: String = chars.clone().collect();
+                    if let Some(close) = rest.find("](")
+                        && let Some(end) = rest[close + 2..].find(')')
+                    {
+                        let text = &rest[..close];
+                        let url = &rest[close + 2..close + 2 + end];
+                        cleaned.push_str(text);
+                        if !url.is_empty() && url != text && !text.contains(url) {
+                            cleaned.push_str(" (");
+                            cleaned.push_str(url);
+                            cleaned.push(')');
+                        }
+                        for _ in 0..(close + 2 + end + 1) {
+                            chars.next();
+                        }
+                    } else {
+                        cleaned.push('[');
+                    }
+                }
+                other => cleaned.push(other),
+            }
+        }
+        out.push_str(indent);
+        out.push_str(&cleaned);
+        out.push('\n');
+    }
+    out.trim_end().to_owned()
+}
+
 /// Brainz: `interviews/companies/x/2026-09-28/onsite-debrief.md:12` renders
 /// as `onsite-debrief.md:12`. Text without a directory is returned as is.
 fn brainz_file_link_label(text: &str) -> String {
@@ -2099,7 +2156,7 @@ impl MarkdownElement {
         // Brainz: hovering a quote shows a copy button that copies just the
         // quoted text, without the `>` markers, so a drafted email or note
         // can go straight to the clipboard.
-        let copy_text: String = quote_source
+        let unquoted: String = quote_source
             .lines()
             .map(|line| {
                 let line = line.trim_start();
@@ -2107,9 +2164,8 @@ impl MarkdownElement {
                 line.strip_prefix(' ').unwrap_or(line)
             })
             .collect::<Vec<_>>()
-            .join("\n")
-            .trim()
-            .to_owned();
+            .join("\n");
+        let copy_text = markdown_to_plain_text(unquoted.trim());
         let group_name = SharedString::from(format!("markdown-quote-{}", range.start));
         let has_copy_text = !copy_text.is_empty();
         let copy_button = div()
