@@ -2186,12 +2186,12 @@ impl MessageEditor {
                     .relative()
                     .flex_none()
                     .h_20()
-                    .max_w_64()
                     .rounded_md()
-                    .overflow_hidden()
                     .cursor_pointer()
                     .map(|this| match image {
-                        // Just the picture: no tile, no border, natural width.
+                        // Just the picture: no tile, no border. The image keeps
+                        // its whole frame, shrinking to fit the height and a
+                        // width cap instead of being cropped.
                         Some(image) => this
                             .tooltip(Tooltip::text("Open in a tab"))
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -2201,6 +2201,7 @@ impl MessageEditor {
                                 gpui::img(image)
                                     .h_full()
                                     .w_auto()
+                                    .max_w(px(360.))
                                     .rounded_md()
                                     .object_fit(gpui::ObjectFit::Contain),
                             ),
