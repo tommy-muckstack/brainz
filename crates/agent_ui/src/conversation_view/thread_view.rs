@@ -617,6 +617,9 @@ pub struct ThreadView {
     /// Brainz: the options as first seen, so the toggle can show when any
     /// of them has been changed.
     pub composer_options_baseline: Option<ComposerOptionsSnapshot>,
+    /// Brainz: runs of tool calls fold into one line; these groups (by the
+    /// index of their first entry) are shown in full.
+    pub expanded_activity: HashSet<usize>,
     /// Brainz: when the drawer was last closed by an outside click, so a
     /// click on the toggle itself doesn't immediately reopen it.
     pub composer_drawer_dismissed_at: Option<std::time::Instant>,
@@ -1042,6 +1045,7 @@ impl ThreadView {
             composer_focused: false,
             composer_controls_visible: false,
             composer_options_baseline: None,
+            expanded_activity: HashSet::default(),
             composer_drawer_dismissed_at: None,
             should_be_following: false,
             editing_message: None,
@@ -6691,6 +6695,121 @@ impl ThreadView {
                     }
                 }
 
+                // Brainz: consecutive tool calls fold into one quiet line so the
+                // thread reads like chat. Anything that needs attention stays out.
+                let needs_attention = matches!(
+                    tool_call.status(),
+                    ToolCallStatus::WaitingForConfirmation
+                        | ToolCallStatus::Failed
+                        | ToolCallStatus::Rejected
+                );
+                let (group_start, group_count, group_running, group_last_label) = {
+                    let entries = self.thread.read(cx).entries();
+                    let is_tool = |ix: usize| {
+                        matches!(entries.get(ix), Some(AgentThreadEntry::ToolCall(_)))
+                    };
+                    let mut start = entry_ix;
+                    while start > 0 && is_tool(start - 1) {
+                        start -= 1;
+                    }
+                    let mut end = entry_ix;
+                    while is_tool(end + 1) {
+                        end += 1;
+                    }
+                    let group = (start..=end).filter_map(|ix| match entries.get(ix) {
+                        Some(AgentThreadEntry::ToolCall(call)) => Some(call),
+                        _ => None,
+                    });
+                    let mut count = 0usize;
+                    let mut running = false;
+                    let mut last_label = String::new();
+                    for call in group {
+                        count += 1;
+                        running |= matches!(
+                            call.status(),
+                            ToolCallStatus::Pending | ToolCallStatus::InProgress
+                        );
+                        last_label = call.label.read(cx).source().to_string();
+                    }
+                    (start, count, running, last_label)
+                };
+                let group_expanded = self.expanded_activity.contains(&group_start);
+                if !group_expanded && !needs_attention {
+                    if entry_ix != group_start {
+                        return Empty.into_any();
+                    }
+                    let text = if group_count == 1 {
+                        group_last_label
+                    } else {
+                        format!("{group_count} steps · {group_last_label}")
+                    };
+                    return h_flex()
+                        .id(("brainz-activity", group_start))
+                        .px_2()
+                        .py_1()
+                        .gap_1p5()
+                        .cursor_pointer()
+                        .rounded_md()
+                        .hover(|this| this.bg(cx.theme().colors().element_hover))
+                        .tooltip(Tooltip::text("Show steps"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.expanded_activity.insert(group_start);
+                            cx.notify();
+                        }))
+                        .child(if group_running {
+                            Icon::new(IconName::LoadCircle)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted)
+                                .with_rotate_animation(2)
+                                .into_any_element()
+                        } else {
+                            Icon::new(IconName::ToolHammer)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted)
+                                .into_any_element()
+                        })
+                        .child(
+                            Label::new(text)
+                                .size(LabelSize::Small)
+                                .color(Color::Muted)
+                                .truncate(),
+                        )
+                        .child(
+                            Icon::new(IconName::ChevronDown)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .into_any();
+                }
+                let hide_steps = (group_expanded && entry_ix == group_start).then(|| {
+                    h_flex()
+                        .id(("brainz-activity-hide", group_start))
+                        .px_2()
+                        .py_1()
+                        .gap_1p5()
+                        .cursor_pointer()
+                        .rounded_md()
+                        .hover(|this| this.bg(cx.theme().colors().element_hover))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.expanded_activity.remove(&group_start);
+                            cx.notify();
+                        }))
+                        .child(
+                            Icon::new(IconName::ChevronUp)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new(if group_count == 1 {
+                                "Hide step".to_string()
+                            } else {
+                                format!("Hide {group_count} steps")
+                            })
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                        )
+                });
+
                 let tool_call = self.render_any_tool_call(
                     self.thread.read(cx).session_id(),
                     entry_ix,
@@ -6701,7 +6820,7 @@ impl ThreadView {
                     cx,
                 );
 
-                if let Some(handle) = self
+                let rendered = if let Some(handle) = self
                     .entry_view_state
                     .read(cx)
                     .entry(entry_ix)
@@ -6710,6 +6829,10 @@ impl ThreadView {
                     tool_call.track_focus(&handle).into_any()
                 } else {
                     tool_call.into_any()
+                };
+                match hide_steps {
+                    Some(hide_steps) => v_flex().child(hide_steps).child(rendered).into_any(),
+                    None => rendered,
                 }
             }
             AgentThreadEntry::Elicitation(elicitation_id) => {
