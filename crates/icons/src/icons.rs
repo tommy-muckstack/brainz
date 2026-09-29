@@ -196,6 +196,10 @@ pub enum IconName {
     BrainzMcp,
     /// Brainz: sliders used for the composer's model/mode options toggle.
     BrainzSliders,
+    /// Brainz: open to-do item (rounded square).
+    BrainzCheckboxEmpty,
+    /// Brainz: done to-do item (rounded square with a check).
+    BrainzCheckboxChecked,
     /// Brainz: Claude mark (from the ACP registry).
     BrainzClaude,
     /// Brainz: Codex mark (from the ACP registry).
@@ -346,6 +350,8 @@ impl IconName {
             Self::Send => return "icons/brainz/send.svg".into(),
             Self::Ellipsis => return "icons/brainz/ellipsis.svg".into(),
             Self::BrainzSliders => return "icons/brainz/sliders.svg".into(),
+            Self::BrainzCheckboxEmpty => return "icons/brainz/checkbox-empty.svg".into(),
+            Self::BrainzCheckboxChecked => return "icons/brainz/checkbox-checked.svg".into(),
             Self::Swatch => return "icons/brainz/swatch.svg".into(),
             Self::Maximize => return "icons/brainz/expand.svg".into(),
             Self::Minimize => return "icons/brainz/collapse.svg".into(),

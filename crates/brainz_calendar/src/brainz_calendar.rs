@@ -4,6 +4,7 @@
 pub mod github_sync;
 pub mod launcher;
 pub mod mcp;
+pub mod todo;
 
 use std::{path::PathBuf, time::Duration};
 
@@ -27,6 +28,7 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 pub fn init(cx: &mut App) {
     mcp::init(cx);
+    todo::init(cx);
     github_sync::init(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenCalendar, window, cx| {

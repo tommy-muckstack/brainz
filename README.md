@@ -35,6 +35,12 @@ the right in the tab's colour; replies sit on the left. The message box says
 "Type message…", grows as you type, and keeps model and mode options behind the
 gear button.
 
+The checkbox button next to the calendar opens a **To-Do** tab over
+`ops/desk/TODO.md`, the check-off board TodoBot maintains in the brain. It shows
+Today, Urgent, and Delayed sections with Done folded away, and refreshes every
+30 seconds. Ticking an item edits the file the way TodoBot does (adds today's
+date and moves it under Done); un-ticking clears the box in place.
+
 The MCP button next to it opens an **MCP Connectors** tab listing the servers
 Brainz's Claude and Codex know about, with logos for the ones you use most.
 The first time Claude runs in Brainz, your terminal Claude's MCP servers are
