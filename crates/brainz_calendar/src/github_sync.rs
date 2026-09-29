@@ -608,11 +608,42 @@ pub fn render_banner(
                         .truncate(),
                 ),
         )
-        .when(!leaving, |this| this.child(
-            Button::new("brainz-sync-to-github", if syncing { "Syncing…" } else { "Sync to GitHub" })
+        .when(!leaving && syncing, |this| {
+            // Three dots bouncing in sequence while the sync runs.
+            let dots = h_flex()
+                .h(px(18.))
+                .w_full()
+                .items_center()
+                .justify_center()
+                .gap_1p5()
+                .children((0..3usize).map(|dot| {
+                    div()
+                        .relative()
+                        .size(px(6.))
+                        .rounded_full()
+                        .bg(amber)
+                        .with_animation(
+                            ("brainz-sync-dot", dot),
+                            Animation::new(Duration::from_millis(900)).repeat(),
+                            move |element, delta| {
+                                let phase = (delta + dot as f32 * 0.16) % 1.0;
+                                let lift = (phase * std::f32::consts::PI * 2.0).sin().max(0.0);
+                                element.top(px(-5.0 * lift))
+                            },
+                        )
+                }));
+            this.child(
+                ui::ButtonLike::new("brainz-syncing")
+                    .style(ButtonStyle::Filled)
+                    .full_width()
+                    .tooltip(Tooltip::text("Syncing to GitHub"))
+                    .child(dots),
+            )
+        })
+        .when(!leaving && !syncing, |this| this.child(
+            Button::new("brainz-sync-to-github", "Sync to GitHub")
                 .full_width()
                 .style(ButtonStyle::Filled)
-                .disabled(syncing)
                 .tooltip(Tooltip::text(
                     "Review, commit, push, open a pull request, and merge it into main",
                 ))
