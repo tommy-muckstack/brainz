@@ -400,8 +400,9 @@ impl SyncState {
                         if let Some(workspace) = this.workspace.clone() {
                             workspace
                                 .update(cx, |workspace, cx| {
+                                    let id = workspace::notifications::NotificationId::unique::<SyncState>();
                                     workspace.show_notification(
-                                        workspace::notifications::NotificationId::unique::<SyncState>(),
+                                        id.clone(),
                                         cx,
                                         |cx| {
                                             cx.new(|cx| {
@@ -412,6 +413,19 @@ impl SyncState {
                                             })
                                         },
                                     );
+                                    // The toast is confirmation, not a decision:
+                                    // let it go away on its own.
+                                    cx.spawn(async move |workspace, cx| {
+                                        cx.background_executor()
+                                            .timer(Duration::from_secs(6))
+                                            .await;
+                                        workspace
+                                            .update(cx, |workspace, cx| {
+                                                workspace.dismiss_notification(&id, cx);
+                                            })
+                                            .ok();
+                                    })
+                                    .detach();
                                 })
                                 .ok();
                         }
