@@ -38,8 +38,9 @@ gear button.
 The checkbox button next to the calendar opens a **To-Do** tab over
 `ops/desk/TODO.md`, the check-off board TodoBot maintains in the brain. It shows
 Today, Urgent, and Delayed sections with Done folded away, and refreshes every
-30 seconds. Ticking an item edits the file the way TodoBot does (adds today's
-date and moves it under Done); un-ticking clears the box in place.
+30 seconds. Ticking an item checks it in place with today's date and shows it
+struck through in amber, so nothing vanishes; un-ticking clears the box.
+TodoBot tidies checked items into Done on its next pass.
 
 The MCP button next to it opens an **MCP Connectors** tab listing the servers
 Brainz's Claude and Codex know about, with logos for the ones you use most.

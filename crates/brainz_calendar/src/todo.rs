@@ -113,8 +113,9 @@ fn load_board(path: &PathBuf) -> Result<TodoBoard> {
     Ok(parse_board(&text))
 }
 
-/// Flips one checkbox. Checking appends today's date and moves the line to
-/// the top of "## Done"; unchecking just clears the box where it is.
+/// Flips one checkbox in place. Checking appends today's date; the item
+/// stays in its section so it reads as done rather than vanishing. TodoBot
+/// tidies it into "## Done" on its next pass.
 fn toggle_item(path: &PathBuf, line_index: usize) -> Result<()> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading {}", path.display()))?;
@@ -126,24 +127,7 @@ fn toggle_item(path: &PathBuf, line_index: usize) -> Result<()> {
     let indent = &line[..line.len() - trimmed.len()];
     if let Some(rest) = trimmed.strip_prefix("- [ ] ") {
         let today = chrono::Local::now().format("%Y-%m-%d");
-        let done_line = format!("{indent}- [x] {} ({today})", rest.trim_end());
-        lines.remove(line_index);
-        let done_header = lines.iter().position(|l| l.trim() == "## Done");
-        match done_header {
-            Some(header) => {
-                let mut insert_at = header + 1;
-                while insert_at < lines.len() && lines[insert_at].trim().is_empty() {
-                    insert_at += 1;
-                }
-                lines.insert(insert_at, done_line);
-            }
-            None => {
-                lines.push(String::new());
-                lines.push("## Done".to_owned());
-                lines.push(String::new());
-                lines.push(done_line);
-            }
-        }
+        lines[line_index] = format!("{indent}- [x] {} ({today})", rest.trim_end());
     } else if let Some(rest) = trimmed
         .strip_prefix("- [x] ")
         .or_else(|| trimmed.strip_prefix("- [X] "))
@@ -269,7 +253,7 @@ impl TodoView {
                 IconButton::new(("brainz-todo-check", ix), icon)
                     .icon_size(IconSize::Small)
                     .icon_color(if item.done {
-                        Color::Success
+                        Color::Accent
                     } else {
                         Color::Muted
                     })
@@ -287,7 +271,7 @@ impl TodoView {
                     .child(
                         Label::new(item.title.clone())
                             .color(if item.done {
-                                Color::Muted
+                                Color::Accent
                             } else {
                                 Color::Default
                             })
