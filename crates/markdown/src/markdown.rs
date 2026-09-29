@@ -2117,16 +2117,11 @@ impl MarkdownElement {
             .top_0()
             .right_0()
             .when(!has_copy_text, |this| this.invisible())
-            .visible_on_hover(group_name.clone())
             .child(
-                IconButton::new(("markdown-quote-copy", range.start), IconName::Copy)
+                CopyButton::new(("markdown-quote-copy", range.start), copy_text)
                     .icon_size(IconSize::XSmall)
-                    .icon_color(Color::Muted)
-                    .style(ButtonStyle::Transparent)
-                    .tooltip(Tooltip::text("Copy quote"))
-                    .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
-                    }),
+                    .tooltip_label("Copy quote")
+                    .visible_on_hover(group_name.clone()),
             );
         let border_color = self
             .style

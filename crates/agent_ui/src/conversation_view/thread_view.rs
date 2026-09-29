@@ -6633,22 +6633,14 @@ impl ThreadView {
                                 .child(message_body)
                                 // Brainz: copy appears in the bubble's corner on hover.
                                 .child(
-                                    div()
-                                        .absolute()
-                                        .top_1p5()
-                                        .right_1p5()
-                                        .visible_on_hover("brainz-agent-bubble")
-                                        .child(
-                                            IconButton::new(
-                                                ("brainz-copy-bubble", entry_ix),
-                                                IconName::Copy,
-                                            )
+                                    div().absolute().top_1p5().right_1p5().child({
+                                        let thread = self.thread.clone();
+                                        ui::CopyButton::new(("brainz-copy-bubble", entry_ix), "")
                                             .icon_size(IconSize::XSmall)
-                                            .icon_color(Color::Muted)
-                                            .style(ButtonStyle::Transparent)
-                                            .tooltip(Tooltip::text("Copy"))
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                let entries = this.thread.read(cx).entries();
+                                            .tooltip_label("Copy")
+                                            .visible_on_hover("brainz-agent-bubble")
+                                            .custom_on_click(move |_, cx| {
+                                                let entries = thread.read(cx).entries();
                                                 if let Some(text) = Self::get_agent_message_content(
                                                     entries, entry_ix, cx,
                                                 ) {
@@ -6656,8 +6648,8 @@ impl ThreadView {
                                                         text,
                                                     ));
                                                 }
-                                            })),
-                                        ),
+                                            })
+                                    }),
                                 ),
                         )
                         .when_some(

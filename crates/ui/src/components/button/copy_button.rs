@@ -93,11 +93,33 @@ impl RenderOnce for CopyButton {
             window.use_keyed_state(id.clone(), cx, CopyButtonState::new);
         let is_copied = state.read(cx).is_copied();
 
-        let (icon, color, tooltip) = if is_copied {
-            (IconName::Check, Color::Success, "Copied!".into())
-        } else {
-            (IconName::Copy, Color::Muted, self.tooltip_label)
-        };
+        // Brainz: after a click the button becomes a small green "Copied"
+        // pill for a moment, and stays visible even inside hover-only groups.
+        if is_copied {
+            let success = cx.theme().status().success;
+            return h_flex()
+                .id((id, "copied"))
+                .h(px(20.))
+                .px_1p5()
+                .gap_1()
+                .rounded_sm()
+                .bg(success.opacity(0.18))
+                .border_1()
+                .border_color(success.opacity(0.5))
+                .child(
+                    Icon::new(IconName::Check)
+                        .size(IconSize::XSmall)
+                        .color(Color::Success),
+                )
+                .child(
+                    Label::new("Copied")
+                        .size(LabelSize::XSmall)
+                        .color(Color::Success),
+                )
+                .into_any_element();
+        }
+
+        let (icon, color, tooltip) = (IconName::Copy, Color::Muted, self.tooltip_label);
 
         let button = IconButton::new(id, icon)
             .icon_color(color)
@@ -127,9 +149,9 @@ impl RenderOnce for CopyButton {
             });
 
         if let Some(visible_on_hover) = visible_on_hover {
-            button.visible_on_hover(visible_on_hover)
+            button.visible_on_hover(visible_on_hover).into_any_element()
         } else {
-            button
+            button.into_any_element()
         }
     }
 }
