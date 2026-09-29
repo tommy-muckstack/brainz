@@ -579,8 +579,16 @@ pub fn render_banner(
         .overflow_hidden()
         .px_2()
         .py_2()
-        .gap_1p5()
-        .bg(banner_bg)
+        .child(
+            // The amber card itself; the outer box keeps the panel's edge so
+            // the rounded corners read.
+            v_flex()
+                .size_full()
+                .px_2()
+                .py_1p5()
+                .gap_1p5()
+                .rounded_lg()
+                .bg(banner_bg)
         .child(
             h_flex()
                 .gap_1p5()
@@ -624,7 +632,8 @@ pub fn render_banner(
                         .color(Color::Custom(ink)),
                 ),
             )
-        });
+        }),
+        );
     let _ = accent;
 
     // The wrapper animates height and opacity so the file tree glides with
