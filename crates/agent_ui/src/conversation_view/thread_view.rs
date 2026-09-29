@@ -6786,11 +6786,9 @@ impl ThreadView {
                     if entry_ix != group_start {
                         return Empty.into_any();
                     }
-                    let text = if group_running {
-                        format!("Working… {}", group_last_label.to_lowercase())
-                    } else {
-                        group_last_label
-                    };
+                    // The thread's own dots below already say "working", so
+                    // the line just states the tally.
+                    let text = group_last_label;
                     return h_flex()
                         .id(("brainz-activity", group_start))
                         .w_full()
@@ -6806,17 +6804,11 @@ impl ThreadView {
                             this.expanded_activity.insert(group_start);
                             cx.notify();
                         }))
-                        .child(if group_running {
-                            Icon::new(IconName::LoadCircle)
-                                .size(IconSize::XSmall)
-                                .color(Color::Muted)
-                                .with_rotate_animation(2)
-                                .into_any_element()
-                        } else {
+                        .child({
+                            let _ = group_running;
                             Icon::new(IconName::ToolHammer)
                                 .size(IconSize::XSmall)
                                 .color(Color::Muted)
-                                .into_any_element()
                         })
                         .child(
                             div().min_w_0().flex_1().overflow_hidden().child(
@@ -7816,12 +7808,10 @@ impl ThreadView {
             .gap_2()
             .map(|this| {
                 if confirmation {
-                    this.child(
-                        h_flex()
-                            .w_2()
-                            .justify_center()
-                            .child(GeneratingSpinnerElement::new(SpinnerVariant::Sand)),
-                    )
+                    this.child(ui::bouncing_dots(
+                        "brainz-generating-confirm",
+                        cx.theme().colors().text_muted,
+                    ))
                     .child(
                         div().min_w(rems(8.)).child(
                             LoadingLabel::new("Awaiting Confirmation")
@@ -7832,12 +7822,11 @@ impl ThreadView {
                 } else if is_blocked_on_terminal_command {
                     this
                 } else {
-                    this.child(
-                        h_flex()
-                            .w_2()
-                            .justify_center()
-                            .child(GeneratingSpinnerElement::new(SpinnerVariant::Dots)),
-                    )
+                    // Brainz: the one shared "working" indicator.
+                    this.child(ui::bouncing_dots(
+                        "brainz-generating",
+                        cx.theme().colors().text_muted,
+                    ))
                 }
             })
             .when_some(elapsed_label, |this, elapsed| {
