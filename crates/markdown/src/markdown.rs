@@ -2094,7 +2094,40 @@ impl MarkdownElement {
         kind: Option<pulldown_cmark::BlockQuoteKind>,
         range: &Range<usize>,
         markdown_end: usize,
+        quote_source: String,
     ) {
+        // Brainz: hovering a quote shows a copy button that copies just the
+        // quoted text, without the `>` markers, so a drafted email or note
+        // can go straight to the clipboard.
+        let copy_text: String = quote_source
+            .lines()
+            .map(|line| {
+                let line = line.trim_start();
+                let line = line.strip_prefix('>').unwrap_or(line);
+                line.strip_prefix(' ').unwrap_or(line)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_owned();
+        let group_name = SharedString::from(format!("markdown-quote-{}", range.start));
+        let has_copy_text = !copy_text.is_empty();
+        let copy_button = div()
+            .absolute()
+            .top_0()
+            .right_0()
+            .when(!has_copy_text, |this| this.invisible())
+            .visible_on_hover(group_name.clone())
+            .child(
+                IconButton::new(("markdown-quote-copy", range.start), IconName::Copy)
+                    .icon_size(IconSize::XSmall)
+                    .icon_color(Color::Muted)
+                    .style(ButtonStyle::Transparent)
+                    .tooltip(Tooltip::text("Copy quote"))
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+                    }),
+            );
         let border_color = self
             .style
             .block_quote_kind_colors
@@ -2126,10 +2159,14 @@ impl MarkdownElement {
         });
 
         let block_div = div()
+            .relative()
+            .group(group_name)
             .pl_4()
+            .pr_8()
             .mb(self.style.paragraph_spacing)
             .border_l_4()
-            .border_color(border_color);
+            .border_color(border_color)
+            .child(copy_button);
         let block_div = match header {
             Some(header) => block_div.child(header),
             None => block_div,
@@ -2755,11 +2792,17 @@ impl Element for MarkdownElement {
                             );
                         }
                         MarkdownTag::BlockQuote(kind) => {
+                            let quote_source = parsed_markdown
+                                .source
+                                .get(range.clone())
+                                .unwrap_or_default()
+                                .to_owned();
                             self.push_markdown_block_quote(
                                 &mut builder,
                                 *kind,
                                 range,
                                 markdown_end,
+                                quote_source,
                             );
                         }
                         MarkdownTag::CodeBlock { kind, .. } => {

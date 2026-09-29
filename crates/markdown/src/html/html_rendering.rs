@@ -122,6 +122,7 @@ impl MarkdownElement {
                     None,
                     &block_quote.source_range,
                     markdown_end,
+                    String::new(),
                 );
                 self.render_html_elements(
                     &block_quote.children,
