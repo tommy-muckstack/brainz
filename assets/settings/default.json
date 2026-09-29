@@ -1361,11 +1361,11 @@
     // Whether to have edit cards in the agent panel expanded, showing a preview of the full diff.
     //
     // Default: true
-    "expand_edit_card": true,
+    "expand_edit_card": false,
     // Whether to have terminal cards in the agent panel expanded, showing the whole command output.
     //
     // Default: true
-    "expand_terminal_card": true,
+    "expand_terminal_card": false,
     // Command to automatically run when Zed creates a Terminal Thread shell in the agent panel.
     // The command is sent to the shell as if typed, so it is interpreted by your
     // configured shell (including on Windows and remote/WSL projects).

@@ -8542,29 +8542,37 @@ impl ThreadView {
                 .buffer_font(cx)
         };
 
+        // Brainz: while a tool waits for approval, show the buttons but keep
+        // its output folded unless the card was expanded on purpose.
+        let explicitly_expanded = self
+            .entry_view_state
+            .read(cx)
+            .is_tool_call_expanded(&tool_call.id);
         let tool_output_display = if is_open {
             match tool_call.status() {
                 ToolCallStatus::WaitingForConfirmation => {
                     let confirmation_content = v_flex()
                         .w_full()
-                        .children(tool_call.content().iter().enumerate().map(
-                            |(content_ix, content)| {
-                                div()
-                                    .child(self.render_tool_call_content(
-                                        active_session_id,
-                                        entry_ix,
-                                        content,
-                                        content_ix,
-                                        tool_call,
-                                        use_card_layout,
-                                        failed_or_canceled,
-                                        focus_handle,
-                                        window,
-                                        cx,
-                                    ))
-                                    .into_any_element()
-                            },
-                        ))
+                        .when(explicitly_expanded, |this| {
+                            this.children(tool_call.content().iter().enumerate().map(
+                                |(content_ix, content)| {
+                                    div()
+                                        .child(self.render_tool_call_content(
+                                            active_session_id,
+                                            entry_ix,
+                                            content,
+                                            content_ix,
+                                            tool_call,
+                                            use_card_layout,
+                                            failed_or_canceled,
+                                            focus_handle,
+                                            window,
+                                            cx,
+                                        ))
+                                        .into_any_element()
+                                },
+                            ))
+                        })
                         .when_some(
                             tool_call.sandbox_authorization_details.as_ref(),
                             |this, details| {
