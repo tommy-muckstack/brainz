@@ -6722,29 +6722,80 @@ impl ThreadView {
                     });
                     let mut count = 0usize;
                     let mut running = false;
-                    let mut last_label = String::new();
+                    // Plain-English tally by kind, in a stable order.
+                    let mut reads = 0usize;
+                    let mut edits = 0usize;
+                    let mut commands = 0usize;
+                    let mut searches = 0usize;
+                    let mut fetches = 0usize;
+                    let mut others = 0usize;
                     for call in group {
                         count += 1;
                         running |= matches!(
                             call.status(),
                             ToolCallStatus::Pending | ToolCallStatus::InProgress
                         );
-                        last_label = call.label.read(cx).source().to_string();
+                        match call.kind() {
+                            acp_v2::ToolKind::Read => reads += 1,
+                            acp_v2::ToolKind::Edit
+                            | acp_v2::ToolKind::Delete
+                            | acp_v2::ToolKind::Move => edits += 1,
+                            acp_v2::ToolKind::Execute => commands += 1,
+                            acp_v2::ToolKind::Search => searches += 1,
+                            acp_v2::ToolKind::Fetch => fetches += 1,
+                            acp_v2::ToolKind::Think => {}
+                            _ => others += 1,
+                        }
                     }
-                    (start, count, running, last_label)
+                    let plural = |n: usize, one: &str, many: &str| {
+                        if n == 1 {
+                            format!("{n} {one}")
+                        } else {
+                            format!("{n} {many}")
+                        }
+                    };
+                    let mut parts: Vec<String> = Vec::new();
+                    if reads > 0 {
+                        parts.push(format!("read {}", plural(reads, "file", "files")));
+                    }
+                    if searches > 0 {
+                        parts.push(format!("ran {}", plural(searches, "search", "searches")));
+                    }
+                    if edits > 0 {
+                        parts.push(format!("edited {}", plural(edits, "file", "files")));
+                    }
+                    if commands > 0 {
+                        parts.push(format!("ran {}", plural(commands, "command", "commands")));
+                    }
+                    if fetches > 0 {
+                        parts.push(format!("fetched {}", plural(fetches, "page", "pages")));
+                    }
+                    if others > 0 {
+                        parts.push(plural(others, "step", "steps"));
+                    }
+                    let mut summary = parts.join(" · ");
+                    if summary.is_empty() {
+                        summary = plural(count, "step", "steps");
+                    }
+                    if let Some(first) = summary.get(..1) {
+                        summary = format!("{}{}", first.to_uppercase(), &summary[1..]);
+                    }
+                    (start, count, running, summary)
                 };
                 let group_expanded = self.expanded_activity.contains(&group_start);
                 if !group_expanded && !needs_attention {
                     if entry_ix != group_start {
                         return Empty.into_any();
                     }
-                    let text = if group_count == 1 {
-                        group_last_label
+                    let text = if group_running {
+                        format!("Working… {}", group_last_label.to_lowercase())
                     } else {
-                        format!("{group_count} steps · {group_last_label}")
+                        group_last_label
                     };
                     return h_flex()
                         .id(("brainz-activity", group_start))
+                        .w_full()
+                        .min_w_0()
                         .px_2()
                         .py_1()
                         .gap_1p5()
@@ -6769,10 +6820,13 @@ impl ThreadView {
                                 .into_any_element()
                         })
                         .child(
-                            Label::new(text)
-                                .size(LabelSize::Small)
-                                .color(Color::Muted)
-                                .truncate(),
+                            div().min_w_0().flex_1().overflow_hidden().child(
+                                Label::new(text)
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted)
+                                    .single_line()
+                                    .truncate(),
+                            ),
                         )
                         .child(
                             Icon::new(IconName::ChevronDown)
