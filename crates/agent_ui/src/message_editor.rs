@@ -2278,7 +2278,13 @@ impl Render for MessageEditor {
                             .unwrap_or_else(|| cx.theme().colors().editor_background),
                         local_player: cx.theme().players().local(),
                         text: text_style,
-                        syntax: cx.theme().syntax().clone(),
+                        // Brainz: sent messages sit on a solid bubble, so
+                        // Markdown syntax colours would fight the ink.
+                        syntax: if self.bubble_color.is_some() {
+                            Arc::new(theme::SyntaxTheme::default())
+                        } else {
+                            cx.theme().syntax().clone()
+                        },
                         inlay_hints_style: editor::make_inlay_hints_style(cx),
                         ..Default::default()
                     },
