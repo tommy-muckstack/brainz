@@ -5360,6 +5360,62 @@ impl Sidebar {
         close_item_tasks
     }
 
+    /// Brainz: deletes a thread outright. Goes through every open workspace's
+    /// agent panel so an open tab closes too; the panel deletes the metadata.
+    fn delete_thread(
+        &mut self,
+        session_id: &acp::SessionId,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let store = ThreadMetadataStore::global(cx);
+        let Some(thread_id) = store
+            .read(cx)
+            .entry_by_session(session_id)
+            .map(|metadata| metadata.thread_id)
+        else {
+            return;
+        };
+        if self
+            .active_entry
+            .as_ref()
+            .is_some_and(|entry| entry.is_active_thread(&thread_id))
+        {
+            self.active_entry = None;
+        }
+        cx.defer(move |cx| {
+            let mut removed = false;
+            for handle in cx.windows() {
+                let result = handle.update(cx, |root, window, cx| {
+                    let Ok(workspace) = root.downcast::<Workspace>() else {
+                        return false;
+                    };
+                    workspace.update(cx, |workspace, cx| {
+                        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                            panel.update(cx, |panel, cx| {
+                                panel.remove_thread_without_activating_draft(
+                                    thread_id, window, cx,
+                                );
+                            });
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                });
+                if matches!(result, Ok(true)) {
+                    removed = true;
+                }
+            }
+            if !removed {
+                ThreadMetadataStore::global(cx).update(cx, |store, cx| {
+                    store.delete(thread_id, cx);
+                });
+            }
+        });
+        cx.notify();
+    }
+
     fn archive_thread(
         &mut self,
         session_id: &acp::SessionId,
@@ -6401,26 +6457,17 @@ impl Sidebar {
                                 .into_any_element(),
                         ),
                         None => Some(
-                            IconButton::new("archive-thread", IconName::Archive)
+                            // Brainz: delete, not archive.
+                            IconButton::new("delete-thread", IconName::Trash)
                                 .hover_background(button_hover_bg)
                                 .active_background(button_active_bg)
                                 .icon_size(IconSize::Small)
-                                .tooltip({
-                                    let focus_handle = focus_handle.clone();
-                                    move |_window, cx| {
-                                        Tooltip::for_action_in(
-                                            "Archive Thread",
-                                            &ArchiveSelectedThread,
-                                            &focus_handle,
-                                            cx,
-                                        )
-                                    }
-                                })
+                                .tooltip(Tooltip::text("Delete Thread"))
                                 .on_click({
                                     let session_id = session_id_for_delete.clone();
                                     cx.listener(move |this, _, window, cx| {
                                         if let Some(ref session_id) = session_id {
-                                            this.archive_thread(session_id, window, cx);
+                                            this.delete_thread(session_id, window, cx);
                                         }
                                     })
                                 })
@@ -7595,6 +7642,10 @@ impl Sidebar {
     }
 
     fn should_render_acp_import_onboarding(&self, cx: &App) -> bool {
+        // Brainz: no thread importing from other clients.
+        if cfg!(not(test)) {
+            return false;
+        }
         let has_external_agents = self
             .active_workspace(cx)
             .map(|ws| {

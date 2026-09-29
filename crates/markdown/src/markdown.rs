@@ -1738,6 +1738,24 @@ pub struct MarkdownElement {
     on_render: Option<Box<dyn Fn(RenderedText)>>,
 }
 
+/// Brainz: `interviews/companies/x/2026-09-28/onsite-debrief.md:12` renders
+/// as `onsite-debrief.md:12`. Text without a directory is returned as is.
+fn brainz_file_link_label(text: &str) -> String {
+    let trimmed = text.trim();
+    let (path, suffix) = match trimmed.find(['#', ':']) {
+        Some(ix) if ix > 0 => (&trimmed[..ix], &trimmed[ix..]),
+        _ => (trimmed, ""),
+    };
+    let path = path.trim_end_matches('/');
+    match path.rsplit('/').next() {
+        Some(name) if !name.is_empty() && name.len() < path.len() => {
+            let name = name.strip_suffix(".md").unwrap_or(name);
+            format!("{name}{suffix}")
+        }
+        _ => trimmed.to_owned(),
+    }
+}
+
 impl MarkdownElement {
     pub fn new(markdown: Entity<Markdown>, style: MarkdownStyle) -> Self {
         Self {
@@ -1899,7 +1917,10 @@ impl MarkdownElement {
                 .unwrap_or_else(|| self.style.link.clone());
             builder.push_text_style(code_style);
             builder.push_text_style(link_style);
-            builder.push_code_chip_text(text, range, chip_background);
+            // Brainz: a resolved file link shows just the document name; the
+            // full path is still the link destination.
+            let label = brainz_file_link_label(text);
+            builder.push_code_chip_text(&label, range, chip_background);
             builder.pop_text_style();
             builder.pop_text_style();
         } else {

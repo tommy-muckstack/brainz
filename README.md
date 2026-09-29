@@ -1,4 +1,69 @@
-# Zed
+> [!IMPORTANT]
+> Remove this line to confirm you've reviewed this PR before submitting.
+
+# Brainz
+
+A personal desktop workspace for `tommy-brain`, built from Zed. Files on the left,
+Markdown reading in the center, and a terminal below, with Gellix typography and
+a charcoal-and-amber theme.
+
+Run `./script/brainz-local` on macOS to build and open `~/Applications/Brainz.app`.
+The first build requires Rust 1.98.1, Xcode, and CMake. Local Gellix font files live
+in `assets/fonts/gellix/` and are excluded from Git.
+
+Brainz uses `~/.config/brainz` and `~/Library/Application Support/Brainz`. Edit
+`~/.config/brainz/themes/brainz.json` to adjust colors live, or
+`~/.config/brainz/settings.json` to change the layout and terminal preferences.
+
+The bottom panel's **Launch** button (rocket) opens a Shell or a native Claude or
+Codex conversation in the current project. Everything you open becomes a tab in the
+strip under the toolbar, shells and conversations side by side. Click a tab to
+switch, use its close button to drop it, and right-click it to give it a color
+(a filled rounded square replaces the tab icon).
+Tabs and colors are remembered between launches. Conversations and the message
+box use Gellix with natural spacing. Shell content uses Lilex for a fixed
+character grid. The message box stays one line tall until you click into it.
+Paste or attach a screenshot and it shows as a thumbnail above the text before
+you send.
+
+The calendar button in the status bar (bottom left) opens a **Calendar** tab
+with the next seven days, read from every account macOS Calendar knows about.
+It uses a small bundled helper built from `script/brainz-calendar.swift`, the
+same EventKit approach as My Man. macOS asks for Calendar access the first
+time; the tab refreshes every five minutes and on demand. Sent messages sit on
+the right in the tab's colour; replies sit on the left. The message box says
+"Type message…", grows as you type, and keeps model and mode options behind the
+gear button.
+
+The MCP button next to it opens an **MCP Connectors** tab listing the servers
+Brainz's Claude and Codex know about, with logos for the ones you use most.
+The first time Claude runs in Brainz, your terminal Claude's MCP servers are
+copied into Brainz's own config so both have the same connectors. The tab bar's
+split button is a plain toggle: on splits right, off joins everything back.
+
+`script/brainz-local` signs the app with your Apple Development identity so
+macOS remembers permission grants across rebuilds. Override it with
+`BRAINZ_SIGNING_IDENTITY`. An ad-hoc signature would prompt every build.
+
+Claude and Codex connect through the existing ACP integration, with their own
+authentication and permissions. Their adapters install from the ACP registry on
+first use. Brainz gives each one its own config directory
+(`~/.config/brainz/claude` and `~/.config/brainz/codex`), so signing in inside
+Brainz never signs out a `claude` or `codex` session running in another terminal
+app, and vice versa. Expect one extra sign-in per machine. `settings.json`,
+`CLAUDE.md`, and `config.toml` are copied over from the CLI directories the first
+time; credentials never are. You can still run either CLI directly in a shell.
+
+On macOS, the bundled zsh profile keeps your normal startup files, aliases, and
+history, with a short amber prompt and no system login banner. Explicit custom
+shell settings take precedence. The profile lives in `assets/brainz/shell/`.
+
+Custom icons live in `assets/icons/brainz/`; their central mapping is
+`IconName::path` in `crates/icons/src/icons.rs`. Search shows the query and match
+navigation. Advanced controls appear only when their mode is already active,
+so keyboard shortcuts cannot leave an invisible filter enabled.
+
+## Upstream Zed
 
 [![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
 [![CI](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml/badge.svg)](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml)

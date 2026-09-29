@@ -61,3 +61,6 @@ crates/docs_preprocessor/actions.json
 
 .local*
 .cache
+
+# Local font assets shared with MyMan.
+/assets/fonts/gellix/

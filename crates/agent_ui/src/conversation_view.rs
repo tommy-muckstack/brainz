@@ -2167,6 +2167,11 @@ impl ConversationView {
         };
 
         window.spawn(cx, async move |cx| {
+            // Brainz: the login runs in the terminal panel, which is normally
+            // hidden. Show it while signing in and bring the conversation
+            // back afterwards, whatever the outcome.
+            let panel_workspace = workspace.clone();
+            let result: Result<()> = async {
             let mut task = login.clone();
             if let Some(cmd) = &task.command {
                 // Have "node" command use Zed's managed Node runtime by default
@@ -2198,6 +2203,11 @@ impl ConversationView {
                     terminal_panel.spawn_task(&task, window, cx)
                 })?
                 .await?;
+            panel_workspace
+                .update_in(cx, |workspace, window, cx| {
+                    workspace.open_panel::<TerminalPanel>(window, cx);
+                })
+                .ok();
 
             let success_patterns = match method.0.as_ref() {
                 "claude-login" | GEMINI_TERMINAL_AUTH_METHOD_ID => vec![
@@ -2277,6 +2287,14 @@ impl ConversationView {
                 terminal.update(cx, |terminal, _| terminal.kill_active_task())?;
                 Ok(())
             }
+            }
+            .await;
+            panel_workspace
+                .update_in(cx, |workspace, window, cx| {
+                    workspace.open_panel::<AgentPanel>(window, cx);
+                })
+                .ok();
+            result
         })
     }
 
@@ -3373,6 +3391,11 @@ fn native_available_skills(
 }
 
 fn placeholder_text(agent_name: &str, has_commands: bool) -> String {
+    // Brainz: one calm prompt for every agent.
+    let _ = (agent_name, has_commands);
+    if true {
+        return "Type message…".to_string();
+    }
     if agent_name == agent::ZED_AGENT_ID.as_ref() {
         format!(
             "Message the {}, @ to include context, / for commands",

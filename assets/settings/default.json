@@ -7,9 +7,9 @@
   // - "light": Use the theme indicated by the "light" field
   // - "dark": Use the theme indicated by the "dark" field
   "theme": {
-    "mode": "system",
-    "light": "One Light",
-    "dark": "One Dark",
+    "mode": "dark",
+    "light": "Brainz Amber",
+    "dark": "Brainz Amber",
   },
   "icon_theme": "Zed (Default)",
   // The name of a base set of key bindings to use.
@@ -54,9 +54,7 @@
   "buffer_line_height": "comfortable",
   // The name of a font to use for rendering text in the UI
   // You can set this to ".SystemUIFont" to use the system font
-  // ".ZedSans" currently aliases to "IBM Plex Sans", but this may
-  // change in the future
-  "ui_font_family": ".ZedSans",
+  "ui_font_family": "Gellix",
   // Set the UI's font fallbacks, this will be merged with the platform's
   // default font fallbacks.
   "ui_font_fallbacks": null,
@@ -70,13 +68,13 @@
   // The default font size for text in the UI
   "ui_font_size": 16,
   // The font family for agent responses in the agent panel. Falls back to the UI font family if unset.
-  "agent_ui_font_family": null,
+  "agent_ui_font_family": "Gellix",
   // The default font size for agent responses in the agent panel. Falls back to the UI font size if unset.
-  "agent_ui_font_size": null,
+  "agent_ui_font_size": 16,
   // The font family for user messages in the agent panel. Falls back to the buffer font family if unset.
-  "agent_buffer_font_family": null,
+  "agent_buffer_font_family": "Gellix",
   // The default font size for user messages in the agent panel.
-  "agent_buffer_font_size": 12,
+  "agent_buffer_font_size": 14,
   // The default font size for the commit editor in the git panel and commit modal.
   "git_commit_buffer_font_size": 12,
   // How much to fade out unused code.
@@ -113,13 +111,13 @@
   // Markdown preview settings
   "markdown_preview": {
     // The default font size for the markdown preview. Falls back to the UI font size if unset.
-    "font_size": null,
+    "font_size": 17,
     // The font family for the markdown preview. Falls back to the UI font family if unset.
     "font_family": null,
     // The font family for code blocks in the markdown preview. Falls back to the editor font family if unset.
     "code_font_family": null,
     // Whether to automatically open Markdown files in the preview.
-    "open_markdown_files_in_preview": false,
+    "open_markdown_files_in_preview": true,
     // Whether to limit the width of the rendered markdown content. When
     // enabled, content is constrained to `max_width` and centered
     // horizontally within the preview pane.
@@ -539,7 +537,7 @@
   "allow_rewrap": "in_comments",
   // Controls whether edit predictions are shown immediately (true)
   // or manually by triggering `editor::ShowEditPrediction` (false).
-  "show_edit_predictions": true,
+  "show_edit_predictions": false,
   // Disable edit predictions in these language scopes, such as "comment" and
   // "string".
   //
@@ -611,19 +609,19 @@
     // Whether to show git status indicators on the branch icon in the titlebar.
     "show_branch_status_icon": false,
     // Whether to show the branch name button in the titlebar.
-    "show_branch_name": true,
+    "show_branch_name": false,
     // Whether to show the worktree name button in the titlebar.
-    "show_worktree_name": true,
+    "show_worktree_name": false,
     // Whether to show the project host and name in the titlebar.
     "show_project_items": true,
     // Whether to show onboarding banners in the titlebar.
-    "show_onboarding_banner": true,
+    "show_onboarding_banner": false,
     // Whether to show user picture in the titlebar.
-    "show_user_picture": true,
+    "show_user_picture": false,
     // Whether to show the user menu in the titlebar.
-    "show_user_menu": true,
+    "show_user_menu": false,
     // Whether to show the sign in button in the titlebar.
-    "show_sign_in": true,
+    "show_sign_in": false,
     // Whether to show the menus in the titlebar.
     "show_menus": false,
     // Whether to open the menus in the titlebar on hover.
@@ -875,9 +873,9 @@
     // Delay in milliseconds before tooltips appear for project panel titles.
     "title_tooltip_delay": "default",
     // Default width of the project panel.
-    "default_width": 240,
+    "default_width": 280,
     // Where to dock the project panel. Can be 'left' or 'right'.
-    "dock": "right",
+    "dock": "left",
     // Spacing between worktree entries in the project panel. Can be 'comfortable' or 'standard'.
     "entry_spacing": "comfortable",
     // Whether to show file icons in the project panel.
@@ -997,7 +995,7 @@
   },
   "outline_panel": {
     // Whether to show the outline panel button in the status bar
-    "button": true,
+    "button": false,
     // Default width of the outline panel.
     "default_width": 300,
     // Where to dock the outline panel. Can be 'left' or 'right'.
@@ -1063,7 +1061,7 @@
   },
   "collaboration_panel": {
     // Whether to show the collaboration panel button in the status bar.
-    "button": true,
+    "button": false,
     // Where to dock the collaboration panel. Can be 'left' or 'right'.
     "dock": "right",
     // Default width of the collaboration panel.
@@ -1071,7 +1069,7 @@
   },
   "git_panel": {
     // Whether to show the git panel button in the status bar.
-    "button": true,
+    "button": false,
     // Where to dock the git panel. Can be 'left' or 'right'.
     "dock": "right",
     // Default width of the git panel.
@@ -1157,13 +1155,13 @@
     // Whether to show the agent panel button in the status bar.
     "button": true,
     // Where to dock the agent panel. Can be 'left', 'right' or 'bottom'.
-    "dock": "left",
+    "dock": "bottom",
     // Whether the agent panel should use flexible (proportional) sizing when docked
     // to the left or right. When enabled, `default_width` does not control the panel
     // width, and resetting the panel restores the default proportion.
     //
     // Default: true
-    "flexible": true,
+    "flexible": false,
     // Maximum number of idle threads with loadable sessions to retain in the
     // agent panel. Set to 0 to unload every eligible idle thread when it is
     // no longer active.
@@ -1175,20 +1173,20 @@
       // Default width of the Threads Sidebar.
       "default_width": 300,
       // Automatically open the Threads Sidebar when opening a folder in an existing window.
-      "auto_open": true,
+      "auto_open": false,
     },
     // Default fixed width when the agent panel is docked to the left or right and
     // `flexible` is false.
     "default_width": 640,
     // Default height when the agent panel is docked to the bottom.
-    "default_height": 320,
+    "default_height": 400,
     // Whether to limit the content width in the agent panel. When enabled,
     // content will be constrained to `max_content_width` and centered when
     // the panel is wider, for optimal readability.
     "limit_content_width": true,
     // Maximum content width in pixels when limit_content_width is enabled.
     // Content will be centered within the panel.
-    "max_content_width": 850,
+    "max_content_width": 780,
     // The default model to use when creating new threads.
     "default_model": {
       // The provider to use.
@@ -1390,8 +1388,8 @@
     "use_modifier_to_send": false,
     // Minimum number of lines to display in the agent message editor.
     //
-    // Default: 4
-    "message_editor_min_lines": 4,
+    // Default: 3
+    "message_editor_min_lines": 3,
     // Whether to show turn statistics (elapsed time during generation, final turn duration).
     //
     // Default: false
@@ -1720,7 +1718,7 @@
   // Diagnostics configuration.
   "diagnostics": {
     // Whether to show the project diagnostics button in the status bar.
-    "button": true,
+    "button": false,
     // Whether to show warnings or not by default.
     //
     // Default: true
@@ -1894,7 +1892,7 @@
   "load_direnv": "direct",
   "edit_predictions": {
     // Which edit prediction provider to use.
-    "provider": "zed",
+    "provider": "none",
     // Disable edit predictions for files matching these glob patterns.
     //
     // Use `"..."` to add patterns without repeating Zed's defaults. In project
@@ -1997,9 +1995,9 @@
     // Whether to show the name of the active file in the status bar.
     "show_active_file": false,
     // Whether to show the active language button in the status bar.
-    "active_language_button": true,
+    "active_language_button": false,
     // Whether to show the cursor position button in the status bar.
-    "cursor_position_button": true,
+    "cursor_position_button": false,
     // Whether to show active line endings button in the status bar.
     "line_endings_button": false,
     // Control when to show the active encoding in the status bar.
@@ -2034,12 +2032,12 @@
     "starts_open": false,
     // Whether the terminal panel should use flexible (proportional) sizing.
     //
-    // Default: true
-    "flexible": true,
+    // Default: false
+    "flexible": false,
     // Default width when the terminal is docked to the left or right.
     "default_width": 640,
     // Default height when the terminal is docked to the bottom.
-    "default_height": 320,
+    "default_height": 360,
     // What working directory to use when launching the terminal.
     // May take 5 values:
     // 1. Use the current file's directory, falling back to the project
@@ -2070,7 +2068,7 @@
     //         "blinking": "terminal_controlled",
     //  3. Always blink the cursor, ignoring the terminal mode
     //         "blinking": "on",
-    "blinking": "terminal_controlled",
+    "blinking": "off",
     // Default cursor shape for the terminal.
     //  1. A block that surrounds the following character
     //     "block"
@@ -2081,8 +2079,8 @@
     //  4. A box drawn around the following character
     //     "hollow"
     //
-    // Default: "block"
-    "cursor_shape": "block",
+    // Default: "bar"
+    "cursor_shape": "bar",
     // Set whether Alternate Scroll mode (code: ?1007) is active by default.
     // Alternate Scroll mode converts mouse scroll events into up / down key
     // presses when in the alternate screen (e.g. when running applications
@@ -2113,7 +2111,7 @@
     // (shift-ctrl-click).
     "open_links_in_mouse_mode": true,
     // Whether to show the terminal button in the status bar
-    "button": true,
+    "button": false,
     // Any key-value pairs added to this list will be added to the terminal's
     // environment. Use `:` to separate multiple values.
     "env": {
@@ -2175,10 +2173,10 @@
     },
     // Set the terminal's font size. If this option is not included,
     // the terminal will default to matching the buffer's font size.
-    // "font_size": 15,
+    "font_size": 15,
     // Set the terminal's font family. If this option is not included,
     // the terminal will default to matching the buffer's font family.
-    // "font_family": ".ZedMono",
+    "font_family": "Lilex",
     // Set the terminal's font fallbacks. If this option is not included,
     // the terminal will default to matching the buffer's font fallbacks.
     // This will be merged with the platform's default font fallbacks
@@ -2953,7 +2951,10 @@
   // Configures context servers for use by the agent.
   "context_servers": {},
   // Configures agent servers available in the agent panel.
-  "agent_servers": {},
+  "agent_servers": {
+    "claude-acp": { "type": "registry" },
+    "codex-acp": { "type": "registry" },
+  },
   "debugger": {
     "stepping_granularity": "line",
     "save_breakpoints": true,
@@ -2961,7 +2962,7 @@
     "dock": "bottom",
     "log_dap_communications": true,
     "format_dap_log_messages": true,
-    "button": true,
+    "button": false,
   },
   // Configures any number of settings profiles that are temporarily applied
   // when selected from `settings profile selector: toggle`.

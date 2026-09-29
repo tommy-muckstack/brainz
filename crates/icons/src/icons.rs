@@ -188,6 +188,20 @@ pub enum IconName {
     ListTree,
     ListX,
     LoadCircle,
+    /// Brainz: rocket used by the agent/shell launcher.
+    Launch,
+    /// Brainz: calendar tab button.
+    BrainzCalendar,
+    /// Brainz: MCP connectors tab button.
+    BrainzMcp,
+    /// Brainz: sliders used for the composer's model/mode options toggle.
+    BrainzSliders,
+    /// Brainz: Claude mark (from the ACP registry).
+    BrainzClaude,
+    /// Brainz: Codex mark (from the ACP registry).
+    BrainzCodex,
+    /// Brainz: filled rounded square used as a tab colour swatch.
+    Swatch,
     LocationEdit,
     Lock,
     LockOff,
@@ -310,6 +324,36 @@ pub enum IconName {
 impl IconName {
     /// Returns the path to this icon.
     pub fn path(&self) -> Arc<str> {
+        match self {
+            Self::MagnifyingGlass => return "icons/brainz/search.svg".into(),
+            Self::Folder => return "icons/brainz/folder.svg".into(),
+            Self::FolderOpen => return "icons/brainz/folder-open.svg".into(),
+            Self::Terminal | Self::TerminalAlt => return "icons/brainz/terminal.svg".into(),
+            Self::ArrowLeft => return "icons/brainz/back.svg".into(),
+            Self::ArrowRight => return "icons/brainz/forward.svg".into(),
+            Self::Check => return "icons/brainz/check.svg".into(),
+            Self::Copy => return "icons/brainz/copy.svg".into(),
+            Self::Launch => return "icons/brainz/launch.svg".into(),
+            Self::BrainzCalendar => return "icons/brainz/calendar.svg".into(),
+            Self::BrainzMcp => return "icons/brainz/mcp.svg".into(),
+            Self::BrainzClaude => return "icons/brainz/claude.svg".into(),
+            Self::BrainzCodex => return "icons/brainz/codex.svg".into(),
+            Self::Split => return "icons/brainz/split.svg".into(),
+            Self::FileTree => return "icons/brainz/files.svg".into(),
+            Self::Plus => return "icons/brainz/plus.svg".into(),
+            Self::Close => return "icons/brainz/close.svg".into(),
+            Self::Trash => return "icons/brainz/trash.svg".into(),
+            Self::Send => return "icons/brainz/send.svg".into(),
+            Self::Ellipsis => return "icons/brainz/ellipsis.svg".into(),
+            Self::BrainzSliders => return "icons/brainz/sliders.svg".into(),
+            Self::Swatch => return "icons/brainz/swatch.svg".into(),
+            Self::Maximize => return "icons/brainz/expand.svg".into(),
+            Self::Minimize => return "icons/brainz/collapse.svg".into(),
+            Self::File | Self::FileGeneric | Self::FileDoc | Self::FileMarkdown | Self::Book => {
+                return "icons/brainz/file.svg".into();
+            }
+            _ => {}
+        }
         let file_stem: &'static str = self.into();
         format!("icons/{file_stem}.svg").into()
     }

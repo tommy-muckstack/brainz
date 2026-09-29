@@ -600,6 +600,9 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         });
 
         let search_button = cx.new(|_| search::search_status_button::SearchButton::new());
+        let brainz_calendar_button = cx.new(|_| brainz_calendar::CalendarButton::new());
+        let brainz_mcp_button = cx.new(|_| brainz_calendar::mcp::McpButton::new());
+        let brainz_launch_button = cx.new(|_| brainz_calendar::launcher::LaunchButton::new());
         let diagnostic_summary =
             cx.new(|cx| diagnostics::items::DiagnosticIndicator::new(workspace, cx));
         let active_file_name = cx.new(|_| workspace::active_file_name::ActiveFileName::new());
@@ -633,13 +636,17 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             cx.new(|cx| git_ui::MergeConflictIndicator::new(workspace, cx));
         workspace.status_bar().update(cx, |status_bar, cx| {
             status_bar.add_left_item(search_button, window, cx);
+            status_bar.add_left_item(brainz_calendar_button, window, cx);
+            status_bar.add_left_item(brainz_mcp_button, window, cx);
+            status_bar.add_left_item(brainz_launch_button, window, cx);
             status_bar.add_left_item(lsp_button, window, cx);
             status_bar.add_left_item(diagnostic_summary, window, cx);
             status_bar.add_left_item(active_file_name, window, cx);
             status_bar.add_left_item(git_blame_status, window, cx);
             status_bar.add_left_item(merge_conflict_indicator, window, cx);
             status_bar.add_left_item(activity_indicator, window, cx);
-            status_bar.add_right_item(edit_prediction_ui, window, cx);
+            // Brainz: no edit-prediction button (and no sign-in prompt) in the status bar.
+            let _ = &edit_prediction_ui;
             status_bar.add_right_item(active_buffer_encoding, window, cx);
             status_bar.add_right_item(active_buffer_language, window, cx);
             status_bar.add_right_item(active_toolchain_language, window, cx);
@@ -1528,7 +1535,7 @@ fn initialize_pane(
 fn open_about_window(cx: &mut App) {
     fn about_window_icon(release_channel: ReleaseChannel) -> Arc<Image> {
         let bytes = match release_channel {
-            ReleaseChannel::Dev => include_bytes!("../resources/app-icon-dev.png").as_slice(),
+            ReleaseChannel::Dev => include_bytes!("../resources/brainz-icon.png").as_slice(),
             ReleaseChannel::Nightly => {
                 include_bytes!("../resources/app-icon-nightly.png").as_slice()
             }

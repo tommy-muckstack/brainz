@@ -1,0 +1,27 @@
+[package]
+name = "brainz_calendar"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/brainz_calendar.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+gpui.workspace = true
+log.workspace = true
+menu.workspace = true
+smol.workspace = true
+paths.workspace = true
+toml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+terminal_view.workspace = true
+ui.workspace = true
+workspace.workspace = true

@@ -1635,8 +1635,15 @@ impl Item for MarkdownPreviewView {
             .as_ref()
             .map(|editor_state| {
                 let buffer = editor_state.editor.read(cx).buffer().read(cx);
+                // Brainz: the tab shows the document name without the
+                // "Preview" prefix or the `.md` extension.
                 let title = buffer.title(cx);
-                format!("Preview {}", title).into()
+                let title = title.as_ref();
+                let title = title
+                    .strip_suffix(".md")
+                    .or_else(|| title.strip_suffix(".markdown"))
+                    .unwrap_or(title);
+                SharedString::from(title.to_owned())
             })
             .unwrap_or_else(|| SharedString::from("Markdown Preview"))
     }

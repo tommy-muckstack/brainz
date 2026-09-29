@@ -39,7 +39,8 @@ use settings::Settings;
 use std::{cmp::min, fmt::Write, ops::Range, rc::Rc, sync::Arc};
 use text::LineEnding;
 use theme_settings::ThemeSettings;
-use ui::{ContextMenu, prelude::*};
+use collections::HashSet;
+use ui::{ButtonStyle, ContextMenu, IconButton, Tooltip, prelude::*};
 use util::paths::PathStyle;
 use util::{ResultExt, debug_panic};
 use workspace::{CollaboratorId, Workspace};
@@ -207,6 +208,11 @@ pub struct MessageEditor {
     local_commands: SharedLocalCommands,
     agent_id: AgentId,
     thread_store: Option<Entity<ThreadStore>>,
+    /// Brainz: image attachments whose decode is still in flight; the
+    /// composer re-renders once each one resolves.
+    pending_image_previews: HashSet<CreaseId>,
+    /// Brainz: solid bubble colour when this editor shows a sent message.
+    bubble_color: Option<gpui::Hsla>,
     _subscriptions: Vec<Subscription>,
     _parse_slash_command_task: Task<()>,
 }
@@ -609,6 +615,8 @@ impl MessageEditor {
             local_commands,
             agent_id,
             thread_store,
+            pending_image_previews: HashSet::default(),
+            bubble_color: None,
             _subscriptions: subscriptions,
             _parse_slash_command_task: Task::ready(()),
         }
@@ -2065,9 +2073,177 @@ impl Focusable for MessageEditor {
     }
 }
 
+impl MessageEditor {
+    /// Brainz: paints a sent message on a solid bubble. Light colours get
+    /// near-black text so it stays readable.
+    pub fn set_bubble_color(&mut self, color: Option<gpui::Hsla>) {
+        self.bubble_color = color;
+    }
+
+    pub fn bubble_text_color(&self, cx: &App) -> gpui::Hsla {
+        match self.bubble_color {
+            Some(color) if color.l > 0.5 => gpui::hsla(0., 0., 0.08, 1.),
+            Some(_) => gpui::hsla(0., 0., 0.98, 1.),
+            None => cx.theme().colors().text,
+        }
+    }
+
+    /// Brainz: removes one attached image from the composer.
+    fn remove_image_preview(&mut self, crease_id: CreaseId, cx: &mut Context<Self>) {
+        self.pending_image_previews.remove(&crease_id);
+        self.mention_set.update(cx, |mention_set, cx| {
+            mention_set.remove_image_mention(crease_id, cx);
+        });
+        cx.notify();
+    }
+
+    /// Brainz: opens an attached image in its own tab. The bytes are saved
+    /// under Brainz's data directory so the regular image viewer can show them.
+    fn open_image_in_tab(
+        &mut self,
+        crease_id: CreaseId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(image) = self
+            .mention_set
+            .read(cx)
+            .image_previews(cx)
+            .into_iter()
+            .find(|(id, _)| *id == crease_id)
+            .and_then(|(_, task)| task.peek().and_then(|result| result.clone().ok()))
+        else {
+            return;
+        };
+        let extension = match image.format() {
+            gpui::ImageFormat::Jpeg => "jpg",
+            gpui::ImageFormat::Webp => "webp",
+            gpui::ImageFormat::Gif => "gif",
+            gpui::ImageFormat::Svg => "svg",
+            _ => "png",
+        };
+        let directory = paths::data_dir().join("pasted-images");
+        let path = directory.join(format!("image-{}.{extension}", image.id));
+        let bytes = image.bytes.clone();
+        let workspace = self.workspace.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            let path = cx
+                .background_spawn(async move {
+                    std::fs::create_dir_all(&directory)?;
+                    std::fs::write(&path, bytes)?;
+                    anyhow::Ok(path)
+                })
+                .await?;
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace
+                    .open_abs_path(
+                        path,
+                        workspace::OpenOptions {
+                            visible: Some(workspace::OpenVisible::None),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                    .detach_and_log_err(cx);
+            })
+        })
+        .detach_and_log_err(cx);
+    }
+
+    /// Brainz: the row of thumbnails above the text input. Each attached
+    /// screenshot shows up here before it is sent.
+    fn render_image_previews(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        let previews = self.mention_set.read(cx).image_previews(cx);
+        if previews.is_empty() {
+            return None;
+        }
+
+        let mut thumbnails = Vec::with_capacity(previews.len());
+        for (ix, (crease_id, task)) in previews.into_iter().enumerate() {
+            let image = task.peek().and_then(|result| result.clone().ok());
+            if image.is_none() && self.pending_image_previews.insert(crease_id) {
+                cx.spawn(async move |this, cx| {
+                    let _ = task.await;
+                    this.update(cx, |this, cx| {
+                        this.pending_image_previews.remove(&crease_id);
+                        cx.notify();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+
+            let border = cx.theme().colors().border;
+            let placeholder_bg = cx.theme().colors().element_background;
+            thumbnails.push(
+                div()
+                    .id(("brainz-image-preview", ix))
+                    .group("brainz-image-preview")
+                    .relative()
+                    .flex_none()
+                    .w_32()
+                    .h_20()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(border)
+                    .bg(placeholder_bg)
+                    .overflow_hidden()
+                    .cursor_pointer()
+                    .map(|this| match image {
+                        Some(image) => this
+                            .tooltip(Tooltip::text("Open in a tab"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_image_in_tab(crease_id, window, cx);
+                            }))
+                            .child(
+                                gpui::img(image)
+                                    .size_full()
+                                    .object_fit(gpui::ObjectFit::Contain),
+                            ),
+                        None => this.child(
+                            h_flex().size_full().justify_center().child(
+                                Icon::new(IconName::Image)
+                                    .size(IconSize::Small)
+                                    .color(Color::Muted),
+                            ),
+                        ),
+                    })
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0p5()
+                            .right_0p5()
+                            .visible_on_hover("brainz-image-preview")
+                            .child(
+                                IconButton::new(("brainz-image-remove", ix), IconName::Close)
+                                    .icon_size(IconSize::XSmall)
+                                    .style(ButtonStyle::Filled)
+                                    .tooltip(Tooltip::text("Remove image"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.remove_image_preview(crease_id, cx);
+                                    })),
+                            ),
+                    ),
+            );
+        }
+
+        Some(
+            v_flex()
+                .w_full()
+                .child(h_flex().flex_wrap().gap_2().pb_1p5().children(thumbnails)),
+        )
+    }
+}
+
 impl Render for MessageEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let image_previews = self.render_image_previews(cx);
+        v_flex()
             .key_context("MessageEditor")
             .on_action(cx.listener(Self::chat))
             .on_action(cx.listener(Self::send_immediately))
@@ -2078,11 +2254,12 @@ impl Render for MessageEditor {
             .on_action(cx.listener(Self::paste_raw))
             .capture_action(cx.listener(Self::paste))
             .flex_1()
+            .children(image_previews)
             .child({
                 let settings = ThemeSettings::get_global(cx);
 
                 let text_style = TextStyle {
-                    color: cx.theme().colors().text,
+                    color: self.bubble_text_color(cx),
                     font_family: settings.agent_buffer_font_family().clone(),
                     font_fallbacks: settings.buffer_font.fallbacks.clone(),
                     font_features: settings.buffer_font.features.clone(),
@@ -2095,7 +2272,9 @@ impl Render for MessageEditor {
                 EditorElement::new(
                     &self.editor,
                     EditorStyle {
-                        background: cx.theme().colors().editor_background,
+                        background: self
+                            .bubble_color
+                            .unwrap_or_else(|| cx.theme().colors().editor_background),
                         local_player: cx.theme().players().local(),
                         text: text_style,
                         syntax: cx.theme().syntax().clone(),

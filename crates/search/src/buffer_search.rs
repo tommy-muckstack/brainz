@@ -171,7 +171,7 @@ impl Render for BufferSearchBar {
             regex,
             replacement,
             selection,
-            select_all,
+            select_all: _,
             find_in_results,
         } = self.supported_options(cx);
 
@@ -230,6 +230,11 @@ impl Render for BufferSearchBar {
         };
 
         let query_column = input_style
+            .child(
+                Icon::new(IconName::MagnifyingGlass)
+                    .size(IconSize::Small)
+                    .color(Color::Muted),
+            )
             .child(div().flex_1().min_w_0().py_1().child(render_text_input(
                 &self.query_editor,
                 color_override,
@@ -239,33 +244,42 @@ impl Render for BufferSearchBar {
                 h_flex()
                     .flex_none()
                     .gap_1()
-                    .when(case, |div| {
-                        div.child(SearchOption::CaseSensitive.as_button(
-                            self.search_options,
-                            SearchSource::Buffer,
-                            focus_handle.clone(),
-                        ))
-                    })
-                    .when(word, |div| {
-                        div.child(SearchOption::WholeWord.as_button(
-                            self.search_options,
-                            SearchSource::Buffer,
-                            focus_handle.clone(),
-                        ))
-                    })
-                    .when(regex, |div| {
-                        div.child(SearchOption::Regex.as_button(
-                            self.search_options,
-                            SearchSource::Buffer,
-                            focus_handle.clone(),
-                        ))
-                    }),
+                    .when(
+                        case && self.search_options.contains(SearchOptions::CASE_SENSITIVE),
+                        |div| {
+                            div.child(SearchOption::CaseSensitive.as_button(
+                                self.search_options,
+                                SearchSource::Buffer,
+                                focus_handle.clone(),
+                            ))
+                        },
+                    )
+                    .when(
+                        word && self.search_options.contains(SearchOptions::WHOLE_WORD),
+                        |div| {
+                            div.child(SearchOption::WholeWord.as_button(
+                                self.search_options,
+                                SearchSource::Buffer,
+                                focus_handle.clone(),
+                            ))
+                        },
+                    )
+                    .when(
+                        regex && self.search_options.contains(SearchOptions::REGEX),
+                        |div| {
+                            div.child(SearchOption::Regex.as_button(
+                                self.search_options,
+                                SearchSource::Buffer,
+                                focus_handle.clone(),
+                            ))
+                        },
+                    ),
             );
 
         let mode_column = h_flex()
             .gap_1()
             .min_w_64()
-            .when(replacement, |this| {
+            .when(replacement && self.replace_enabled, |this| {
                 this.child(render_action_button(
                     "buffer-search-bar-toggle",
                     IconName::Replace,
@@ -275,34 +289,37 @@ impl Render for BufferSearchBar {
                     focus_handle.clone(),
                 ))
             })
-            .when(selection, |this| {
-                this.child(
-                    IconButton::new(
-                        "buffer-search-bar-toggle-search-selection-button",
-                        IconName::Quote,
+            .when(
+                selection && self.selection_search_enabled.is_some(),
+                |this| {
+                    this.child(
+                        IconButton::new(
+                            "buffer-search-bar-toggle-search-selection-button",
+                            IconName::Quote,
+                        )
+                        .style(ButtonStyle::Subtle)
+                        .shape(IconButtonShape::Square)
+                        .when(self.selection_search_enabled.is_some(), |button| {
+                            button.style(ButtonStyle::Filled)
+                        })
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            this.toggle_selection(&ToggleSelection, window, cx);
+                        }))
+                        .toggle_state(self.selection_search_enabled.is_some())
+                        .tooltip({
+                            let focus_handle = focus_handle.clone();
+                            move |_window, cx| {
+                                Tooltip::for_action_in(
+                                    "Toggle Search Selection",
+                                    &ToggleSelection,
+                                    &focus_handle,
+                                    cx,
+                                )
+                            }
+                        }),
                     )
-                    .style(ButtonStyle::Subtle)
-                    .shape(IconButtonShape::Square)
-                    .when(self.selection_search_enabled.is_some(), |button| {
-                        button.style(ButtonStyle::Filled)
-                    })
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.toggle_selection(&ToggleSelection, window, cx);
-                    }))
-                    .toggle_state(self.selection_search_enabled.is_some())
-                    .tooltip({
-                        let focus_handle = focus_handle.clone();
-                        move |_window, cx| {
-                            Tooltip::for_action_in(
-                                "Toggle Search Selection",
-                                &ToggleSelection,
-                                &focus_handle,
-                                cx,
-                            )
-                        }
-                    }),
-                )
-            })
+                },
+            )
             .when(!find_in_results, |el| {
                 let query_focus = self.query_editor.focus_handle(cx);
                 let matches_column = h_flex()
@@ -312,7 +329,7 @@ impl Render for BufferSearchBar {
                     .border_color(theme_colors.border_variant)
                     .child(render_action_button(
                         "buffer-search-nav-button",
-                        ui::IconName::ChevronLeft,
+                        ui::IconName::ArrowLeft,
                         self.active_match_index
                             .is_none()
                             .then_some(ActionButtonState::Disabled),
@@ -322,7 +339,7 @@ impl Render for BufferSearchBar {
                     ))
                     .child(render_action_button(
                         "buffer-search-nav-button",
-                        ui::IconName::ChevronRight,
+                        ui::IconName::ArrowRight,
                         self.active_match_index
                             .is_none()
                             .then_some(ActionButtonState::Disabled),
@@ -342,17 +359,7 @@ impl Render for BufferSearchBar {
                         ))
                     });
 
-                el.when(select_all, |el| {
-                    el.child(render_action_button(
-                        "buffer-search-nav-button",
-                        IconName::SelectAll,
-                        Default::default(),
-                        "Select All Matches",
-                        &SelectAllMatches,
-                        query_focus.clone(),
-                    ))
-                })
-                .child(matches_column)
+                el.child(matches_column)
             })
             .when(find_in_results, |el| {
                 el.child(render_action_button(
