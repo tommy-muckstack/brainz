@@ -96,6 +96,8 @@ pub struct Signals {
 pub struct Theme {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub category: ThemeCategory,
     pub total: u32,
     pub weeks_active: usize,
     pub series: Vec<u32>,
@@ -110,6 +112,52 @@ pub struct Theme {
     pub people: Vec<Weighted>,
     pub pinned: bool,
     pub hidden: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeCategory {
+    People,
+    Places,
+    #[default]
+    Things,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct ThemeFilters {
+    pub people: bool,
+    pub places: bool,
+    pub things: bool,
+}
+
+impl Default for ThemeFilters {
+    fn default() -> Self {
+        Self {
+            people: false,
+            places: false,
+            things: true,
+        }
+    }
+}
+
+impl ThemeFilters {
+    pub fn includes(self, category: ThemeCategory) -> bool {
+        match category {
+            ThemeCategory::People => self.people,
+            ThemeCategory::Places => self.places,
+            ThemeCategory::Things => self.things,
+        }
+    }
+
+    pub fn toggle(&mut self, category: ThemeCategory) {
+        let value = match category {
+            ThemeCategory::People => &mut self.people,
+            ThemeCategory::Places => &mut self.places,
+            ThemeCategory::Things => &mut self.things,
+        };
+        *value = !*value;
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -278,14 +326,14 @@ fn make_term(display: &str, stop_words: &[String]) -> Option<Term> {
 /// The proper-noun vocabulary built from the repo plus the acronym allowlist.
 #[derive(Debug, Default, Clone)]
 pub struct Vocabulary {
-    /// (lowercase match text, display name, is a person)
-    entries: Vec<(String, String, bool)>,
+    entries: Vec<(String, String, ThemeCategory)>,
     stop_words: Vec<String>,
 }
 
 impl Vocabulary {
     pub fn from_tree(paths: &[String], acronyms: &[String], config: &BrainConfig) -> Self {
         let people_prefix = format!("{}/", config.people_dir.trim_end_matches('/'));
+        let places_prefix = format!("{}/", config.places_dir.trim_end_matches('/'));
         let folder_prefixes: Vec<String> = config
             .vocabulary_folders
             .iter()
@@ -293,13 +341,15 @@ impl Vocabulary {
             .collect();
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
-        let mut add = |stem: &str, person: bool, entries: &mut Vec<(String, String, bool)>| {
+        let mut add = |stem: &str,
+                       category: ThemeCategory,
+                       entries: &mut Vec<(String, String, ThemeCategory)>| {
             let display = title_case(stem);
             let key = normalize_key(&display);
             if key.chars().count() < MIN_TERM_CHARS || !seen.insert(key.clone()) {
                 return;
             }
-            entries.push((key, display, person));
+            entries.push((key, display, category));
         };
         for path in paths {
             if let Some(stem) = path
@@ -308,21 +358,29 @@ impl Vocabulary {
                 && !stem.contains('/')
                 && stem != "CLAUDE"
             {
-                add(stem, true, &mut entries);
+                add(stem, ThemeCategory::People, &mut entries);
+            }
+            if let Some(stem) = path
+                .strip_prefix(places_prefix.as_str())
+                .and_then(|rest| rest.strip_suffix(".md"))
+                && !stem.contains('/')
+                && stem != "CLAUDE"
+            {
+                add(stem, ThemeCategory::Places, &mut entries);
             }
             for prefix in &folder_prefixes {
                 if let Some(rest) = path.strip_prefix(prefix.as_str())
                     && let Some((folder, _)) = rest.split_once('/')
                     && folder != "archive"
                 {
-                    add(folder, false, &mut entries);
+                    add(folder, ThemeCategory::Things, &mut entries);
                 }
             }
         }
         for acronym in acronyms {
             let key = acronym.trim().to_ascii_lowercase();
             if key.len() >= 2 && seen.insert(key.clone()) {
-                entries.push((key, acronym.trim().to_owned(), false));
+                entries.push((key, acronym.trim().to_owned(), ThemeCategory::Things));
             }
         }
         Self {
@@ -332,10 +390,132 @@ impl Vocabulary {
     }
 
     pub fn is_person(&self, key: &str) -> bool {
+        self.category(key) == ThemeCategory::People
+    }
+
+    pub fn category(&self, key: &str) -> ThemeCategory {
         self.entries
             .iter()
-            .any(|(entry_key, _, person)| *person && entry_key == key)
+            .find(|(entry_key, _, _)| entry_key == key)
+            .map(|(_, _, category)| *category)
+            .unwrap_or_default()
     }
+
+    fn add_entity(&mut self, name: &str, category: ThemeCategory) {
+        let Some(term) = make_term(name, &self.stop_words) else {
+            return;
+        };
+        if !self.entries.iter().any(|(key, _, _)| *key == term.key) {
+            self.entries.push((term.key, term.display, category));
+        }
+    }
+
+    fn read_entities(&mut self, repo: &Path, paths: &[String], config: &BrainConfig) -> Result<()> {
+        for path in paths
+            .iter()
+            .filter(|path| path.ends_with(".md") && !excluded(path, config))
+        {
+            let text = match std::fs::read_to_string(repo.join(path)) {
+                Ok(text) => text,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error).with_context(|| format!("reading {path}")),
+            };
+            self.entities_from_markdown(path, &text);
+        }
+        Ok(())
+    }
+
+    fn entities_from_markdown(&mut self, path: &str, text: &str) {
+        let stem = Path::new(path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("");
+        let stem_words = normalize_key(stem);
+        for line in text.lines() {
+            let plain = line
+                .trim()
+                .trim_start_matches(['#', '-', ' '])
+                .replace("**", "");
+            if let Some((label, names)) = plain.split_once(':') {
+                let category = match normalize_key(label).as_str() {
+                    "attendees" | "participants" | "interviewer" | "interviewers" | "contact"
+                    | "contacts" => Some(ThemeCategory::People),
+                    "location" | "venue" | "city" | "hotel" | "lodging" => {
+                        Some(ThemeCategory::Places)
+                    }
+                    _ => None,
+                };
+                if let Some(category) = category {
+                    for name in names
+                        .split([',', ';'])
+                        .flat_map(|name| name.split(" and "))
+                        .flat_map(|name| name.split(" & "))
+                    {
+                        let name = name.split(['(', '—', '|']).next().unwrap_or("").trim();
+                        if category == ThemeCategory::Places || is_person_name(name) {
+                            self.add_entity(name, category);
+                        }
+                    }
+                }
+            }
+            // Interview notes often identify a person in their heading and filename,
+            // even when no dedicated people file exists.
+            if line.starts_with('#') {
+                let person_document = [
+                    "call",
+                    "interview",
+                    "interviewer",
+                    "meeting",
+                    "prep",
+                    "profile",
+                ]
+                .iter()
+                .any(|word| contains_word(&stem_words, word));
+                if !person_document {
+                    continue;
+                }
+                let heading = plain.replace(" .. ", " — ").replace(" - ", " — ");
+                for segment in heading.split(['—', '–', '|']) {
+                    for name in person_name_variants(segment) {
+                        let key = normalize_key(&name);
+                        let matches_filename = key
+                            .split_whitespace()
+                            .any(|word| contains_word(&stem_words, word));
+                        if matches_filename {
+                            self.add_entity(&name, ThemeCategory::People);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn person_name_variants(text: &str) -> Vec<String> {
+    let name = text
+        .split(['(', ',', ':'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .replace(['“', '”'], "\"");
+    let mut names = Vec::new();
+    if let Some((given, rest)) = name.split_once('"')
+        && let Some((nickname, family)) = rest.split_once('"')
+    {
+        names.push(format!("{} {}", given.trim(), family.trim()));
+        names.push(format!("{} {}", nickname.trim(), family.trim()));
+    } else {
+        names.push(name);
+    }
+    names
+        .into_iter()
+        .filter(|name| is_person_name(name))
+        .collect()
+}
+
+fn is_person_name(name: &str) -> bool {
+    let words: Vec<&str> = name.split_whitespace().collect();
+    (2..=4).contains(&words.len()) && words.iter().all(|word| is_capitalized_word(word))
 }
 
 /// `jane-doe` → `Jane Doe`; `3Dprint` stays `3Dprint`.
@@ -597,6 +777,7 @@ struct TermAgg {
     files: HashMap<String, u32>,
     people: HashMap<String, u32>,
     total: u32,
+    category: ThemeCategory,
 }
 
 fn read_list_file(path: &Path) -> Vec<String> {
@@ -670,7 +851,8 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
         .lines()
         .map(str::to_owned)
         .collect();
-    let vocabulary = Vocabulary::from_tree(&tree, &acronyms, &config);
+    let mut vocabulary = Vocabulary::from_tree(&tree, &acronyms, &config);
+    vocabulary.read_entities(repo, &tree, &config)?;
 
     let log = git(
         repo,
@@ -730,6 +912,10 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
                 Some(display) => agg.display = display,
                 None => *agg.casings.entry(term.display.clone()).or_default() += 1,
             }
+            let category = vocabulary.category(&term.key);
+            if category != ThemeCategory::Things {
+                agg.category = category;
+            }
             agg.total += 1;
             *agg.weeks.entry(week.clone()).or_default() += 1;
             *agg.folders.entry(folder.clone()).or_default() += 1;
@@ -768,6 +954,7 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
                 pinned: pins.is_pinned(&key),
                 hidden: pins.is_hidden(&key),
                 name,
+                category: agg.category,
                 total: agg.total,
                 weeks_active: agg.weeks.len(),
                 is_new: prior == 0 && recent >= NEW_SUPPORT,
@@ -784,7 +971,42 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
         .collect();
     themes.sort_by(|a, b| b.total.cmp(&a.total).then_with(|| a.id.cmp(&b.id)));
 
-    let visible = || themes.iter().filter(|theme| !theme.hidden);
+    let (rising, fresh, fading) = ranked_themes(&themes, ThemeFilters::default());
+
+    let threads = find_threads(repo, &themes);
+    let open_loops = open_loops(repo)?;
+
+    let signals = Signals {
+        generated_at: Local::now().format("%Y-%m-%d %H:%M").to_string(),
+        commit: head,
+        commits,
+        weeks,
+        themes,
+        threads,
+        open_loops,
+        rising,
+        fresh,
+        fading,
+        run_ms: started.elapsed().as_millis() as u64,
+    };
+
+    let signals_path = config.themes_path(repo, SIGNALS_NAME);
+    let json = serde_json::to_string_pretty(&signals).context("serializing signals")?;
+    std::fs::write(&signals_path, json + "\n")
+        .with_context(|| format!("writing {}", signals_path.display()))?;
+    write_themes_md(repo, &config, &signals)?;
+    Ok(signals)
+}
+
+pub fn ranked_themes(
+    themes: &[Theme],
+    filters: ThemeFilters,
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let visible = || {
+        themes
+            .iter()
+            .filter(|theme| !theme.hidden && filters.includes(theme.category))
+    };
     let mut rising: Vec<&Theme> = visible()
         .filter(|theme| {
             theme.recent >= MOMENTUM_SUPPORT && theme.momentum.is_some_and(|m| m >= RISING_MIN)
@@ -816,29 +1038,7 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
     });
     let fading: Vec<String> = fading.iter().take(LIST_LIMIT).map(|t| t.id.clone()).collect();
 
-    let threads = find_threads(repo, &themes);
-    let open_loops = open_loops(repo)?;
-
-    let signals = Signals {
-        generated_at: Local::now().format("%Y-%m-%d %H:%M").to_string(),
-        commit: head,
-        commits,
-        weeks,
-        themes,
-        threads,
-        open_loops,
-        rising,
-        fresh,
-        fading,
-        run_ms: started.elapsed().as_millis() as u64,
-    };
-
-    let signals_path = config.themes_path(repo, SIGNALS_NAME);
-    let json = serde_json::to_string_pretty(&signals).context("serializing signals")?;
-    std::fs::write(&signals_path, json + "\n")
-        .with_context(|| format!("writing {}", signals_path.display()))?;
-    write_themes_md(repo, &config, &signals)?;
-    Ok(signals)
+    (rising, fresh, fading)
 }
 
 /// Themes that live in three or more top-level folders, with a check for
@@ -1080,9 +1280,27 @@ fn write_themes_md(repo: &Path, config: &BrainConfig, signals: &Signals) -> Resu
 
 pub fn load_signals(repo: &Path, config: &BrainConfig) -> Result<Signals> {
     let path = config.themes_path(repo, SIGNALS_NAME);
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let mut signals: Signals =
+        serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    // Older caches have no category. Classify them on load, so names do not
+    // remain in the default view until the next scheduled refresh.
+    let tree: Vec<String> = git(repo, &["ls-tree", "-r", "--name-only", "HEAD"])?
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let mut vocabulary = Vocabulary::from_tree(&tree, &[], config);
+    vocabulary.read_entities(repo, &tree, config)?;
+    for theme in &mut signals.themes {
+        let category = vocabulary.category(&theme.id);
+        if category != ThemeCategory::Things {
+            theme.category = category;
+        }
+    }
+    (signals.rising, signals.fresh, signals.fading) =
+        ranked_themes(&signals.themes, ThemeFilters::default());
+    Ok(signals)
 }
 
 /// The bot-written narrative block of `themes.md`, if any.
@@ -1159,6 +1377,99 @@ pub fn file_label(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn categories_use_profiles_places_and_contextual_names() {
+        let mut vocabulary = Vocabulary::from_tree(
+            &[
+                "people/ada-lovelace.md".into(),
+                "places/new-york.md".into(),
+                "companies/acme/notes.md".into(),
+            ],
+            &[],
+            &BrainConfig::default(),
+        );
+        vocabulary.entities_from_markdown("interviews/grace-call-prep.md", "# Grace Hopper — peer call\n**Attendees:** Grace Hopper, Alan Turing (Director)\n**Location:** London\n");
+        vocabulary.entities_from_markdown(
+            "projects/strategy.md",
+            "# Cold Start Problem\n**Product Led Sales** is a topic.\n",
+        );
+        vocabulary.entities_from_markdown("meetings/lovelace-call-prep.md", "# Prep .. Augusta \"Ada\" Lovelace (Director)\nLocation: Acme\nHotel: River Inn & Suites East\n");
+        for name in [
+            "ada lovelace",
+            "augusta lovelace",
+            "grace hopper",
+            "alan turing",
+        ] {
+            assert_eq!(vocabulary.category(name), ThemeCategory::People, "{name}");
+        }
+        for name in ["new york", "london", "river inn", "suites east"] {
+            assert_eq!(vocabulary.category(name), ThemeCategory::Places, "{name}");
+        }
+        assert_eq!(
+            vocabulary.category("cold start problem"),
+            ThemeCategory::Things
+        );
+        assert_eq!(
+            vocabulary.category("product led sales"),
+            ThemeCategory::Things
+        );
+        assert_eq!(vocabulary.category("acme"), ThemeCategory::Things);
+    }
+
+    #[test]
+    fn filters_apply_before_ranking_limit_and_can_show_entities() {
+        let mut themes: Vec<Theme> = (0..12)
+            .map(|index| Theme {
+                id: format!("person {index}"),
+                category: ThemeCategory::People,
+                recent: 100,
+                prior: 10,
+                momentum: Some(30.),
+                ..Theme::default()
+            })
+            .collect();
+        themes.push(Theme {
+            id: "topic".into(),
+            recent: 10,
+            prior: 10,
+            momentum: Some(3.),
+            ..Theme::default()
+        });
+        themes.push(Theme {
+            id: "place".into(),
+            category: ThemeCategory::Places,
+            recent: 10,
+            prior: 10,
+            momentum: Some(3.),
+            ..Theme::default()
+        });
+        let (rising, _, _) = ranked_themes(&themes, ThemeFilters::default());
+        assert_eq!(rising, ["topic"]);
+        let (rising, _, _) = ranked_themes(
+            &themes,
+            ThemeFilters {
+                people: true,
+                places: false,
+                things: false,
+            },
+        );
+        assert_eq!(rising.len(), LIST_LIMIT);
+        assert!(rising.iter().all(|id| id.starts_with("person")));
+        let (rising, _, _) = ranked_themes(
+            &themes,
+            ThemeFilters {
+                people: false,
+                places: true,
+                things: false,
+            },
+        );
+        assert_eq!(rising, ["place"]);
+        assert_eq!(
+            serde_json::from_str::<ThemeFilters>("{}").unwrap(),
+            ThemeFilters::default()
+        );
+    }
 
     fn vocab() -> Vocabulary {
         Vocabulary::from_tree(

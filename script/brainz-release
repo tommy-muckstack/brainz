@@ -52,6 +52,7 @@ APP_NAME="Brainz"
 NOTARY_PROFILE="${BRAINZ_NOTARY_PROFILE:-mumbls-notary}"
 BLOB_HOST="${BRAINZ_BLOB_HOST:-https://ihvfw4x5q9iy9zx1.public.blob.vercel-storage.com}"
 BUILD_NUMBER="$(git rev-list --count HEAD)"
+RELEASE_COMMIT="$(git rev-parse HEAD)"
 DIST="$repository/target/release-dist"
 APP_DIR="$DIST/$APP_NAME.app"
 DMG_PATH="$DIST/$SLUG-$VERSION.dmg"
@@ -175,6 +176,7 @@ if ! $NO_GITHUB && command -v gh >/dev/null 2>&1; then
         gh release upload "v$VERSION" "$DMG_PATH" --repo "$GH_REPO" --clobber
     else
         gh release create "v$VERSION" "$DMG_PATH" --repo "$GH_REPO" --title "Brainz $VERSION" \
+            --target "$RELEASE_COMMIT" \
             --notes "Signed and notarized macOS build. Download the DMG, drag Brainz to Applications; the app updates itself from then on."
     fi
 fi

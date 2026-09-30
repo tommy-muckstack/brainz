@@ -3337,16 +3337,8 @@ impl Element for MarkdownElement {
                                 let use_hover = any_hover && !any_always;
 
                                 let button_row = h_flex()
+                                    .debug_selector(|| "MARKDOWN_CODE_ACTIONS".into())
                                     .gap_0p5()
-                                    .absolute()
-                                    .bg(cx.theme().colors().editor_background)
-                                    .when_else(
-                                        use_hover,
-                                        |this| {
-                                            this.top_1().right_1().visible_on_hover("code_block")
-                                        },
-                                        |this| this.top_1p5().right_1p5(),
-                                    )
                                     .when(
                                         wrap_button_visibility != WrapButtonVisibility::Hidden,
                                         |this| {
@@ -3355,11 +3347,17 @@ impl Element for MarkdownElement {
                                                 .read(cx)
                                                 .is_code_block_wrapped(range.start);
 
-                                            this.child(render_wrap_code_block_button(
-                                                range.start,
-                                                is_wrapped,
-                                                self.markdown.clone(),
-                                            ))
+                                            this.child(
+                                                div()
+                                                    .when(use_hover, |this| {
+                                                        this.visible_on_hover("code_block")
+                                                    })
+                                                    .child(render_wrap_code_block_button(
+                                                        range.start,
+                                                        is_wrapped,
+                                                        self.markdown.clone(),
+                                                    )),
+                                            )
                                         },
                                     )
                                     .when(
@@ -3369,11 +3367,12 @@ impl Element for MarkdownElement {
                                                 range.end,
                                                 code,
                                                 self.markdown.clone(),
+                                                use_hover,
                                             ))
                                         },
                                     );
 
-                                el.child(button_row)
+                                el.child(StickyTopRight::new(px(6.), button_row))
                             });
                         }
 
@@ -3733,6 +3732,7 @@ fn render_copy_code_block_button(
     id: usize,
     code: String,
     markdown: Entity<Markdown>,
+    visible_on_hover: bool,
 ) -> impl IntoElement {
     let id = ElementId::NamedChild(
         Arc::new(ElementId::from((
@@ -3742,29 +3742,8 @@ fn render_copy_code_block_button(
         id.to_string().into(),
     );
 
-    CopyButton::new(id.clone(), code.clone()).custom_on_click({
-        let markdown = markdown;
-        move |_window, cx| {
-            let id = id.clone();
-            markdown.update(cx, |this, cx| {
-                this.copied_code_blocks.insert(id.clone());
-
-                cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
-
-                cx.spawn(async move |this, cx| {
-                    cx.background_executor().timer(Duration::from_secs(2)).await;
-
-                    cx.update(|cx| {
-                        this.update(cx, |this, cx| {
-                            this.copied_code_blocks.remove(&id);
-                            cx.notify();
-                        })
-                    })
-                    .ok();
-                })
-                .detach();
-            });
-        }
+    CopyButton::new(id, code).when(visible_on_hover, |this| {
+        this.visible_on_hover("code_block")
     })
 }
 
@@ -6662,6 +6641,84 @@ mod tests {
             px(400.),
             "the table should shrink to the available width"
         );
+    }
+
+    #[gpui::test]
+    fn test_plain_text_copy_stays_visible_while_scrolling_and_after_copy(cx: &mut TestAppContext) {
+        ensure_theme_initialized(cx);
+
+        struct CopyTestView {
+            markdown: Entity<Markdown>,
+            scroll: ScrollHandle,
+        }
+
+        impl Render for CopyTestView {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(
+                    div()
+                        .id("copy-test-scroll")
+                        .w(px(500.))
+                        .h(px(240.))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .child(div().h(px(64.)))
+                        .child(
+                            MarkdownElement::new(self.markdown.clone(), MarkdownStyle::default())
+                                .code_block_renderer(CodeBlockRenderer::Default {
+                                    copy_button_visibility: CopyButtonVisibility::VisibleOnHover,
+                                    wrap_button_visibility: WrapButtonVisibility::Hidden,
+                                    border: false,
+                                }),
+                        ),
+                )
+            }
+        }
+
+        let text = (0..60)
+            .map(|line| format!("Plain text line {line}\n"))
+            .collect::<String>();
+        let source = format!("```text\n{text}```");
+        let (view, cx) = cx.add_window_view(|_, cx| CopyTestView {
+            markdown: cx.new(|cx| Markdown::new(source.into(), None, None, cx)),
+            scroll: ScrollHandle::new(),
+        });
+        cx.run_until_parked();
+        let initial = cx
+            .debug_bounds("MARKDOWN_CODE_ACTIONS")
+            .expect("copy control");
+        view.update(cx, |view, cx| {
+            view.scroll.set_offset(point(px(0.), px(-150.)));
+            cx.notify();
+        });
+        cx.run_until_parked();
+        let scrolled = cx
+            .debug_bounds("MARKDOWN_CODE_ACTIONS")
+            .expect("sticky copy control");
+        assert!(scrolled.top() < initial.top());
+        assert!(scrolled.top() >= px(0.) && scrolled.top() <= px(12.));
+
+        cx.simulate_mouse_move(scrolled.center(), None, Modifiers::default());
+        cx.simulate_click(scrolled.center(), Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|item| item.text()),
+                Some(text)
+            );
+        });
+        cx.simulate_mouse_move(point(px(700.), px(500.)), None, Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let confirmation_background =
+                gpui::Background::from(cx.theme().status().success.opacity(0.18));
+            assert!(
+                window
+                    .painted_quads()
+                    .iter()
+                    .any(|quad| quad.background == confirmation_background),
+                "Copied confirmation must remain painted after leaving the block",
+            );
+        });
     }
 
     #[test]

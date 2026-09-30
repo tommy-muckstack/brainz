@@ -6,6 +6,7 @@
 //! todo = "TODO.md"
 //! themes_dir = "themes"
 //! people_dir = "people"
+//! places_dir = "places"
 //! vocabulary_folders = ["projects", "companies"]
 //! exclude_prefixes = ["reports"]
 //! dated_exclude_dirs = ["health"]
@@ -30,6 +31,7 @@ pub struct BrainConfig {
     /// One Markdown file per person; the stems become the people vocabulary
     /// and the People chips in the Themes tab open them.
     pub people_dir: String,
+    pub places_dir: String,
     /// Folders whose child folder names become vocabulary (companies,
     /// projects, clients).
     pub vocabulary_folders: Vec<String>,
@@ -50,6 +52,7 @@ impl Default for BrainConfig {
             todo: "TODO.md".into(),
             themes_dir: "themes".into(),
             people_dir: "people".into(),
+            places_dir: "places".into(),
             vocabulary_folders: vec!["projects".into(), "companies".into()],
             exclude_prefixes: vec![],
             dated_exclude_dirs: vec![],

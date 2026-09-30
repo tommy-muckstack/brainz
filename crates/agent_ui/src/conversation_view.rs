@@ -648,6 +648,7 @@ pub struct ConversationView {
     /// Brainz: set while showing a "waiting for tool confirmation" popup so
     /// its Yes button knows which session's pending call to approve.
     notification_allow_session: Option<acp_v1::SessionId>,
+    notification_requires_response: bool,
     auth_task: Option<Task<()>>,
     loading_status: Option<SharedString>,
     /// When settings change, use this to see if the theme has changed (which
@@ -930,6 +931,7 @@ impl ConversationView {
             notifications: Vec::new(),
             notification_subscriptions: HashMap::default(),
             notification_allow_session: None,
+            notification_requires_response: false,
             auth_task: None,
             loading_status: None,
             last_theme_id: Some(cx.theme().id.clone()),
@@ -1704,12 +1706,16 @@ impl ConversationView {
             }
             AcpThreadEvent::ToolAuthorizationRequested(_) => {
                 self.notification_allow_session = Some(session_id.clone());
+                self.notification_requires_response = true;
                 self.notify_with_sound("Waiting for tool confirmation", IconName::Info, window, cx);
                 self.notification_allow_session = None;
+                self.notification_requires_response = false;
             }
             AcpThreadEvent::ToolAuthorizationReceived(_) => {}
             AcpThreadEvent::ElicitationRequested(_) => {
+                self.notification_requires_response = true;
                 self.notify_with_sound("Waiting for input", IconName::Info, window, cx);
+                self.notification_requires_response = false;
             }
             AcpThreadEvent::ElicitationResponded(_) => {}
             AcpThreadEvent::Retry(retry) => {
@@ -2981,7 +2987,11 @@ impl ConversationView {
         cx: &mut Context<Self>,
     ) {
         if !self.notifications.is_empty() {
-            return;
+            if self.notification_requires_response {
+                self.dismiss_notifications(cx);
+            } else {
+                return;
+            }
         }
 
         let settings = AgentSettings::get_global(cx);
@@ -3070,11 +3080,13 @@ impl ConversationView {
 
         let allow_session = self.notification_allow_session.clone();
         let can_allow = allow_session.is_some();
+        let requires_response = self.notification_requires_response;
         if let Some(screen_window) = cx
             .open_window(options, |_window, cx| {
-                cx.new(|_cx| {
+                cx.new(|cx| {
                     AgentNotification::new(title.clone(), Some(caption.clone()), icon, project_name)
                         .with_allow(can_allow)
+                        .auto_dismiss(requires_response, cx)
                 })
             })
             .log_err()
