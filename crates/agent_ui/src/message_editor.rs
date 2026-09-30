@@ -2189,9 +2189,10 @@ impl MessageEditor {
                     .rounded_md()
                     .cursor_pointer()
                     .map(|this| match image {
-                        // Just the picture: no tile, no border. The image keeps
-                        // its whole frame, shrinking to fit the height and a
-                        // width cap instead of being cropped.
+                        // Just the picture: no tile, no border. Every
+                        // thumbnail gets the same footprint (a fixed box) and
+                        // the image fits inside it whole, so a huge screenshot
+                        // never dwarfs a small one and nothing is cropped.
                         Some(image) => this
                             .tooltip(Tooltip::text("Open in a tab"))
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -2200,8 +2201,7 @@ impl MessageEditor {
                             .child(
                                 gpui::img(image)
                                     .h_full()
-                                    .w_auto()
-                                    .max_w(px(360.))
+                                    .w(px(140.))
                                     .rounded_md()
                                     .object_fit(gpui::ObjectFit::Contain),
                             ),
