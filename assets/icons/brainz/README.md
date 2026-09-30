@@ -1,5 +1,11 @@
 # Brainz icons
 
+The line icons here come from Untitled UI's free icon set
+(https://www.untitledui.com/free-icons), which Untitled UI also publishes as
+`@untitledui/icons` on npm and at github.com/untitleduico/icons under the MIT
+License. Copyright (c) Untitled UI. The product logos in `logos/` are the
+respective companies' marks, used only to label a user's own connectors.
+
 Put custom SVGs here. `crates/icons/src/icons.rs`, in `IconName::path`, is the
 central mapping from app icons to these files. Unmapped icons use upstream art.
 
