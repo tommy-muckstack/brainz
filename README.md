@@ -79,6 +79,21 @@ split button is a plain toggle: on splits right, off joins everything back.
 macOS remembers permission grants across rebuilds. Override it with
 `BRAINZ_SIGNING_IDENTITY`. An ad-hoc signature would prompt every build.
 
+**Another machine or another brain.** Nothing about one machine is baked
+into the code. The build script takes `BRAINZ_SIGNING_IDENTITY` (falls back
+to ad-hoc signing with a warning) and `BRAINZ_WORKSPACE` (the brain to open;
+default `~/tommy-brain`). Gellix font files are not in Git, so copy
+`assets/fonts/gellix/` over. Sign in to Claude and Codex once there; their
+config lives under `~/.config/brainz/`. The brain's layout comes from an
+optional `brainz.toml` at the brain's root, every key optional: `todo` (the
+To-Do file), `themes_dir`, `people_dir`, `vocabulary_folders`,
+`exclude_prefixes`, `dated_exclude_dirs`, and `sync`. A brain with no
+`origin` remote, or with `sync = false`, never shows the Sync banner. The
+Themes narrative is written by whatever bot you point at the prompt file in
+`themes_dir`; Brainz only renders the block. MCP connectors come from that
+machine's own Claude and Codex configs, with logos for the ones Brainz knows
+and a generic icon for the rest.
+
 An amber banner above the file tree appears when the brain and GitHub differ.
 With local edits or commits it says "N changes not on GitHub" and **Sync to
 GitHub** reviews them (no secrets, no huge files), commits, pushes a branch,

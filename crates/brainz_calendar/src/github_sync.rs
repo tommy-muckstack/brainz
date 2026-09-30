@@ -120,6 +120,13 @@ fn run(repo: &Path, program: &str, args: &[&str]) -> Result<String> {
 }
 
 fn check_status(repo: &Path, fetch: bool) -> Result<SyncStatus> {
+    // A local-only brain (no origin, or `sync = false` in brainz.toml) never
+    // gets the banner; there is nothing to sync to.
+    if !crate::brain_config::BrainConfig::load(repo).sync
+        || run(repo, "git", &["remote", "get-url", "origin"]).is_err()
+    {
+        return Ok(SyncStatus::Clean);
+    }
     if fetch {
         // Quiet and best-effort: offline just means "behind" stays stale.
         run(repo, "git", &["fetch", "--quiet", "origin", "main"]).ok();

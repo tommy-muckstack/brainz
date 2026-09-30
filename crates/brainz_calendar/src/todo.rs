@@ -9,6 +9,8 @@ use gpui::{App, EventEmitter, FocusHandle, Focusable, Task, Window, actions};
 use ui::{Tooltip, prelude::*};
 use workspace::{HideStatusItem, Item, ItemHandle, StatusItemView, Workspace};
 
+use crate::brain_config::BrainConfig;
+
 actions!(
     brainz_todo,
     [
@@ -17,7 +19,6 @@ actions!(
     ]
 );
 
-const TODO_RELATIVE_PATH: &str = "ops/desk/TODO.md";
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 pub fn init(cx: &mut App) {
@@ -147,6 +148,8 @@ fn toggle_item(path: &PathBuf, line_index: usize) -> Result<()> {
 pub struct TodoView {
     focus_handle: FocusHandle,
     path: PathBuf,
+    /// The configured path, for the error card.
+    relative: String,
     board: TodoBoard,
     error: Option<String>,
     show_done: bool,
@@ -165,12 +168,13 @@ impl TodoView {
         let Some(root) = workspace.root_paths(cx).first().map(|path| path.to_path_buf()) else {
             return;
         };
-        let path = root.join(TODO_RELATIVE_PATH);
-        let view = cx.new(|cx| TodoView::new(path, cx));
+        let relative = BrainConfig::load(&root).todo;
+        let path = root.join(&relative);
+        let view = cx.new(|cx| TodoView::new(path, relative, cx));
         workspace.add_item_to_active_pane(Box::new(view), None, true, window, cx);
     }
 
-    fn new(path: PathBuf, cx: &mut Context<Self>) -> Self {
+    fn new(path: PathBuf, relative: String, cx: &mut Context<Self>) -> Self {
         let refresh_loop = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(REFRESH_INTERVAL).await;
@@ -182,6 +186,7 @@ impl TodoView {
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             path,
+            relative,
             board: TodoBoard::default(),
             error: None,
             show_done: false,
@@ -382,7 +387,8 @@ impl Render for TodoView {
                     .child(Label::new(error.clone()))
                     .child(
                         Label::new(format!(
-                            "Brainz looks for {TODO_RELATIVE_PATH} in the open project."
+                            "Brainz looks for {} in the open project (set `todo` in brainz.toml to change it).",
+                            self.relative
                         ))
                         .size(LabelSize::Small)
                         .color(Color::Muted),

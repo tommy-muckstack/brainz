@@ -15,11 +15,12 @@ use anyhow::{Context as _, Result, bail};
 use chrono::{Datelike, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 
-pub const THEMES_DIR: &str = "ops/themes";
-pub const SIGNALS_FILE: &str = "ops/themes/signals.json";
-pub const THEMES_FILE: &str = "ops/themes/themes.md";
-pub const PINS_FILE: &str = "ops/themes/pins.md";
-pub const VOCABULARY_FILE: &str = "ops/themes/vocabulary.md";
+use crate::brain_config::BrainConfig;
+
+pub const SIGNALS_NAME: &str = "signals.json";
+pub const THEMES_NAME: &str = "themes.md";
+pub const PINS_NAME: &str = "pins.md";
+pub const VOCABULARY_NAME: &str = "vocabulary.md";
 
 pub const SERIES_WEEKS: usize = 12;
 /// A term needs this much weight over at least `MIN_WEEKS` distinct weeks to
@@ -281,7 +282,13 @@ pub struct Vocabulary {
 }
 
 impl Vocabulary {
-    pub fn from_tree(paths: &[String], acronyms: &[String]) -> Self {
+    pub fn from_tree(paths: &[String], acronyms: &[String], config: &BrainConfig) -> Self {
+        let people_prefix = format!("{}/", config.people_dir.trim_end_matches('/'));
+        let folder_prefixes: Vec<String> = config
+            .vocabulary_folders
+            .iter()
+            .map(|folder| format!("{}/", folder.trim_end_matches('/')))
+            .collect();
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
         let mut add = |stem: &str, person: bool, entries: &mut Vec<(String, String, bool)>| {
@@ -294,19 +301,15 @@ impl Vocabulary {
         };
         for path in paths {
             if let Some(stem) = path
-                .strip_prefix("network/")
+                .strip_prefix(people_prefix.as_str())
                 .and_then(|rest| rest.strip_suffix(".md"))
                 && !stem.contains('/')
                 && stem != "CLAUDE"
             {
                 add(stem, true, &mut entries);
             }
-            for prefix in [
-                "interviews/companies/",
-                "muckstack/projects/",
-                "muckstack/advisory/companies/",
-            ] {
-                if let Some(rest) = path.strip_prefix(prefix)
+            for prefix in &folder_prefixes {
+                if let Some(rest) = path.strip_prefix(prefix.as_str())
                     && let Some((folder, _)) = rest.split_once('/')
                     && folder != "archive"
                 {
@@ -456,13 +459,25 @@ pub fn extract_terms(line: &str, vocabulary: &Vocabulary) -> Vec<Term> {
     terms
 }
 
-pub fn excluded(path: &str) -> bool {
-    if path.starts_with("ops/themes/") || path.starts_with(".claude/librarian-reports/") {
+pub fn excluded(path: &str, config: &BrainConfig) -> bool {
+    let themes_prefix = format!("{}/", config.themes_dir.trim_end_matches('/'));
+    if path.starts_with(&themes_prefix) {
         return true;
     }
-    if let Some(rest) = path.strip_prefix("health/") {
-        let name = rest.rsplit('/').next().unwrap_or(rest);
-        return looks_like_date(name);
+    if config
+        .exclude_prefixes
+        .iter()
+        .any(|prefix| path.starts_with(&format!("{}/", prefix.trim_end_matches('/'))))
+    {
+        return true;
+    }
+    for dir in &config.dated_exclude_dirs {
+        if let Some(rest) = path.strip_prefix(&format!("{}/", dir.trim_end_matches('/'))) {
+            let name = rest.rsplit('/').next().unwrap_or(rest);
+            if looks_like_date(name) {
+                return true;
+            }
+        }
     }
     false
 }
@@ -627,15 +642,16 @@ fn top_weighted(map: &HashMap<String, u32>, limit: usize) -> Vec<Weighted> {
 /// output files. Returns the signals for immediate display.
 pub fn run_pass(repo: &Path) -> Result<Signals> {
     let started = Instant::now();
-    let themes_dir = repo.join(THEMES_DIR);
+    let config = BrainConfig::load(repo);
+    let themes_dir = repo.join(config.themes_dir.trim_end_matches('/'));
     std::fs::create_dir_all(&themes_dir)
         .with_context(|| format!("creating {}", themes_dir.display()))?;
-    let vocabulary_path = repo.join(VOCABULARY_FILE);
+    let vocabulary_path = config.themes_path(repo, VOCABULARY_NAME);
     if !vocabulary_path.exists() {
         std::fs::write(&vocabulary_path, default_vocabulary())
             .with_context(|| format!("writing {}", vocabulary_path.display()))?;
     }
-    let pins_path = repo.join(PINS_FILE);
+    let pins_path = config.themes_path(repo, PINS_NAME);
     if !pins_path.exists() {
         std::fs::write(&pins_path, default_pins())
             .with_context(|| format!("writing {}", pins_path.display()))?;
@@ -648,7 +664,7 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
         .lines()
         .map(str::to_owned)
         .collect();
-    let vocabulary = Vocabulary::from_tree(&tree, &acronyms);
+    let vocabulary = Vocabulary::from_tree(&tree, &acronyms, &config);
 
     let log = git(
         repo,
@@ -680,7 +696,7 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
         }
         if let Some(file) = line.strip_prefix("+++ ") {
             let file = file.strip_prefix("b/").unwrap_or(file);
-            path = (file != "/dev/null" && file.ends_with(".md") && !excluded(file))
+            path = (file != "/dev/null" && file.ends_with(".md") && !excluded(file, &config))
                 .then(|| file.to_owned());
             continue;
         }
@@ -811,11 +827,11 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
         run_ms: started.elapsed().as_millis() as u64,
     };
 
-    let signals_path = repo.join(SIGNALS_FILE);
+    let signals_path = config.themes_path(repo, SIGNALS_NAME);
     let json = serde_json::to_string_pretty(&signals).context("serializing signals")?;
     std::fs::write(&signals_path, json + "\n")
         .with_context(|| format!("writing {}", signals_path.display()))?;
-    write_themes_md(repo, &signals)?;
+    write_themes_md(repo, &config, &signals)?;
     Ok(signals)
 }
 
@@ -1031,8 +1047,8 @@ fn render_generated(signals: &Signals) -> String {
     out
 }
 
-fn write_themes_md(repo: &Path, signals: &Signals) -> Result<()> {
-    let path = repo.join(THEMES_FILE);
+fn write_themes_md(repo: &Path, config: &BrainConfig, signals: &Signals) -> Result<()> {
+    let path = config.themes_path(repo, THEMES_NAME);
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let narrative = existing
         .split_once(NARRATIVE_START)
@@ -1056,16 +1072,16 @@ fn write_themes_md(repo: &Path, signals: &Signals) -> Result<()> {
     Ok(())
 }
 
-pub fn load_signals(repo: &Path) -> Result<Signals> {
-    let path = repo.join(SIGNALS_FILE);
+pub fn load_signals(repo: &Path, config: &BrainConfig) -> Result<Signals> {
+    let path = config.themes_path(repo, SIGNALS_NAME);
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("reading {}", path.display()))?;
     serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
 /// The Grokbot-written block of `themes.md`, if any.
-pub fn load_narrative(repo: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(repo.join(THEMES_FILE)).ok()?;
+pub fn load_narrative(repo: &Path, config: &BrainConfig) -> Option<String> {
+    let text = std::fs::read_to_string(config.themes_path(repo, THEMES_NAME)).ok()?;
     let (_, rest) = text.split_once(NARRATIVE_START)?;
     let (narrative, _) = rest.split_once(NARRATIVE_END)?;
     let narrative = narrative.trim();
@@ -1073,12 +1089,12 @@ pub fn load_narrative(repo: &Path) -> Option<String> {
 }
 
 /// Appends one curation line to `pins.md` (creating the file if needed).
-pub fn append_pin(repo: &Path, line: &str) -> Result<()> {
-    let path = repo.join(PINS_FILE);
+pub fn append_pin(repo: &Path, config: &BrainConfig, line: &str) -> Result<()> {
+    let path = config.themes_path(repo, PINS_NAME);
     let mut text = if path.exists() {
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?
     } else {
-        std::fs::create_dir_all(repo.join(THEMES_DIR))?;
+        std::fs::create_dir_all(repo.join(config.themes_dir.trim_end_matches('/')))?;
         default_pins()
     };
     if !text.ends_with('\n') {
@@ -1091,8 +1107,8 @@ pub fn append_pin(repo: &Path, line: &str) -> Result<()> {
 }
 
 /// Drops a `- pin: x` line so unpinning is symmetrical with pinning.
-pub fn remove_pin_line(repo: &Path, line: &str) -> Result<()> {
-    let path = repo.join(PINS_FILE);
+pub fn remove_pin_line(repo: &Path, config: &BrainConfig, line: &str) -> Result<()> {
+    let path = config.themes_path(repo, PINS_NAME);
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(());
     };
@@ -1104,13 +1120,19 @@ pub fn remove_pin_line(repo: &Path, line: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn signals_age(repo: &Path) -> Option<std::time::Duration> {
-    let modified = std::fs::metadata(repo.join(SIGNALS_FILE)).ok()?.modified().ok()?;
+pub fn signals_age(repo: &Path, config: &BrainConfig) -> Option<std::time::Duration> {
+    let modified = std::fs::metadata(config.themes_path(repo, SIGNALS_NAME))
+        .ok()?
+        .modified()
+        .ok()?;
     modified.elapsed().ok()
 }
 
-pub fn themes_md_modified(repo: &Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(repo.join(THEMES_FILE)).ok()?.modified().ok()
+pub fn themes_md_modified(repo: &Path, config: &BrainConfig) -> Option<std::time::SystemTime> {
+    std::fs::metadata(config.themes_path(repo, THEMES_NAME))
+        .ok()?
+        .modified()
+        .ok()
 }
 
 pub fn repo_path(repo: &Path, relative: &str) -> PathBuf {
@@ -1142,6 +1164,7 @@ mod tests {
                 "muckstack/projects/Course-and-Cloth/CLAUDE.md".into(),
             ],
             &["PLS".into(), "MCP".into()],
+            &BrainConfig::default(),
         )
     }
 
@@ -1233,12 +1256,22 @@ mod tests {
 
     #[test]
     fn exclusions_cover_themes_reports_and_dated_health_files() {
-        assert!(excluded("ops/themes/signals.json"));
-        assert!(excluded(".claude/librarian-reports/2026-09-21.md"));
-        assert!(excluded("health/2026-09-21.md"));
-        assert!(excluded("health/whoop/sleep-2026-09-21.md"));
-        assert!(!excluded("health/rolling-summary.md"));
-        assert!(!excluded("ops/desk/TODO.md"));
+        let config = BrainConfig::default();
+        assert!(excluded("ops/themes/signals.json", &config));
+        assert!(excluded(".claude/librarian-reports/2026-09-21.md", &config));
+        assert!(excluded("health/2026-09-21.md", &config));
+        assert!(excluded("health/whoop/sleep-2026-09-21.md", &config));
+        assert!(!excluded("health/rolling-summary.md", &config));
+        assert!(!excluded("ops/desk/TODO.md", &config));
+        let custom = BrainConfig {
+            themes_dir: "meta/themes".into(),
+            exclude_prefixes: vec!["archive".into()],
+            dated_exclude_dirs: vec![],
+            ..BrainConfig::default()
+        };
+        assert!(excluded("meta/themes/signals.json", &custom));
+        assert!(excluded("archive/old.md", &custom));
+        assert!(!excluded("health/2026-09-21.md", &custom));
     }
 
     #[test]
