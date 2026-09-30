@@ -912,15 +912,6 @@ impl Item for ThemesView {
 
 impl Render for ThemesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let status: Option<String> = self.signals.as_ref().map(|signals| {
-            format!(
-                "Ran {} on {} · {} commits · {} themes",
-                signals.generated_at,
-                signals.commit,
-                signals.commits,
-                signals.themes.iter().filter(|theme| !theme.hidden).count()
-            )
-        });
         let header = h_flex()
             .w_full()
             .items_center()
@@ -929,14 +920,7 @@ impl Render for ThemesView {
                 h_flex()
                     .gap_2()
                     .child(Icon::new(IconName::BrainzTheme).color(Color::Accent))
-                    .child(Label::new("Themes").size(LabelSize::Large))
-                    .when_some(status, |this, status| {
-                        this.child(
-                            Label::new(status)
-                                .size(LabelSize::Small)
-                                .color(Color::Muted),
-                        )
-                    }),
+                    .child(Label::new("Themes").size(LabelSize::Large)),
             )
             .child(
                 h_flex()
