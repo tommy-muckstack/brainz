@@ -38,6 +38,7 @@ pub struct ThreadItem {
     icon: IconName,
     icon_char: Option<SharedString>,
     icon_color: Option<Color>,
+    color_swatch: Option<Hsla>,
     icon_visible: bool,
     custom_icon_from_external_svg: Option<SharedString>,
     title: SharedString,
@@ -73,6 +74,7 @@ impl ThreadItem {
             icon: IconName::ZedAgent,
             icon_char: None,
             icon_color: None,
+            color_swatch: None,
             icon_visible: true,
             custom_icon_from_external_svg: None,
             title: title.into(),
@@ -121,6 +123,12 @@ impl ThreadItem {
 
     pub fn icon_color(mut self, color: Color) -> Self {
         self.icon_color = Some(color);
+        self
+    }
+
+    /// Shows the chat's color in place of its provider icon.
+    pub fn color_swatch(mut self, color: Hsla) -> Self {
+        self.color_swatch = Some(color);
         self
     }
 
@@ -293,7 +301,9 @@ impl RenderOnce for ThreadItem {
                 .when(!icon_visible, |this| this.invisible())
         };
         let icon_color = self.icon_color.unwrap_or(Color::Muted);
-        let agent_icon = if let Some(icon_char) = self.icon_char {
+        let agent_icon = if let Some(color) = self.color_swatch {
+            div().size_3().rounded_sm().bg(color).into_any_element()
+        } else if let Some(icon_char) = self.icon_char {
             Label::new(icon_char)
                 .size(LabelSize::Small)
                 .color(icon_color)

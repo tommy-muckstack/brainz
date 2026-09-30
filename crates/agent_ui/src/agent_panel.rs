@@ -93,9 +93,9 @@ use terminal_view::TerminalView;
 use text::OffsetRangeExt;
 use theme_settings::ThemeSettings;
 use ui::{
-    ButtonLike, ButtonSize, ContextMenu, ContextMenuEntry, GradientFade, IconButton, KeyBinding,
-    PopoverMenu, PopoverMenuHandle, ProjectEmptyState, Tab, TabBar, TabPosition, Tooltip,
-    prelude::*, right_click_menu, utils::WithRemSize,
+    ButtonLike, ContextMenu, ContextMenuEntry, GradientFade, IconButton, KeyBinding, PopoverMenu,
+    PopoverMenuHandle, ProjectEmptyState, Tab, TabBar, TabPosition, Tooltip, prelude::*,
+    right_click_menu, utils::WithRemSize,
 };
 use util::ResultExt as _;
 use workspace::{
@@ -2856,7 +2856,10 @@ impl AgentPanel {
         });
         let title = title.clone();
         let Ok(screen_window) = cx.open_window(options, |_window, cx| {
-            cx.new(|_cx| AgentNotification::new(title, None, IconName::Terminal, project_name))
+            cx.new(|cx| {
+                AgentNotification::new(title, None, IconName::Terminal, project_name)
+                    .auto_dismiss(false, cx)
+            })
         }) else {
             return;
         };
@@ -6653,7 +6656,7 @@ impl AgentPanel {
         }
     }
 
-    /// Publishes thread colours so message bubbles can match their tab.
+    /// Publishes thread colours so messages and thread lists match their tab.
     fn sync_thread_colors(&self, cx: &mut App) {
         let colors = self
             .tab_colors
@@ -6826,7 +6829,9 @@ impl AgentPanel {
             return;
         };
         let was_active = self.active_panel_tab(cx) == Some(tab);
-        self.forget_panel_tab(tab, cx);
+        // Closing a tab keeps the conversation and its color in the sidebar.
+        self.panel_tabs.retain(|existing| *existing != tab);
+        self.persist_panel_tabs(cx);
         match tab {
             PanelTab::Thread(thread_id) => {
                 // Free the memory; the conversation stays in the sidebar.
@@ -7174,12 +7179,15 @@ impl AgentPanel {
                     })
                     .into_any_element(),
             };
-            // Clicking the swatch (or the agent icon) opens the colour picker.
+            let swatch_size = IconSize::Small.square(window, cx).max(px(22.));
             let swatch = PopoverMenu::new(("brainz-panel-tab-color", ix))
-                .trigger(
+                .trigger_with_tooltip(
                     ButtonLike::new(("brainz-panel-tab-swatch", ix))
-                        .size(ButtonSize::None)
+                        .width(swatch_size)
+                        .height(swatch_size.into())
+                        .aria_label("Change chat color")
                         .child(swatch_icon),
+                    Tooltip::text("Change chat color"),
                 )
                 .anchor(Anchor::TopLeft)
                 .menu(move |window, cx| {
@@ -7189,6 +7197,7 @@ impl AgentPanel {
                 .position(position)
                 .toggle_state(selected)
                 .start_slot(swatch)
+                .start_slot_width(swatch_size)
                 .end_slot(
                     IconButton::new(("brainz-panel-tab-close", ix), IconName::Close)
                         .icon_size(IconSize::XSmall)

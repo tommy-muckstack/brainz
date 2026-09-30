@@ -21,7 +21,7 @@ use workspace::{
 
 use crate::{
     brain_config::BrainConfig,
-    themes_signals::{self as signals, Signals, Theme},
+    themes_signals::{self as signals, Signals, Theme, ThemeCategory, ThemeFilters},
 };
 
 actions!(
@@ -38,6 +38,34 @@ const DISK_POLL: Duration = Duration::from_secs(10);
 const DAILY_CHECK: Duration = Duration::from_secs(30 * 60);
 const DAILY_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const PICKER_LIMIT: usize = 30;
+
+fn load_filters() -> ThemeFilters {
+    let path = paths::config_dir().join("themes-filters.json");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(filters) => filters,
+            Err(error) => {
+                log::error!("invalid theme filters: {error}");
+                ThemeFilters::default()
+            }
+        },
+        Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::error!("reading theme filters: {error}");
+            }
+            ThemeFilters::default()
+        }
+    }
+}
+
+fn save_filters(filters: ThemeFilters) -> anyhow::Result<()> {
+    std::fs::create_dir_all(paths::config_dir())?;
+    std::fs::write(
+        paths::config_dir().join("themes-filters.json"),
+        serde_json::to_vec_pretty(&filters)?,
+    )?;
+    Ok(())
+}
 
 pub fn init(cx: &mut App) {
     let global_runner = cx.new(ThemesRunner::new);
@@ -182,6 +210,7 @@ pub struct ThemesView {
     has_repo: bool,
     config: BrainConfig,
     signals: Option<Signals>,
+    filters: ThemeFilters,
     error: Option<String>,
     themes_md_modified: Option<SystemTime>,
     expanded: HashSet<String>,
@@ -220,7 +249,9 @@ impl ThemesView {
             cx.observe(&runner, |this, runner, cx| {
                 if !runner.read(cx).is_running() {
                     this.error = runner.read(cx).last_error.clone();
-                    this.reload(cx);
+                    if this.error.is_none() {
+                        this.reload(cx);
+                    }
                 }
                 cx.notify();
             })
@@ -252,6 +283,7 @@ impl ThemesView {
             has_repo,
             config,
             signals: None,
+            filters: load_filters(),
             error: None,
             expanded: HashSet::new(),
             renaming: None,
@@ -449,7 +481,58 @@ impl ThemesView {
         self.open_relative(&relative, window, cx);
     }
 
-    fn render_run_button(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_filters(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.weak_entity();
+        let filters = self.filters;
+        PopoverMenu::new("brainz-themes-filters")
+            .trigger_with_tooltip(
+                IconButton::new("brainz-themes-filter-toggle", IconName::BrainzSliders)
+                    .icon_size(IconSize::Small)
+                    .aria_label("Filter themes")
+                    .icon_color(if filters == ThemeFilters::default() {
+                        Color::Muted
+                    } else {
+                        Color::Accent
+                    }),
+                Tooltip::text("Filter themes"),
+            )
+            .anchor(gpui::Anchor::TopRight)
+            .menu(move |window, cx| {
+                let view = view.clone();
+                Some(ContextMenu::build(window, cx, move |menu, _, _| {
+                    let mut menu = menu.header("Show in Themes");
+                    for (label, category) in [
+                        ("People", ThemeCategory::People),
+                        ("Places", ThemeCategory::Places),
+                        ("Things", ThemeCategory::Things),
+                    ] {
+                        let view = view.clone();
+                        menu = menu.toggleable_entry(
+                            label,
+                            filters.includes(category),
+                            IconPosition::Start,
+                            None,
+                            move |_, cx| {
+                                if let Some(view) = view.upgrade() {
+                                    view.update(cx, |view, cx| {
+                                        view.filters.toggle(category);
+                                        if let Err(error) = save_filters(view.filters) {
+                                            view.error = Some(format!(
+                                                "Could not save theme filters: {error:#}"
+                                            ));
+                                        }
+                                        cx.notify();
+                                    });
+                                }
+                            },
+                        );
+                    }
+                    menu
+                }))
+            })
+    }
+
+    fn render_sync_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let running = runner(cx).is_some_and(|runner| runner.read(cx).is_running());
         let amber = cx.theme().colors().text_accent;
         if running {
@@ -463,12 +546,10 @@ impl ThemesView {
                 .child(ui::bouncing_dots("brainz-themes-running", amber))
                 .into_any_element()
         } else {
-            Button::new("brainz-themes-run", "Run now")
-                .style(ButtonStyle::Filled)
-                .label_size(LabelSize::Small)
-                .tooltip(Tooltip::text(
-                    "Recompute themes from the brain's git history (a few seconds)",
-                ))
+            IconButton::new("brainz-themes-refresh", IconName::ArrowCircle)
+                .icon_size(IconSize::Small)
+                .aria_label("Sync themes")
+                .tooltip(Tooltip::text("Sync themes from the brain's git history"))
                 .on_click(cx.listener(|this, _, _, cx| this.run_now(cx)))
                 .into_any_element()
         }
@@ -749,7 +830,7 @@ impl ThemesView {
         let themes: Vec<Theme> = ids
             .iter()
             .filter_map(|id| self.theme(id).cloned())
-            .filter(|theme| !theme.hidden)
+            .filter(|theme| !theme.hidden && self.filters.includes(theme.category))
             .collect();
         let mut block = v_flex()
             .w_full()
@@ -812,13 +893,10 @@ impl Render for ThemesView {
             .child(
                 h_flex()
                     .gap_2()
-                    .when(self.has_repo, |this| this.child(self.render_run_button(cx)))
-                    .child(
-                        IconButton::new("brainz-themes-refresh", IconName::ArrowCircle)
-                            .icon_size(IconSize::Small)
-                            .tooltip(Tooltip::text("Reload from disk"))
-                            .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
-                    ),
+                    .child(self.render_filters(cx))
+                    .when(self.has_repo, |this| {
+                        this.child(self.render_sync_button(cx))
+                    }),
             );
 
         let mut body: Vec<AnyElement> = Vec::new();
@@ -875,7 +953,7 @@ impl Render for ThemesView {
                     .child(Label::new(error.clone()))
                     .child(
                         Label::new(format!(
-                            "Run now computes {} from the brain's git history.",
+                            "Sync computes {} from the brain's git history.",
                             self.config.themes_file(signals::SIGNALS_NAME)
                         ))
                         .size(LabelSize::Small)
@@ -888,7 +966,9 @@ impl Render for ThemesView {
             let pinned: Vec<String> = signals
                 .themes
                 .iter()
-                .filter(|theme| theme.pinned)
+                .filter(|theme| {
+                    theme.pinned && !theme.hidden && self.filters.includes(theme.category)
+                })
                 .map(|theme| theme.id.clone())
                 .collect();
             // Two lists side by side so Rising and Fading read together
@@ -902,9 +982,10 @@ impl Render for ThemesView {
                     .child(div().flex_1().min_w_0().child(right))
                     .into_any_element()
             };
+            let (rising, _, fading) = signals::ranked_themes(&signals.themes, self.filters);
             body.push(pair(
-                self.render_theme_list("Rising", &signals.rising, 0, window, cx),
-                self.render_theme_list("Fading", &signals.fading, 2000, window, cx),
+                self.render_theme_list("Rising", &rising, 0, window, cx),
+                self.render_theme_list("Fading", &fading, 2000, window, cx),
             ));
             if !pinned.is_empty() {
                 body.push(self.render_theme_list("Pinned", &pinned, 3000, window, cx));

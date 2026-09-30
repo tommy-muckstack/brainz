@@ -838,8 +838,7 @@ impl ThreadView {
                 session_capabilities.clone(),
                 agent_id.clone(),
                 &placeholder,
-                // Brainz: one line until the composer gets focus (see
-                // `sync_editor_mode`).
+                // Keep the initial size consistent with `sync_editor_mode`.
                 editor::EditorMode::AutoHeight {
                     min_lines: 1,
                     max_lines: Some(BRAINZ_COMPOSER_MAX_LINES),
@@ -4376,8 +4375,6 @@ impl ThreadView {
         let options_customized = self.composer_options_customized(cx);
 
         let max_content_width = AgentSettings::get_global(cx).max_content_width;
-        let has_messages = self.list_state.item_count() > 0;
-        let fills_container = !has_messages || editor_expanded;
         // Brainz: the card outlines in amber while there is a draft in it.
         let has_draft = !self.message_editor.read(cx).is_empty(cx);
 
@@ -4392,20 +4389,15 @@ impl ThreadView {
             .bg(cx.theme().colors().panel_background)
             .justify_center()
             .on_action(cx.listener(Self::handle_message_editor_move_up))
-            .map(|this| {
-                if has_messages {
-                    this.on_action(cx.listener(Self::expand_message_editor))
-                        .when(editor_expanded, |this| this.h(vh(0.8, window)))
-                } else {
-                    this.flex_1().size_full()
-                }
-            })
+            .flex_none()
+            .on_action(cx.listener(Self::expand_message_editor))
+            .when(editor_expanded, |this| this.h(vh(0.8, window)))
             .child(
                 v_flex()
                     .when_some(max_content_width, |this, max_w| this.flex_basis(max_w))
                     .when(max_content_width.is_none(), |this| this.w_full())
                     .min_w_0()
-                    .when(fills_container, |this| this.h_full())
+                    .when(editor_expanded, |this| this.h_full())
                     .px_3()
                     .pt_3p5()
                     .pb_2p5()
@@ -4427,7 +4419,7 @@ impl ThreadView {
                             .relative()
                             .w_full()
                             .min_h_0()
-                            .when(fills_container, |this| this.flex_1())
+                            .when(editor_expanded, |this| this.flex_1())
                             .px_1()
                             .child(self.message_editor.clone()),
                     )
@@ -5457,6 +5449,7 @@ impl ThreadView {
             } else {
                 IconName::Send
             };
+            let thread_view = cx.weak_entity();
             IconButton::new("send-message", send_icon)
                 .style(ButtonStyle::Filled)
                 .map(|this| {
@@ -5466,11 +5459,12 @@ impl ThreadView {
                         this.icon_color(Color::Accent)
                     }
                 })
-                .tooltip(move |_window, cx| {
+                .hoverable_tooltip(move |_window, cx| {
                     if is_editor_empty && !is_generating {
                         Tooltip::for_action("Type to Send", &Chat, cx)
                     } else if is_generating {
                         let focus_handle = focus_handle.clone();
+                        let thread_view = thread_view.clone();
 
                         Tooltip::element(move |_window, cx| {
                             v_flex()
@@ -5483,18 +5477,29 @@ impl ThreadView {
                                         .child(KeyBinding::for_action_in(&Chat, &focus_handle, cx)),
                                 )
                                 .child(
-                                    h_flex()
+                                    div()
                                         .pt_1()
-                                        .gap_2()
-                                        .justify_between()
                                         .border_t_1()
                                         .border_color(cx.theme().colors().border_variant)
-                                        .child(Label::new("Send Immediately"))
-                                        .child(KeyBinding::for_action_in(
-                                            &SendImmediately,
-                                            &focus_handle,
-                                            cx,
-                                        )),
+                                        .child(
+                                            Button::new("send-immediately", "Send Immediately")
+                                                .full_width()
+                                                .key_binding(KeyBinding::for_action_in(
+                                                    &SendImmediately,
+                                                    &focus_handle,
+                                                    cx,
+                                                ))
+                                                .on_click({
+                                                    let thread_view = thread_view.clone();
+                                                    move |_, window, cx| {
+                                                        thread_view
+                                                            .update(cx, |this, cx| {
+                                                                this.interrupt_and_send(window, cx);
+                                                            })
+                                                            .log_err();
+                                                    }
+                                                }),
+                                        ),
                                 )
                                 .into_any_element()
                         })(_window, cx)
@@ -6679,7 +6684,8 @@ impl ThreadView {
                                 .id(("brainz-agent-bubble", entry_ix))
                                 .group("brainz-agent-bubble")
                                 .relative()
-                                .max_w_3_4()
+                                .w_3_4()
+                                .min_w_0()
                                 .py_3()
                                 .pl_3()
                                 // Room on the right so the copy button never
@@ -7772,10 +7778,7 @@ impl ThreadView {
     }
 
     pub(crate) fn sync_editor_mode(&mut self, cx: &mut Context<Self>) {
-        let has_messages = self.list_state.item_count() > 0;
-        let v2_empty_state = !has_messages;
-
-        if !has_messages {
+        if self.list_state.item_count() == 0 {
             self.editor_expanded = false;
         }
 
@@ -7784,12 +7787,6 @@ impl ThreadView {
                 scale_ui_elements_with_buffer_font_size: false,
                 show_active_line_background: false,
                 sizing_behavior: SizingBehavior::ExcludeOverscrollMargin,
-            }
-        } else if v2_empty_state {
-            EditorMode::Full {
-                scale_ui_elements_with_buffer_font_size: false,
-                show_active_line_background: false,
-                sizing_behavior: SizingBehavior::Default,
             }
         } else {
             // Brainz: one line tall whether focused or not; it grows only as
@@ -12866,14 +12863,14 @@ impl Render for ThreadView {
         let list_state = self.list_state.clone();
 
         let conversation = v_flex()
+            .flex_1()
+            .size_full()
             .when(self.resumed_without_history, |this| {
                 this.child(Self::render_resume_notice(cx))
             })
             .map(|this| {
                 if has_messages {
-                    this.flex_1()
-                        .size_full()
-                        .child(self.render_entries(cx))
+                    this.child(self.render_entries(cx))
                         .vertical_scrollbar_for(&list_state, window, cx)
                         .into_any()
                 } else {

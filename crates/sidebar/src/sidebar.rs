@@ -840,6 +840,8 @@ impl Sidebar {
             .detach();
 
         AgentThreadWorktreeLabelFlag::watch(cx);
+        cx.observe_global::<agent_ui::BrainzThreadColors>(|_, cx| cx.notify())
+            .detach();
 
         let mut previous_default_width =
             AgentSettings::get_global(cx).threads_sidebar.default_width;
@@ -6360,6 +6362,11 @@ impl Sidebar {
         let thread_item = ThreadItem::new(id, title.clone())
             .base_bg(sidebar_bg)
             .icon(icon)
+            .when_some(
+                cx.try_global::<agent_ui::BrainzThreadColors>()
+                    .and_then(|colors| colors.0.get(&thread.metadata.thread_id).copied()),
+                |this, color| this.color_swatch(color),
+            )
             .when(is_draft, |this| {
                 this.icon_color(Color::Custom(cx.theme().colors().icon_muted.opacity(0.2)))
             })
