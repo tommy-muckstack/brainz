@@ -5598,7 +5598,10 @@ impl ThreadView {
         };
         const SIZE: f32 = 16.;
         const KNOB: f32 = 7.;
-        const TRACK_H: f32 = 2.;
+        // The "+" and send icons are 24-grid SVGs with a 2px stroke drawn at
+        // 16px, so their lines land at ~1.33px; match that weight here.
+        const STROKE: f32 = 1.35;
+        const TRACK_H: f32 = STROKE;
         let travel = SIZE - KNOB;
         let row = |top: f32, knob_from: f32, knob_to: f32, id: &'static str| {
             div()
@@ -5623,7 +5626,7 @@ impl ThreadView {
                         .top_0()
                         .size(px(KNOB))
                         .rounded_full()
-                        .border_2()
+                        .border(px(STROKE))
                         .border_color(color)
                         .bg(cx.theme().colors().editor_background)
                         .with_animation(
