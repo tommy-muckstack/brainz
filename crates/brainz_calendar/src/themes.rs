@@ -11,8 +11,8 @@ use std::{
 
 use editor::Editor;
 use gpui::{
-    App, Entity, EventEmitter, FocusHandle, Focusable, Global, Subscription, Task, WeakEntity,
-    Window, actions,
+    App, Entity, EventEmitter, FocusHandle, Focusable, Global, PathBuilder, Subscription, Task,
+    WeakEntity, Window, actions, canvas, point,
 };
 use ui::{ContextMenu, Disclosure, PopoverMenu, Tooltip, prelude::*};
 use workspace::{
@@ -38,6 +38,43 @@ const DISK_POLL: Duration = Duration::from_secs(10);
 const DAILY_CHECK: Duration = Duration::from_secs(30 * 60);
 const DAILY_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const PICKER_LIMIT: usize = 30;
+
+fn trend_line(series: &[u32]) -> impl IntoElement {
+    let series = series.to_vec();
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, cx| {
+            let maximum = series.iter().copied().max().unwrap_or(0).max(1) as f32;
+            let count = series.len().max(2);
+            let width = (bounds.size.width - px(4.)).max(px(0.));
+            let height = (bounds.size.height - px(4.)).max(px(0.));
+            let mut path = PathBuilder::stroke(px(1.5));
+            for index in 0..count {
+                let value = series
+                    .get(index)
+                    .or_else(|| series.last())
+                    .copied()
+                    .unwrap_or(0);
+                let position = point(
+                    bounds.left() + px(2.) + width * (index as f32 / (count - 1) as f32),
+                    bounds.bottom() - px(2.) - height * (value as f32 / maximum),
+                );
+                if index == 0 {
+                    path.move_to(position);
+                } else {
+                    path.line_to(position);
+                }
+            }
+            match path.build() {
+                Ok(path) => window.paint_path(path, cx.theme().colors().text_accent),
+                Err(error) => log::error!("Could not draw theme trend line: {error}"),
+            }
+        },
+    )
+    .w(px(112.))
+    .h(px(24.))
+    .flex_shrink_0()
+}
 
 fn load_filters() -> ThemeFilters {
     let path = paths::config_dir().join("themes-filters.json");
@@ -631,12 +668,14 @@ impl ThemesView {
                     }
                 })),
             )
-            .child(div().min_w(px(110.)).max_w(px(180.)).overflow_hidden().child(name))
             .child(
-                Label::new(signals::sparkline(&theme.series))
-                    .buffer_font(cx)
-                    .color(Color::Accent),
+                div()
+                    .min_w(px(110.))
+                    .max_w(px(180.))
+                    .overflow_hidden()
+                    .child(name),
             )
+            .child(trend_line(&theme.series))
             .child(
                 Label::new(momentum)
                     .size(LabelSize::XSmall)

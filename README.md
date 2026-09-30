@@ -40,6 +40,9 @@ character grid. The message box starts one line tall, including in a new chat,
 and grows as you type.
 Paste or attach multiple screenshots to collect them in one horizontally scrollable
 thumbnail strip above the text before you send.
+Pasted Google Doc links become clickable title pills in the composer and sent
+messages. Titles load in the background; unavailable titles stay labeled Google
+Doc, and the original link is preserved for the agent and browser.
 
 The calendar button in the status bar (bottom left) opens a **Calendar** tab
 with the next seven days, read from every account macOS Calendar knows about.
@@ -76,7 +79,7 @@ brain has been about, computed from its git history. **Sync** (or a daily
 run while Brainz is open) walks every commit, takes the added lines of `.md`
 files, and turns bold spans, wiki links, the names of people and companies
 in the repo, and capitalized phrases into weighted themes with a 12-week
-sparkline and momentum. The tab shows Rising, Fading, and Pinned themes.
+line chart and momentum. The tab shows Rising, Fading, and Pinned themes.
 The sliders button to the left of Sync filters People, Places, and Things;
 only Things (topics, projects, and organizations) are shown by default.
 People and places are identified from their configured folders and labeled
