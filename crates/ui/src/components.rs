@@ -1,6 +1,8 @@
 mod ai;
 mod avatar;
 mod banner;
+mod brainz_dots;
+mod brainz_sticky;
 mod button;
 mod callout;
 mod chip;
@@ -44,6 +46,8 @@ mod tree_view_item;
 pub use ai::*;
 pub use avatar::*;
 pub use banner::*;
+pub use brainz_dots::*;
+pub use brainz_sticky::*;
 pub use button::*;
 pub use callout::*;
 pub use chip::*;

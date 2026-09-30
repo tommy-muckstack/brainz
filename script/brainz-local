@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Optional per-machine settings: BRAINZ_SIGNING_IDENTITY, BRAINZ_WORKSPACE.
+if [[ -f "$(dirname "$0")/brainz-local.env" ]]; then
+    # shellcheck disable=SC1091
+    source "$(dirname "$0")/brainz-local.env"
+fi
+export PATH="${HOME}/.cargo/bin:${PATH}"
+if ! xcrun clang --version >/dev/null 2>&1 && [[ -d /Library/Developer/CommandLineTools ]]; then
+    export DEVELOPER_DIR=/Library/Developer/CommandLineTools
+fi
+export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+
+repository=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repository"
+
+if [[ "${1:-}" != "--no-build" ]]; then
+    "${HOME}/.cargo/bin/cargo" +1.98.1 build --locked -p zed --bin brainz --features util/debug-embed,gpui_platform/runtime_shaders
+fi
+
+application="${BRAINZ_APP_DIR:-${HOME}/Applications/Brainz.app}"
+python3 - "$repository" "$application" <<'PY'
+from pathlib import Path
+import plistlib
+import shutil
+import sys
+
+repository = Path(sys.argv[1])
+application = Path(sys.argv[2])
+contents = application / 'Contents'
+executables = contents / 'MacOS'
+resources = contents / 'Resources'
+executables.mkdir(parents=True, exist_ok=True)
+resources.mkdir(parents=True, exist_ok=True)
+configuration = Path.home() / '.config/brainz'
+configuration.mkdir(parents=True, exist_ok=True)
+settings = configuration / 'settings.json'
+if not settings.exists():
+    shutil.copy2(repository / 'assets/settings/initial_user_settings.json', settings)
+themes = configuration / 'themes'
+themes.mkdir(parents=True, exist_ok=True)
+if not (themes / 'brainz.json').exists():
+    shutil.copy2(repository / 'assets/themes/brainz/brainz.json', themes / 'brainz.json')
+shutil.copytree(repository / 'assets/brainz/shell', resources / 'shell', dirs_exist_ok=True)
+# Replace the inode so a running Brainz process can keep its existing executable.
+staged_binary = executables / 'brainz.next'
+shutil.copy2(repository / 'target/debug/brainz', staged_binary)
+staged_binary.replace(executables / 'brainz')
+metadata = {
+    'CFBundleName': 'Brainz',
+    'CFBundleDisplayName': 'Brainz',
+    'CFBundleExecutable': 'brainz',
+    'CFBundleIdentifier': 'app.brainz.desktop',
+    'CFBundlePackageType': 'APPL',
+    'CFBundleShortVersionString': '0.1.0',
+    'CFBundleVersion': '1',
+    'CFBundleIconFile': 'Brainz',
+    'LSMinimumSystemVersion': '10.15.7',
+    'NSHighResolutionCapable': True,
+    'NSPrincipalClass': 'NSApplication',
+    'NSHumanReadableCopyright': 'Brainz is a personal fork of Zed, licensed under GPL-3.0-or-later.',
+    'NSCalendarsFullAccessUsageDescription': 'Brainz shows your next seven days in the Calendar tab.',
+}
+with (contents / 'Info.plist').open('wb') as output:
+    plistlib.dump(metadata, output)
+PY
+
+# Calendar helper (EventKit). Its embedded Info.plist carries the usage string
+# so macOS attributes the Calendar permission prompt to Brainz.
+helper_plist="$repository/target/brainz-calendar-info.plist"
+cat > "$helper_plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>app.brainz.desktop.calendar</string>
+<key>CFBundleName</key><string>brainz-calendar</string>
+<key>NSCalendarsFullAccessUsageDescription</key><string>Brainz shows your next seven days in the Calendar tab.</string>
+</dict></plist>
+PLIST
+if [[ ! -x "$repository/target/brainz-calendar" || "script/brainz-calendar.swift" -nt "$repository/target/brainz-calendar" ]]; then
+    swiftc -O -module-cache-path "$repository/target/brainz-swift-cache" \
+        -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$helper_plist" \
+        -o "$repository/target/brainz-calendar" script/brainz-calendar.swift
+fi
+cp "$repository/target/brainz-calendar" "$application/Contents/MacOS/brainz-calendar"
+
+swift -module-cache-path "$repository/target/brainz-swift-cache" \
+    script/brainz-icon.swift "$repository" "$repository/target/Brainz.iconset"
+iconutil -c icns "$repository/target/Brainz.iconset" \
+    -o "$application/Contents/Resources/Brainz.icns"
+# Sign with a real identity so macOS keeps permission grants (Calendar, etc.)
+# across rebuilds; an ad-hoc signature looks like a brand-new app every time.
+# Per-machine values (signing identity, workspace) live in the untracked
+# script/brainz-local.env; see README.
+signing_identity="${BRAINZ_SIGNING_IDENTITY:-}"
+if [[ -n "$signing_identity" ]] && security find-identity -v -p codesigning 2>/dev/null | grep -q "$signing_identity"; then
+    codesign --force --deep --sign "$signing_identity" "$application"
+else
+    echo "warning: signing identity '$signing_identity' not found; using ad-hoc signature (permission prompts will repeat)" >&2
+    codesign --force --deep --sign - "$application"
+fi
+if [[ "${BRAINZ_NO_OPEN:-0}" != 1 ]]; then
+    # A still-running Brainz would keep the old executable; ask it to quit and
+    # wait so `open` starts the fresh build rather than focusing the stale one.
+    if pgrep -x brainz >/dev/null; then
+        osascript -e 'tell application "Brainz" to quit' >/dev/null 2>&1 || true
+        for _ in $(seq 1 40); do
+            pgrep -x brainz >/dev/null || break
+            sleep 0.25
+        done
+        pgrep -x brainz >/dev/null && pkill -x brainz || true
+        sleep 0.5
+    fi
+    workspace="${BRAINZ_WORKSPACE:-${HOME}/brain}"
+    if [[ -d "$workspace" ]]; then
+        open "$application" --args "$workspace"
+    else
+        open "$application"
+    fi
+fi

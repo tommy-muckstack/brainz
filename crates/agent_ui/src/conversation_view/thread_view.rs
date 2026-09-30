@@ -562,6 +562,13 @@ impl PermissionSelection {
     }
 }
 
+/// Brainz: tab colour per thread, kept in sync by the agent panel so message
+/// bubbles can match the tab.
+#[derive(Default)]
+pub struct BrainzThreadColors(pub HashMap<ThreadId, gpui::Hsla>);
+
+impl gpui::Global for BrainzThreadColors {}
+
 pub struct ThreadView {
     pub(crate) root_thread_id: ThreadId,
     pub session_id: acp_v1::SessionId,
@@ -602,6 +609,20 @@ pub struct ThreadView {
     pub plan_expanded: bool,
     pub queue_expanded: bool,
     pub editor_expanded: bool,
+    /// Brainz: whether the composer has focus (kept for future use).
+    #[allow(dead_code)]
+    pub composer_focused: bool,
+    /// Brainz: mode/model/effort controls are tucked behind a button.
+    pub composer_controls_visible: bool,
+    /// Brainz: the options as first seen, so the toggle can show when any
+    /// of them has been changed.
+    pub composer_options_baseline: Option<ComposerOptionsSnapshot>,
+    /// Brainz: runs of tool calls fold into one line; these groups (by the
+    /// index of their first entry) are shown in full.
+    pub expanded_activity: HashSet<usize>,
+    /// Brainz: when the drawer was last closed by an outside click, so a
+    /// click on the toggle itself doesn't immediately reopen it.
+    pub composer_drawer_dismissed_at: Option<std::time::Instant>,
     pub should_be_following: bool,
     pub editing_message: Option<usize>,
     pub message_queue: MessageQueue,
@@ -817,9 +838,11 @@ impl ThreadView {
                 session_capabilities.clone(),
                 agent_id.clone(),
                 &placeholder,
+                // Brainz: one line until the composer gets focus (see
+                // `sync_editor_mode`).
                 editor::EditorMode::AutoHeight {
-                    min_lines: AgentSettings::get_global(cx).message_editor_min_lines,
-                    max_lines: Some(AgentSettings::get_global(cx).set_message_editor_max_lines()),
+                    min_lines: 1,
+                    max_lines: Some(BRAINZ_COMPOSER_MAX_LINES),
                 },
                 window,
                 cx,
@@ -1019,6 +1042,11 @@ impl ThreadView {
             plan_expanded: false,
             queue_expanded: true,
             editor_expanded: false,
+            composer_focused: false,
+            composer_controls_visible: false,
+            composer_options_baseline: None,
+            expanded_activity: HashSet::default(),
+            composer_drawer_dismissed_at: None,
             should_be_following: false,
             editing_message: None,
             message_queue: MessageQueue::default(),
@@ -1139,8 +1167,19 @@ impl ThreadView {
             }
             MessageEditorEvent::Focus => {
                 self.cancel_editing(&Default::default(), window, cx);
+                if !self.composer_focused {
+                    self.composer_focused = true;
+                    self.sync_editor_mode(cx);
+                    cx.notify();
+                }
             }
-            MessageEditorEvent::LostFocus => {}
+            MessageEditorEvent::LostFocus => {
+                if self.composer_focused {
+                    self.composer_focused = false;
+                    self.sync_editor_mode(cx);
+                    cx.notify();
+                }
+            }
             MessageEditorEvent::SlashAutocompleteOpened => {}
             MessageEditorEvent::LocalCommandInvoked(command) => {
                 self.run_local_command(*command, window, cx);
@@ -2015,6 +2054,29 @@ impl ThreadView {
             })
         })
         .detach();
+    }
+
+    /// Brainz: sends the text of an earlier message again as a new message,
+    /// without rewinding the conversation.
+    fn resend_user_message(&mut self, entry_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self
+            .entry_view_state
+            .read(cx)
+            .entry(entry_ix)
+            .and_then(|entry| entry.message_editor())
+            .map(|editor| editor.read(cx).text(cx))
+        else {
+            return;
+        };
+        if text.trim().is_empty() {
+            return;
+        }
+        self.message_editor.update(cx, |editor, cx| {
+            editor.clear(window, cx);
+            editor.insert_text(&text, window, cx);
+        });
+        cx.emit(AcpThreadViewEvent::Interacted);
+        self.send(window, cx);
     }
 
     pub fn regenerate(
@@ -3160,10 +3222,13 @@ impl ThreadView {
                     .flex_grow_0()
                     .max_w_full()
                     .bg(self.activity_bar_bg(cx))
+                    // Brainz: a rounded card floating above the composer
+                    // card, rather than a strip fused to its top edge.
+                    .mb_2()
                     .border_1()
-                    .border_b_0()
                     .border_color(cx.theme().colors().border)
-                    .rounded_t_md()
+                    .rounded_lg()
+                    .overflow_hidden()
                     .when(opaque_window, |this| {
                         this.shadow(vec![
                             gpui::BoxShadow::new(px(1.), px(-1.), gpui::black().opacity(0.12))
@@ -3687,17 +3752,6 @@ impl ThreadView {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.queue_expanded = !this.queue_expanded;
                         cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("clear_queue", "Clear All")
-                    .label_size(LabelSize::Small)
-                    .key_binding(
-                        KeyBinding::for_action(&ClearMessageQueue, cx)
-                            .map(|kb| kb.size(rems_from_px(12_f32))),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.clear_queue(cx);
                     })),
             )
             .into_any_element()
@@ -4313,30 +4367,34 @@ impl ThreadView {
             return div().into_any_element();
         }
 
-        let focus_handle = self.message_editor.focus_handle(cx);
         let editor_bg_color = cx.theme().colors().editor_background;
 
         let editor_expanded = self.editor_expanded;
-        let (expand_icon, expand_tooltip) = if editor_expanded {
-            (IconName::Minimize, "Minimize Message Editor")
-        } else {
-            (IconName::Maximize, "Expand Message Editor")
-        };
+        // Brainz: no expand button; the box grows on its own. The keyboard
+        // action still works.
+        let controls_visible = self.composer_controls_visible;
+        let options_customized = self.composer_options_customized(cx);
 
         let max_content_width = AgentSettings::get_global(cx).max_content_width;
         let has_messages = self.list_state.item_count() > 0;
         let fills_container = !has_messages || editor_expanded;
+        // Brainz: the card outlines in amber while there is a draft in it.
+        let has_draft = !self.message_editor.read(cx).is_empty(cx);
 
+        // Brainz: the composer is a rounded card floating inside the panel,
+        // like the ChatGPT input: text on top, plus at bottom-left, send at
+        // bottom-right.
+        let _ = editor_bg_color;
         h_flex()
-            .py_2()
-            .bg(editor_bg_color)
+            .px_3()
+            .pt_1()
+            .pb_3()
+            .bg(cx.theme().colors().panel_background)
             .justify_center()
             .on_action(cx.listener(Self::handle_message_editor_move_up))
             .map(|this| {
                 if has_messages {
                     this.on_action(cx.listener(Self::expand_message_editor))
-                        .border_t_1()
-                        .border_color(cx.theme().colors().border)
                         .when(editor_expanded, |this| this.h(vh(0.8, window)))
                 } else {
                     this.flex_1().size_full()
@@ -4348,52 +4406,30 @@ impl ThreadView {
                     .when(max_content_width.is_none(), |this| this.w_full())
                     .min_w_0()
                     .when(fills_container, |this| this.h_full())
-                    .px_2()
+                    .px_3()
+                    .pt_3p5()
+                    .pb_2p5()
+                    .rounded(px(22.))
+                    .border_1()
+                    .border_color(if has_draft {
+                        cx.theme().colors().text_accent
+                    } else {
+                        cx.theme().colors().border
+                    })
+                    .bg(cx.theme().colors().editor_background)
+                    .shadow_sm()
                     .flex_shrink_1()
                     .flex_grow_0()
                     .justify_between()
-                    .gap_2()
+                    .gap_2p5()
                     .child(
                         v_flex()
                             .relative()
                             .w_full()
                             .min_h_0()
                             .when(fills_container, |this| this.flex_1())
-                            .pt_1()
-                            .pr_2p5()
-                            .child(self.message_editor.clone())
-                            .when(has_messages, |this| {
-                                this.child(
-                                    h_flex()
-                                        .absolute()
-                                        .top_0()
-                                        .right_0()
-                                        .opacity(0.5)
-                                        .hover(|s| s.opacity(1.0))
-                                        .child(
-                                            IconButton::new("toggle-height", expand_icon)
-                                                .icon_size(IconSize::Small)
-                                                .icon_color(Color::Muted)
-                                                .tooltip({
-                                                    move |_window, cx| {
-                                                        Tooltip::for_action_in(
-                                                            expand_tooltip,
-                                                            &ExpandMessageEditor,
-                                                            &focus_handle,
-                                                            cx,
-                                                        )
-                                                    }
-                                                })
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.expand_message_editor(
-                                                        &ExpandMessageEditor,
-                                                        window,
-                                                        cx,
-                                                    );
-                                                })),
-                                        ),
-                                )
-                            }),
+                            .px_1()
+                            .child(self.message_editor.clone()),
                     )
                     .child(
                         h_flex()
@@ -4408,23 +4444,40 @@ impl ThreadView {
                                     .flex_wrap()
                                     .gap_0p5()
                                     .child(self.render_add_context_button(cx))
-                                    .child(self.render_follow_toggle(cx))
-                                    .children(self.render_fast_mode_control(cx))
-                                    .children(self.render_thinking_control(cx)),
+                                    .child(
+                                        // Brainz: the options drawer pops up above this
+                                        // toggle, like the "+" menu.
+                                        div()
+                                            .relative()
+                                            .child(self.render_composer_options_toggle(
+                                                options_customized,
+                                                cx,
+                                            ))
+                                            .when(controls_visible, |this| {
+                                                // Anchor at the toggle's top-left so the
+                                                // card's bottom edge floats above it.
+                                                this.child(
+                                                    div().absolute().top_0().left_0().child(
+                                                        gpui::deferred(
+                                                            gpui::anchored()
+                                                                .anchor(gpui::Anchor::BottomLeft)
+                                                                .offset(gpui::point(px(0.), px(-8.)))
+                                                                .snap_to_window_with_margin(px(8.))
+                                                                .child(
+                                                                    self.render_composer_options_drawer(cx),
+                                                                ),
+                                                        )
+                                                        .with_priority(1),
+                                                    ),
+                                                )
+                                            }),
+                                    ),
                             )
                             .child(
                                 h_flex()
                                     .min_w_0()
                                     .flex_wrap()
                                     .gap_1()
-                                    .children(self.render_token_usage(cx))
-                                    .children(self.profile_selector.clone())
-                                    .map(|this| match self.config_options_view.clone() {
-                                        Some(config_view) => this.child(config_view),
-                                        None => this
-                                            .children(self.mode_selector.clone())
-                                            .children(self.model_selector.clone()),
-                                    })
                                     .child(self.render_send_button(cx)),
                             ),
                     ),
@@ -5460,21 +5513,44 @@ impl ThreadView {
         let focus_handle = self.message_editor.focus_handle(cx);
         let weak_self = cx.weak_entity();
 
-        PopoverMenu::new("add-context-menu")
-            .trigger_with_tooltip(
-                IconButton::new("add-context", IconName::Plus)
-                    .icon_size(IconSize::Small)
-                    .icon_color(Color::Muted),
-                {
-                    move |_window, cx| {
-                        Tooltip::for_action_in(
-                            "Add Context",
-                            &OpenAddContextMenu,
-                            &focus_handle,
-                            cx,
-                        )
-                    }
+        // Brainz: the plus turns into an × while the menu is open.
+        let menu_open = self.add_context_menu_handle.is_deployed();
+        let plus = Icon::new(IconName::Plus)
+            .size(IconSize::Small)
+            .color(if menu_open { Color::Default } else { Color::Muted })
+            .with_animation(
+                if menu_open {
+                    "brainz-add-context-open"
+                } else {
+                    "brainz-add-context-closed"
                 },
+                gpui::Animation::new(std::time::Duration::from_millis(180))
+                    .with_easing(gpui::ease_out_quint()),
+                move |icon, delta| {
+                    let progress = if menu_open { delta } else { 1.0 - delta };
+                    ui::Transformable::transform(
+                        icon,
+                        gpui::Transformation::rotate(gpui::radians(
+                            progress * std::f32::consts::FRAC_PI_4,
+                        )),
+                    )
+                },
+            );
+        PopoverMenu::new("add-context-menu")
+            .trigger(
+                ui::ButtonLike::new("add-context")
+                    .size(ui::ButtonSize::Compact)
+                    .child(plus)
+                    .tooltip({
+                        move |_window, cx| {
+                            Tooltip::for_action_in(
+                                "Add Context",
+                                &OpenAddContextMenu,
+                                &focus_handle,
+                                cx,
+                            )
+                        }
+                    }),
             )
             .anchor(gpui::Anchor::BottomLeft)
             .with_handle(self.add_context_menu_handle.clone())
@@ -5487,6 +5563,208 @@ impl ThreadView {
                     .update(cx, |this, cx| this.build_add_context_menu(window, cx))
                     .ok()
             })
+    }
+
+    fn composer_options_snapshot(&self, cx: &App) -> ComposerOptionsSnapshot {
+        let native = self.as_native_thread(cx).map(|thread| thread.read(cx));
+        ComposerOptionsSnapshot {
+            mode: self
+                .mode_selector
+                .as_ref()
+                .map(|selector| selector.read(cx).mode()),
+            model: self
+                .model_selector
+                .as_ref()
+                .and_then(|selector| selector.read(cx).active_model(cx).map(|model| model.id.clone())),
+            effort: native
+                .as_ref()
+                .and_then(|thread| thread.thinking_effort().cloned()),
+            thinking: native.as_ref().map(|thread| thread.thinking_enabled()),
+            fast: native
+                .as_ref()
+                .map(|thread| matches!(thread.speed(), Some(Speed::Fast))),
+            following: self.should_be_following,
+        }
+    }
+
+    /// True once any option differs from how the thread started. The
+    /// baseline is taken the first time mode and model are both known.
+    fn composer_options_customized(&mut self, cx: &App) -> bool {
+        let current = self.composer_options_snapshot(cx);
+        match &self.composer_options_baseline {
+            Some(baseline) => *baseline != current,
+            None => {
+                if current.mode.is_some() || current.model.is_some() {
+                    self.composer_options_baseline = Some(current);
+                }
+                false
+            }
+        }
+    }
+
+    /// Brainz: the sliders toggle for the model/mode options. Drawn from
+    /// primitives so the knobs can slide: closed is top-right/bottom-left,
+    /// open is the mirror image, and each change animates between the two.
+    /// It stays highlighted while any option is customized.
+    fn render_composer_options_toggle(
+        &self,
+        customized: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let open = self.composer_controls_visible;
+        let color = if open || customized {
+            cx.theme().colors().text_accent
+        } else {
+            cx.theme().colors().icon_muted
+        };
+        const SIZE: f32 = 16.;
+        const KNOB: f32 = 7.;
+        // The "+" and send icons are 24-grid SVGs with a 2px stroke drawn at
+        // 16px, so their lines land at ~1.33px; match that weight here.
+        const STROKE: f32 = 1.35;
+        const TRACK_H: f32 = STROKE;
+        let travel = SIZE - KNOB;
+        let row = |top: f32, knob_from: f32, knob_to: f32, id: &'static str| {
+            div()
+                .absolute()
+                .left_0()
+                .top(px(top))
+                .w(px(SIZE))
+                .h(px(KNOB))
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px((KNOB - TRACK_H) / 2.))
+                        .h(px(TRACK_H))
+                        .rounded_full()
+                        .bg(color),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .size(px(KNOB))
+                        .rounded_full()
+                        .border(px(STROKE))
+                        .border_color(color)
+                        .bg(cx.theme().colors().editor_background)
+                        .with_animation(
+                            id,
+                            gpui::Animation::new(std::time::Duration::from_millis(220))
+                                .with_easing(gpui::ease_out_quint()),
+                            move |knob, delta| {
+                                knob.left(px(knob_from + (knob_to - knob_from) * delta))
+                            },
+                        ),
+                )
+        };
+        let (top_from, top_to, bottom_from, bottom_to, top_id, bottom_id) = if open {
+            (travel, 0., 0., travel, "brainz-sliders-top-open", "brainz-sliders-bottom-open")
+        } else {
+            (0., travel, travel, 0., "brainz-sliders-top-closed", "brainz-sliders-bottom-closed")
+        };
+        ui::ButtonLike::new("brainz-composer-controls")
+            .size(ui::ButtonSize::Compact)
+            .toggle_state(open)
+            .tooltip(Tooltip::text(if open {
+                "Hide model and mode options"
+            } else {
+                "Model and mode options"
+            }))
+            .on_click(cx.listener(|this, _, _, cx| {
+                // The drawer's outside-click handler already closed it for
+                // this same press; don't bounce it back open.
+                let just_dismissed = this
+                    .composer_drawer_dismissed_at
+                    .take()
+                    .is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(300));
+                if !just_dismissed {
+                    this.composer_controls_visible = !this.composer_controls_visible;
+                }
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .relative()
+                    .size(px(SIZE))
+                    .child(row(0.5, top_from, top_to, top_id))
+                    .child(row(SIZE - KNOB - 0.5, bottom_from, bottom_to, bottom_id)),
+            )
+    }
+
+    /// Brainz: the card that holds model, mode, effort, and the other
+    /// composer options while the sliders toggle is open.
+    fn render_composer_options_drawer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let row = |label: &'static str| {
+            Label::new(label)
+                .size(LabelSize::XSmall)
+                .color(Color::Muted)
+        };
+        v_flex()
+            .id("brainz-composer-options-drawer")
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.composer_controls_visible = false;
+                this.composer_drawer_dismissed_at = Some(std::time::Instant::now());
+                cx.notify();
+            }))
+            .min_w(px(260.))
+            .p_2()
+            .gap_2()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().colors().border)
+            .bg(cx.theme().colors().elevated_surface_background)
+            .shadow_lg()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(row("Model"))
+                    .child(
+                        h_flex()
+                            .flex_wrap()
+                            .gap_1()
+                            .map(|this| match self.config_options_view.clone() {
+                                Some(config_view) => this.child(config_view),
+                                None => this
+                                    .children(self.mode_selector.clone())
+                                    .children(self.model_selector.clone()),
+                            })
+                            .children(self.profile_selector.clone()),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(row("Options"))
+                    .child(
+                        h_flex()
+                            .flex_wrap()
+                            .gap_1()
+                            .children(self.render_thinking_control(cx))
+                            .children(self.render_fast_mode_control(cx))
+                            .child(self.render_follow_toggle(cx))
+                            .child(
+                                IconButton::new("brainz-reset-thread", IconName::RotateCcw)
+                                    .icon_size(IconSize::Small)
+                                    .icon_color(Color::Muted)
+                                    .tooltip(Tooltip::text(
+                                        "Reset: start fresh with this agent, keeping the connection",
+                                    ))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.composer_controls_visible = false;
+                                        window.dispatch_action(
+                                            crate::BrainzResetThread.boxed_clone(),
+                                            cx,
+                                        );
+                                        cx.notify();
+                                    })),
+                            )
+                            .children(self.render_token_usage(cx)),
+                    ),
+            )
     }
 
     fn build_add_context_menu(
@@ -6155,9 +6433,15 @@ impl ThreadView {
                 } else {
                     self.agent_id.clone()
                 };
+                // Brainz: your messages sit on the right, tinted with the
+                // tab's colour, with a square bottom-right corner.
+                let bubble_color = cx
+                    .try_global::<BrainzThreadColors>()
+                    .and_then(|colors| colors.0.get(&self.root_thread_id).copied());
 
                 v_flex()
                     .id(("user_message", entry_ix))
+                    .items_end()
                     .map(|this| {
                         if is_first_indented {
                             this.pt_0p5()
@@ -6172,6 +6456,7 @@ impl ThreadView {
                     .when(can_restore_checkpoint && has_checkpoint_button, |this| {
                         this.children(message.client_id.clone().map(|client_id| {
                             h_flex()
+                                .w_full()
                                 .px_3()
                                 .gap_2()
                                 .child(Divider::horizontal())
@@ -6191,12 +6476,18 @@ impl ThreadView {
                     .child(
                         div()
                             .relative()
+                            .group("brainz-user-bubble")
+                            .w_3_4()
                             .child(
                                 div()
                                     .py_3()
-                                    .px_2()
-                                    .rounded_md()
+                                    .px_3()
+                                    // Room for the resend button on hover.
+                                    .pr_9()
+                                    .rounded_lg()
+                                    .rounded_br(px(0.))
                                     .bg(cx.theme().colors().editor_background)
+                                    .when_some(bubble_color, |this, color| this.bg(color))
                                     .border_1()
                                     .when(is_indented, |this| {
                                         this.py_2().px_2().when(opaque_window, |this| {
@@ -6204,6 +6495,9 @@ impl ThreadView {
                                         })
                                     })
                                     .border_color(cx.theme().colors().border)
+                                    .when_some(bubble_color, |this, color| {
+                                        this.border_color(color)
+                                    })
                                     .map(|this| {
                                         if !is_editable {
                                             if is_subagent {
@@ -6225,6 +6519,23 @@ impl ThreadView {
                                     .text_xs()
                                     .child(editor.clone().into_any_element())
                             )
+                            // Brainz: hovering your own message offers to
+                            // send it again as a new message.
+                            .when(!editor_focus, |this| {
+                                this.child(ui::StickyTopRight::new(
+                                    px(6.),
+                                    IconButton::new(("brainz-resend", entry_ix), IconName::Send)
+                                        .icon_size(IconSize::XSmall)
+                                        // Dark on the tinted bubble so it reads.
+                                        .icon_color(Color::Custom(editor.read(cx).bubble_text_color(cx)))
+                                        .style(ButtonStyle::Transparent)
+                                        .tooltip(Tooltip::text("Send again"))
+                                        .visible_on_hover("brainz-user-bubble")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.resend_user_message(entry_ix, window, cx);
+                                        })),
+                                ))
+                            })
                             .when(editor_focus, |this| {
                                 let base_container = h_flex()
                                     .absolute()
@@ -6354,13 +6665,55 @@ impl ThreadView {
                 if is_blank {
                     Empty.into_any()
                 } else {
+                    // Brainz: agent replies sit on the left in a dark bubble
+                    // with a square bottom-left corner.
                     v_flex()
-                        .px_5()
+                        .px_2()
                         .py_1p5()
                         .when(is_last, |this| this.pb_4())
                         .w_full()
+                        .items_start()
                         .text_ui(cx)
-                        .child(message_body)
+                        .child(
+                            div()
+                                .id(("brainz-agent-bubble", entry_ix))
+                                .group("brainz-agent-bubble")
+                                .relative()
+                                .max_w_3_4()
+                                .py_3()
+                                .pl_3()
+                                // Room on the right so the copy button never
+                                // covers the last words of a line.
+                                .pr_9()
+                                .rounded_lg()
+                                .rounded_bl(px(0.))
+                                .bg(cx.theme().colors().surface_background)
+                                .border_1()
+                                .border_color(cx.theme().colors().border_variant)
+                                .child(message_body)
+                                // Brainz: copy appears in the bubble's corner on hover.
+                                .child(
+                                    ui::StickyTopRight::new(px(6.), {
+                                        let thread = self.thread.clone();
+                                        ui::CopyButton::new(("brainz-copy-bubble", entry_ix), "")
+                                            .icon_size(IconSize::XSmall)
+                                            .tooltip_label("Copy")
+                                            .visible_on_hover("brainz-agent-bubble")
+                                            .custom_on_click(move |_, cx| {
+                                                let entries = thread.read(cx).entries();
+                                                if let Some(text) = Self::get_agent_message_content(
+                                                    entries, entry_ix, cx,
+                                                ) {
+                                                    // Plain text, so it pastes cleanly
+                                                    // into mail and docs.
+                                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                                        markdown::markdown_to_plain_text(&text),
+                                                    ));
+                                                }
+                                            })
+                                    }),
+                                ),
+                        )
                         .when_some(
                             self.entry_view_state
                                 .read(cx)
@@ -6399,6 +6752,163 @@ impl ThreadView {
                     }
                 }
 
+                // Brainz: consecutive tool calls fold into one quiet line so the
+                // thread reads like chat. Anything that needs attention stays out.
+                let needs_attention =
+                    matches!(tool_call.status(), ToolCallStatus::WaitingForConfirmation);
+                let (group_start, group_count, group_running, group_last_label) = {
+                    let entries = self.thread.read(cx).entries();
+                    let is_tool = |ix: usize| {
+                        matches!(entries.get(ix), Some(AgentThreadEntry::ToolCall(_)))
+                    };
+                    let mut start = entry_ix;
+                    while start > 0 && is_tool(start - 1) {
+                        start -= 1;
+                    }
+                    let mut end = entry_ix;
+                    while is_tool(end + 1) {
+                        end += 1;
+                    }
+                    let group = (start..=end).filter_map(|ix| match entries.get(ix) {
+                        Some(AgentThreadEntry::ToolCall(call)) => Some(call),
+                        _ => None,
+                    });
+                    let mut count = 0usize;
+                    let mut running = false;
+                    // Plain-English tally by kind, in a stable order.
+                    let mut reads = 0usize;
+                    let mut edits = 0usize;
+                    let mut commands = 0usize;
+                    let mut searches = 0usize;
+                    let mut fetches = 0usize;
+                    let mut others = 0usize;
+                    for call in group {
+                        count += 1;
+                        running |= matches!(
+                            call.status(),
+                            ToolCallStatus::Pending | ToolCallStatus::InProgress
+                        );
+                        match call.kind() {
+                            acp_v2::ToolKind::Read => reads += 1,
+                            acp_v2::ToolKind::Edit
+                            | acp_v2::ToolKind::Delete
+                            | acp_v2::ToolKind::Move => edits += 1,
+                            acp_v2::ToolKind::Execute => commands += 1,
+                            acp_v2::ToolKind::Search => searches += 1,
+                            acp_v2::ToolKind::Fetch => fetches += 1,
+                            acp_v2::ToolKind::Think => {}
+                            _ => others += 1,
+                        }
+                    }
+                    let plural = |n: usize, one: &str, many: &str| {
+                        if n == 1 {
+                            format!("{n} {one}")
+                        } else {
+                            format!("{n} {many}")
+                        }
+                    };
+                    let mut parts: Vec<String> = Vec::new();
+                    if reads > 0 {
+                        parts.push(format!("read {}", plural(reads, "file", "files")));
+                    }
+                    if searches > 0 {
+                        parts.push(format!("ran {}", plural(searches, "search", "searches")));
+                    }
+                    if edits > 0 {
+                        parts.push(format!("edited {}", plural(edits, "file", "files")));
+                    }
+                    if commands > 0 {
+                        parts.push(format!("ran {}", plural(commands, "command", "commands")));
+                    }
+                    if fetches > 0 {
+                        parts.push(format!("fetched {}", plural(fetches, "page", "pages")));
+                    }
+                    if others > 0 {
+                        parts.push(plural(others, "step", "steps"));
+                    }
+                    let mut summary = parts.join(" · ");
+                    if summary.is_empty() {
+                        summary = plural(count, "step", "steps");
+                    }
+                    if let Some(first) = summary.get(..1) {
+                        summary = format!("{}{}", first.to_uppercase(), &summary[1..]);
+                    }
+                    (start, count, running, summary)
+                };
+                let group_expanded = self.expanded_activity.contains(&group_start);
+                if !group_expanded && !needs_attention {
+                    if entry_ix != group_start {
+                        return Empty.into_any();
+                    }
+                    // The thread's own dots below already say "working", so
+                    // the line just states the tally.
+                    let text = group_last_label;
+                    return h_flex()
+                        .id(("brainz-activity", group_start))
+                        .w_full()
+                        .min_w_0()
+                        .px_2()
+                        .py_1()
+                        .gap_1p5()
+                        .cursor_pointer()
+                        .rounded_md()
+                        .hover(|this| this.bg(cx.theme().colors().element_hover))
+                        .tooltip(Tooltip::text("Show steps"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.expanded_activity.insert(group_start);
+                            cx.notify();
+                        }))
+                        .child({
+                            let _ = group_running;
+                            Icon::new(IconName::ToolHammer)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted)
+                        })
+                        .child(
+                            div().min_w_0().flex_1().overflow_hidden().child(
+                                Label::new(text)
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted)
+                                    .single_line()
+                                    .truncate(),
+                            ),
+                        )
+                        .child(
+                            Icon::new(IconName::ChevronDown)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .into_any();
+                }
+                let hide_steps = (group_expanded && entry_ix == group_start).then(|| {
+                    h_flex()
+                        .id(("brainz-activity-hide", group_start))
+                        .px_2()
+                        .py_1()
+                        .gap_1p5()
+                        .cursor_pointer()
+                        .rounded_md()
+                        .hover(|this| this.bg(cx.theme().colors().element_hover))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.expanded_activity.remove(&group_start);
+                            cx.notify();
+                        }))
+                        .child(
+                            Icon::new(IconName::ChevronUp)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new(if group_count == 1 {
+                                "Hide step".to_string()
+                            } else {
+                                format!("Hide {group_count} steps")
+                            })
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                        )
+                });
+
                 let tool_call = self.render_any_tool_call(
                     self.thread.read(cx).session_id(),
                     entry_ix,
@@ -6409,7 +6919,7 @@ impl ThreadView {
                     cx,
                 );
 
-                if let Some(handle) = self
+                let rendered = if let Some(handle) = self
                     .entry_view_state
                     .read(cx)
                     .entry(entry_ix)
@@ -6418,6 +6928,10 @@ impl ThreadView {
                     tool_call.track_focus(&handle).into_any()
                 } else {
                     tool_call.into_any()
+                };
+                match hide_steps {
+                    Some(hide_steps) => v_flex().child(hide_steps).child(rendered).into_any(),
+                    None => rendered,
                 }
             }
             AgentThreadEntry::Elicitation(elicitation_id) => {
@@ -6927,9 +7441,15 @@ impl ThreadView {
                 },
             )
             .when_some(feedback_buttons, |this, buttons| this.child(buttons))
-            .when_some(copy_response_button, |this, button| this.child(button))
-            .child(scroll_to_recent_user_prompt)
-            .when_some(scroll_to_top, |this, button| this.child(button))
+            // Brainz: copy lives on the bubble itself; no scroll buttons here.
+            .map(|this| {
+                let _ = (
+                    &copy_response_button,
+                    &scroll_to_recent_user_prompt,
+                    &scroll_to_top,
+                );
+                this
+            })
             .into_any_element()
     }
 
@@ -7272,9 +7792,13 @@ impl ThreadView {
                 sizing_behavior: SizingBehavior::Default,
             }
         } else {
+            // Brainz: one line tall whether focused or not; it grows only as
+            // typed text wraps, up to `BRAINZ_COMPOSER_MAX_LINES`, then scrolls.
+            let min_lines = 1;
+            let max_lines = BRAINZ_COMPOSER_MAX_LINES;
             EditorMode::AutoHeight {
-                min_lines: AgentSettings::get_global(cx).message_editor_min_lines,
-                max_lines: Some(AgentSettings::get_global(cx).set_message_editor_max_lines()),
+                min_lines,
+                max_lines: Some(max_lines),
             }
         };
         self.message_editor.update(cx, |editor, cx| {
@@ -7338,12 +7862,10 @@ impl ThreadView {
             .gap_2()
             .map(|this| {
                 if confirmation {
-                    this.child(
-                        h_flex()
-                            .w_2()
-                            .justify_center()
-                            .child(GeneratingSpinnerElement::new(SpinnerVariant::Sand)),
-                    )
+                    this.child(ui::bouncing_dots(
+                        "brainz-generating-confirm",
+                        cx.theme().colors().text_muted,
+                    ))
                     .child(
                         div().min_w(rems(8.)).child(
                             LoadingLabel::new("Awaiting Confirmation")
@@ -7354,12 +7876,11 @@ impl ThreadView {
                 } else if is_blocked_on_terminal_command {
                     this
                 } else {
-                    this.child(
-                        h_flex()
-                            .w_2()
-                            .justify_center()
-                            .child(GeneratingSpinnerElement::new(SpinnerVariant::Dots)),
-                    )
+                    // Brainz: the one shared "working" indicator.
+                    this.child(ui::bouncing_dots(
+                        "brainz-generating",
+                        cx.theme().colors().text_muted,
+                    ))
                 }
             })
             .when_some(elapsed_label, |this, elapsed| {
@@ -8240,29 +8761,37 @@ impl ThreadView {
                 .buffer_font(cx)
         };
 
+        // Brainz: while a tool waits for approval, show the buttons but keep
+        // its output folded unless the card was expanded on purpose.
+        let explicitly_expanded = self
+            .entry_view_state
+            .read(cx)
+            .is_tool_call_expanded(&tool_call.id);
         let tool_output_display = if is_open {
             match tool_call.status() {
                 ToolCallStatus::WaitingForConfirmation => {
                     let confirmation_content = v_flex()
                         .w_full()
-                        .children(tool_call.content().iter().enumerate().map(
-                            |(content_ix, content)| {
-                                div()
-                                    .child(self.render_tool_call_content(
-                                        active_session_id,
-                                        entry_ix,
-                                        content,
-                                        content_ix,
-                                        tool_call,
-                                        use_card_layout,
-                                        failed_or_canceled,
-                                        focus_handle,
-                                        window,
-                                        cx,
-                                    ))
-                                    .into_any_element()
-                            },
-                        ))
+                        .when(explicitly_expanded, |this| {
+                            this.children(tool_call.content().iter().enumerate().map(
+                                |(content_ix, content)| {
+                                    div()
+                                        .child(self.render_tool_call_content(
+                                            active_session_id,
+                                            entry_ix,
+                                            content,
+                                            content_ix,
+                                            tool_call,
+                                            use_card_layout,
+                                            failed_or_canceled,
+                                            focus_handle,
+                                            window,
+                                            cx,
+                                        ))
+                                        .into_any_element()
+                                },
+                            ))
+                        })
                         .when_some(
                             tool_call.sandbox_authorization_details.as_ref(),
                             |this, details| {
@@ -10034,7 +10563,8 @@ impl ThreadView {
                 .into_any_element()
         } else {
             Icon::new(match tool_call.kind() {
-                acp_v2::ToolKind::Read => IconName::ToolSearch,
+                // Brainz: a read shows the document, not a magnifier.
+                acp_v2::ToolKind::Read => IconName::File,
                 acp_v2::ToolKind::Edit => IconName::ToolPencil,
                 acp_v2::ToolKind::Delete => IconName::ToolDeleteFile,
                 acp_v2::ToolKind::Move => IconName::ArrowRightLeft,
@@ -11310,17 +11840,21 @@ impl ThreadView {
         error: SharedString,
         cx: &mut Context<Self>,
     ) -> Callout {
+        // Brainz: signing in is a normal first step, not an error. Say who
+        // needs it, what will happen, and give one obvious button.
+        let _ = error;
+        let agent = brainz_short_agent_name(&self.agent_display_name);
         Callout::new()
-            .severity(Severity::Error)
-            .title("Authentication Required")
-            .icon(IconName::XCircle)
-            .description(error.clone())
-            .actions_slot(
-                h_flex()
-                    .gap_0p5()
-                    .child(self.authenticate_button(cx))
-                    .child(self.create_copy_button(error)),
-            )
+            .severity(Severity::Info)
+            .title(format!("Sign in to {agent} to continue"))
+            .icon(IconName::Person)
+            .description(format!(
+                "Brainz keeps its own {agent} login, separate from your terminal. \
+                 A sign-in shell will open in this panel with a link to follow. \
+                 When it finishes, this conversation comes back and you can send \
+                 your message again. Your message is kept."
+            ))
+            .actions_slot(self.authenticate_button(cx))
             .dismiss_action(self.dismiss_error_button(cx))
     }
 
@@ -11516,8 +12050,8 @@ impl ThreadView {
     }
 
     fn authenticate_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        Button::new("authenticate", "Authenticate")
-            .label_size(LabelSize::Small)
+        let agent = brainz_short_agent_name(&self.agent_display_name);
+        Button::new("authenticate", format!("Sign in to {agent}"))
             .style(ButtonStyle::Filled)
             .on_click(cx.listener({
                 move |this, _, window, cx| {
@@ -12316,6 +12850,13 @@ impl ThreadView {
 
 impl Render for ThreadView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Brainz: keep sent-message bubbles in the tab's colour.
+        let bubble_color = cx
+            .try_global::<BrainzThreadColors>()
+            .and_then(|colors| colors.0.get(&self.root_thread_id).copied());
+        self.entry_view_state.update(cx, |state, cx| {
+            state.set_bubble_color(bubble_color, cx);
+        });
         // Keep the message editor's local slash commands in sync with the
         // current availability of feedback/sharing, which can change between
         // renders (settings, connection state, feature flags).
@@ -12673,6 +13214,29 @@ impl Render for ThreadView {
             .children(self.render_token_limit_callout(cx))
             .children(self.render_request_elicitations(cx))
             .child(self.render_message_editor(window, cx))
+    }
+}
+
+/// Brainz: the composer grows with what you type, up to this many lines.
+pub(crate) const BRAINZ_COMPOSER_MAX_LINES: usize = 3;
+
+/// Brainz: everything the options drawer can change, for "is it customized?".
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComposerOptionsSnapshot {
+    mode: Option<acp_v1::SessionModeId>,
+    model: Option<acp_thread::AgentModelId>,
+    effort: Option<String>,
+    thinking: Option<bool>,
+    fast: Option<bool>,
+    following: bool,
+}
+
+/// Brainz: "Claude Agent" reads as "Claude" in the composer and sign-in card.
+pub(crate) fn brainz_short_agent_name(display_name: &str) -> SharedString {
+    match display_name {
+        "Claude Agent" | "Claude Code" => "Claude".into(),
+        "Codex" | "Codex CLI" => "Codex".into(),
+        other => other.trim_end_matches(" Agent").to_owned().into(),
     }
 }
 

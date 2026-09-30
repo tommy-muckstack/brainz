@@ -403,7 +403,12 @@ impl Project {
                             Some(remote_client) => {
                                 create_remote_shell(None, env, path, remote_client, cx)?
                             }
-                            None => (settings.shell, env),
+                            None => {
+                                let mut shell = settings.shell;
+                                #[cfg(target_os = "macos")]
+                                configure_brainz_shell(&mut shell, &mut env)?;
+                                (shell, env)
+                            }
                         }
                     };
                     anyhow::Ok(TerminalBuilder::new(
@@ -603,6 +608,31 @@ impl Project {
             Task::ready(None).shared()
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn configure_brainz_shell(shell: &mut Shell, env: &mut HashMap<String, String>) -> Result<()> {
+    if *shell != Shell::System || get_system_shell() != "/bin/zsh" {
+        return Ok(());
+    }
+    let executable = std::env::current_exe()?;
+    let Some(contents) = executable.parent().and_then(Path::parent) else {
+        return Ok(());
+    };
+    let profile = contents.join("Resources/shell");
+    if !profile.join(".zshrc").is_file() {
+        return Ok(());
+    }
+    if let Some(original) = env.get("ZDOTDIR").cloned() {
+        env.insert("BRAINZ_USER_ZDOTDIR".into(), original);
+    }
+    env.insert("ZDOTDIR".into(), profile.to_string_lossy().into_owned());
+    *shell = Shell::WithArguments {
+        program: "/bin/zsh".into(),
+        args: vec!["-il".into()],
+        title_override: Some("Shell".into()),
+    };
+    Ok(())
 }
 
 fn create_remote_shell(

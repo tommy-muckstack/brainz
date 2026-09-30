@@ -1114,6 +1114,92 @@ async fn remove_stale_versioned_archive_cache_dirs(
     Ok(())
 }
 
+/// Brainz keeps the in-app Claude and Codex logins separate from the user's
+/// terminal CLIs. Each adapter gets its own config directory under Brainz's
+/// config dir, so a token refresh inside Brainz never signs out a `claude` or
+/// `codex` session running in another terminal app, and vice versa. Config
+/// files are seeded from the CLI's own directory on first use; credentials
+/// never are.
+fn brainz_agent_isolation_env(registry_id: &str) -> HashMap<String, String> {
+    let mut env = HashMap::default();
+    let (variable, dir_name, cli_dir, seed_files): (&str, &str, &str, &[&str]) = match registry_id
+    {
+        "claude-acp" => (
+            "CLAUDE_CONFIG_DIR",
+            "claude",
+            ".claude",
+            &["settings.json", "CLAUDE.md"],
+        ),
+        "codex-acp" => ("CODEX_HOME", "codex", ".codex", &["config.toml"]),
+        _ => return env,
+    };
+    let dir = paths::config_dir().join(dir_name);
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        log::warn!("failed to create {} for {registry_id}: {error}", dir.display());
+        return env;
+    }
+    let source = util::paths::home_dir().join(cli_dir);
+    for file in seed_files {
+        let target = dir.join(file);
+        let origin = source.join(file);
+        if !target.exists() && origin.is_file() {
+            if let Err(error) = std::fs::copy(&origin, &target) {
+                log::warn!("failed to seed {} from {}: {error}", target.display(), origin.display());
+            }
+        }
+    }
+    if registry_id == "claude-acp" {
+        brainz_seed_claude_mcp_servers(&source, &dir);
+    }
+    env.insert(variable.to_owned(), dir.to_string_lossy().into_owned());
+    env
+}
+
+/// Brainz: copy the user's MCP servers (only that key) from `~/.claude.json`
+/// into Brainz's own `.claude.json` when Brainz has none yet, so Claude in
+/// Brainz has the same connectors as Claude in the terminal.
+fn brainz_seed_claude_mcp_servers(cli_dir: &Path, brainz_dir: &Path) {
+    let source = util::paths::home_dir().join(".claude.json");
+    let target = brainz_dir.join(".claude.json");
+    let _ = cli_dir;
+    let Ok(source_text) = std::fs::read_to_string(&source) else {
+        return;
+    };
+    let Ok(source_json) = serde_json::from_str::<serde_json::Value>(&source_text) else {
+        return;
+    };
+    let Some(servers) = source_json.get("mcpServers").filter(|value| {
+        value
+            .as_object()
+            .is_some_and(|servers| !servers.is_empty())
+    }) else {
+        return;
+    };
+    let mut target_json = std::fs::read_to_string(&target)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let has_servers = target_json
+        .get("mcpServers")
+        .and_then(|value| value.as_object())
+        .is_some_and(|servers| !servers.is_empty());
+    if has_servers {
+        return;
+    }
+    if let Some(object) = target_json.as_object_mut() {
+        object.insert("mcpServers".to_owned(), servers.clone());
+    } else {
+        return;
+    }
+    if let Ok(text) = serde_json::to_string_pretty(&target_json) {
+        if let Err(error) = std::fs::write(&target, text) {
+            log::warn!("failed to seed MCP servers into {}: {error}", target.display());
+        } else {
+            log::info!("seeded MCP servers into {}", target.display());
+        }
+    }
+}
+
 struct LocalRegistryArchiveAgent {
     fs: Arc<dyn Fs>,
     http_client: Arc<dyn HttpClient>,
@@ -1208,6 +1294,11 @@ impl ExternalAgentServer for LocalRegistryArchiveAgent {
 
             env.extend(target_config.env.clone());
             env.extend(extra_env);
+            let registry_id = dir
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            env.extend(brainz_agent_isolation_env(&registry_id));
             env.extend(settings_env);
 
             let archive_url = &target_config.archive;
@@ -1408,6 +1499,7 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
             env.extend(node_runtime::npm_command_env(&node_binary));
             env.extend(distribution_env);
             env.extend(extra_env);
+            env.extend(brainz_agent_isolation_env(&registry_id));
             env.extend(settings_env);
 
             let mut command_args = vec![executable.to_string_lossy().into_owned()];

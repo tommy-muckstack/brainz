@@ -143,6 +143,8 @@ pub struct ProjectPanel {
     // An update loop that keeps incrementing/decrementing scroll offset while there is a dragged entry that's
     // hovered over the start/end of a list.
     hover_scroll_task: Option<Task<()>>,
+    /// Brainz: re-render when the GitHub sync state changes.
+    _brainz_sync_subscription: Option<Subscription>,
     rendered_entries_len: usize,
     folded_directory_drag_target: Option<FoldedDirectoryDragTarget>,
     drag_target_entry: Option<DragTarget>,
@@ -881,6 +883,7 @@ impl ProjectPanel {
             let mut this = Self {
                 project: project.clone(),
                 hover_scroll_task: None,
+                _brainz_sync_subscription: None,
                 fs: workspace.app_state().fs.clone(),
                 focus_handle,
                 rendered_entries_len: 0,
@@ -7307,6 +7310,15 @@ impl Render for ProjectPanel {
             self.clear_drag_state(cx);
         }
 
+        // Brainz: "Sync to GitHub" banner above the tree.
+        if self._brainz_sync_subscription.is_none()
+            && let Some(state) = brainz_calendar::github_sync::state(cx)
+        {
+            self._brainz_sync_subscription =
+                Some(cx.observe(&state, |_, _, cx| cx.notify()));
+        }
+        let brainz_banner = brainz_calendar::github_sync::render_banner(&self.workspace, cx);
+
         let has_worktree = !self.state.visible_entries.is_empty();
         let project = self.project.read(cx);
         let panel_settings = ProjectPanelSettings::get_global(cx);
@@ -7409,6 +7421,10 @@ impl Render for ProjectPanel {
                     }
                 }));
             }
+            v_flex()
+                .size_full()
+                .children(brainz_banner)
+                .child(
             h_flex()
                 .id("project-panel")
                 .group("project-panel")
@@ -7920,6 +7936,8 @@ impl Render for ProjectPanel {
                     )
                     .with_priority(3)
                 }))
+                )
+                .into_any_element()
         } else {
             let focus_handle = self.focus_handle(cx);
             let workspace = self.workspace.clone();
@@ -7979,6 +7997,7 @@ impl Render for ProjectPanel {
                         ))
                     })
                 })
+                .into_any_element()
         }
     }
 }

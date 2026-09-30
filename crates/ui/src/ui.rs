@@ -18,3 +18,4 @@ pub use components::*;
 pub use prelude::*;
 pub use styles::*;
 pub use traits::animation_ext::*;
+pub use traits::transformable::*;

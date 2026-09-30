@@ -3042,6 +3042,11 @@ impl Render for ProjectSearchBar {
         let query_focus = search.query_editor.focus_handle(cx);
 
         let query_column = input_base_styles(InputPanel::Query)
+            .child(
+                Icon::new(IconName::MagnifyingGlass)
+                    .size(IconSize::Small)
+                    .color(Color::Muted),
+            )
             .on_action(cx.listener(|this, action, window, cx| this.confirm(action, window, cx)))
             .on_action(cx.listener(|this, action, window, cx| {
                 this.previous_history_query(action, window, cx)
@@ -3057,21 +3062,38 @@ impl Render for ProjectSearchBar {
             .child(
                 h_flex()
                     .gap_1()
-                    .child(SearchOption::CaseSensitive.as_button(
-                        search.search_options,
-                        SearchSource::Project(cx),
-                        focus_handle.clone(),
-                    ))
-                    .child(SearchOption::WholeWord.as_button(
-                        search.search_options,
-                        SearchSource::Project(cx),
-                        focus_handle.clone(),
-                    ))
-                    .child(SearchOption::Regex.as_button(
-                        search.search_options,
-                        SearchSource::Project(cx),
-                        focus_handle.clone(),
-                    )),
+                    .when(
+                        search
+                            .search_options
+                            .contains(SearchOptions::CASE_SENSITIVE),
+                        |this| {
+                            this.child(SearchOption::CaseSensitive.as_button(
+                                search.search_options,
+                                SearchSource::Project(cx),
+                                focus_handle.clone(),
+                            ))
+                        },
+                    )
+                    .when(
+                        search.search_options.contains(SearchOptions::WHOLE_WORD),
+                        |this| {
+                            this.child(SearchOption::WholeWord.as_button(
+                                search.search_options,
+                                SearchSource::Project(cx),
+                                focus_handle.clone(),
+                            ))
+                        },
+                    )
+                    .when(
+                        search.search_options.contains(SearchOptions::REGEX),
+                        |this| {
+                            this.child(SearchOption::Regex.as_button(
+                                search.search_options,
+                                SearchSource::Project(cx),
+                                focus_handle.clone(),
+                            ))
+                        },
+                    ),
             );
 
         let matches_column = h_flex()
@@ -3081,7 +3103,7 @@ impl Render for ProjectSearchBar {
             .border_color(theme_colors.border_variant)
             .child(render_action_button(
                 "project-search-nav-button",
-                IconName::ChevronLeft,
+                IconName::ArrowLeft,
                 search
                     .active_match_index
                     .is_none()
@@ -3092,7 +3114,7 @@ impl Render for ProjectSearchBar {
             ))
             .child(render_action_button(
                 "project-search-nav-button",
-                IconName::ChevronRight,
+                IconName::ArrowRight,
                 search
                     .active_match_index
                     .is_none()
@@ -3136,44 +3158,48 @@ impl Render for ProjectSearchBar {
         let mode_column = h_flex()
             .gap_1()
             .min_w_64()
-            .child(
-                IconButton::new("project-search-filter-button", IconName::Filter)
-                    .shape(IconButtonShape::Square)
-                    .tooltip(|_window, cx| {
-                        Tooltip::for_action("Toggle Filters", &ToggleFilters, cx)
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.toggle_filters(window, cx);
-                    }))
-                    .toggle_state(
-                        self.active_project_search
-                            .as_ref()
-                            .map(|search| search.read(cx).filters_enabled)
-                            .unwrap_or_default(),
-                    )
-                    .tooltip({
-                        let focus_handle = focus_handle.clone();
-                        move |_window, cx| {
-                            Tooltip::for_action_in(
-                                "Toggle Filters",
-                                &ToggleFilters,
-                                &focus_handle,
-                                cx,
-                            )
-                        }
-                    }),
-            )
-            .child(render_action_button(
-                "project-search",
-                IconName::Replace,
-                self.active_project_search
-                    .as_ref()
-                    .map(|search| search.read(cx).replace_enabled)
-                    .and_then(|enabled| enabled.then_some(ActionButtonState::Toggled)),
-                "Toggle Replace",
-                &ToggleReplace,
-                focus_handle.clone(),
-            ))
+            .when(search.filters_enabled, |this| {
+                this.child(
+                    IconButton::new("project-search-filter-button", IconName::Filter)
+                        .shape(IconButtonShape::Square)
+                        .tooltip(|_window, cx| {
+                            Tooltip::for_action("Toggle Filters", &ToggleFilters, cx)
+                        })
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_filters(window, cx);
+                        }))
+                        .toggle_state(
+                            self.active_project_search
+                                .as_ref()
+                                .map(|search| search.read(cx).filters_enabled)
+                                .unwrap_or_default(),
+                        )
+                        .tooltip({
+                            let focus_handle = focus_handle.clone();
+                            move |_window, cx| {
+                                Tooltip::for_action_in(
+                                    "Toggle Filters",
+                                    &ToggleFilters,
+                                    &focus_handle,
+                                    cx,
+                                )
+                            }
+                        }),
+                )
+            })
+            .when(search.replace_enabled, |this| {
+                this.child(render_action_button(
+                    "project-search",
+                    IconName::Replace,
+                    self.active_project_search
+                        .as_ref()
+                        .map(|search| search.read(cx).replace_enabled)
+                        .and_then(|enabled| enabled.then_some(ActionButtonState::Toggled)),
+                    "Toggle Replace",
+                    &ToggleReplace,
+                    focus_handle.clone(),
+                ))
+            })
             .child(matches_column);
 
         let is_collapsed = search.results_editor.read(cx).has_any_buffer_folded(cx);

@@ -61,3 +61,8 @@ crates/docs_preprocessor/actions.json
 
 .local*
 .cache
+
+# Local commercial font files (not redistributable).
+/assets/fonts/gellix/
+# Per-machine build settings (signing identity, workspace).
+/script/brainz-local.env

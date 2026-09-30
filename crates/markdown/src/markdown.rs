@@ -51,7 +51,9 @@ use parser::{
 use pulldown_cmark::{Alignment, BlockQuoteKind};
 use sum_tree::TreeMap;
 use theme::SyntaxTheme;
-use ui::{Checkbox, CopyButton, ScrollAxes, Scrollbars, Tooltip, WithScrollbar, prelude::*};
+use ui::{
+    Checkbox, CopyButton, ScrollAxes, Scrollbars, StickyTopRight, Tooltip, WithScrollbar, prelude::*,
+};
 use util::ResultExt;
 
 use crate::parser::CodeBlockKind;
@@ -1738,6 +1740,116 @@ pub struct MarkdownElement {
     on_render: Option<Box<dyn Fn(RenderedText)>>,
 }
 
+/// Brainz: turns Markdown source into plain text for the clipboard: bold and
+/// code markers go, headings lose their hashes, links keep their text (and
+/// the URL in parentheses when it differs). Meant for emails and notes.
+pub fn markdown_to_plain_text(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let indent = &line[..line.len() - trimmed.len()];
+        let body = trimmed.trim_start_matches('#');
+        let body = if body.len() != trimmed.len() {
+            body.trim_start()
+        } else {
+            trimmed
+        };
+        let body = body.strip_prefix("* ").map(|rest| format!("- {rest}")).unwrap_or_else(|| body.to_owned());
+        let mut cleaned = String::with_capacity(body.len());
+        let mut chars = body.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '*' if chars.peek() == Some(&'*') => {
+                    chars.next();
+                }
+                '_' if chars.peek() == Some(&'_') => {
+                    chars.next();
+                }
+                '`' => {}
+                '[' => {
+                    // [text](url) → text (url); anything else is left alone.
+                    let rest: String = chars.clone().collect();
+                    if let Some(close) = rest.find("](")
+                        && let Some(end) = rest[close + 2..].find(')')
+                    {
+                        let text = &rest[..close];
+                        let url = &rest[close + 2..close + 2 + end];
+                        cleaned.push_str(text);
+                        if !url.is_empty() && url != text && !text.contains(url) {
+                            cleaned.push_str(" (");
+                            cleaned.push_str(url);
+                            cleaned.push(')');
+                        }
+                        for _ in 0..(close + 2 + end + 1) {
+                            chars.next();
+                        }
+                    } else {
+                        cleaned.push('[');
+                    }
+                }
+                other => cleaned.push(other),
+            }
+        }
+        out.push_str(indent);
+        out.push_str(&cleaned);
+        out.push('\n');
+    }
+    out.trim_end().to_owned()
+}
+
+/// Brainz: `notes/x/2026-09-28/debrief.md:12` renders
+/// as `onsite-debrief.md:12`. Text without a directory is returned as is.
+fn brainz_file_link_label(text: &str) -> String {
+    let trimmed = text.trim();
+    let (path, suffix) = match trimmed.find(['#', ':']) {
+        Some(ix) if ix > 0 => (&trimmed[..ix], &trimmed[ix..]),
+        _ => (trimmed, ""),
+    };
+    let path = path.trim_end_matches('/');
+    match path.rsplit('/').next() {
+        Some(name) if !name.is_empty() && name.len() < path.len() => {
+            let name = name.strip_suffix(".md").unwrap_or(name);
+            format!("{name}{suffix}")
+        }
+        _ => trimmed.to_owned(),
+    }
+}
+
+const BRAINZ_FILE_EXTENSIONS: &[&str] = &[
+    "md", "json", "toml", "yaml", "yml", "txt", "csv", "rs", "ts", "tsx", "js", "py", "swift",
+    "sh", "html", "css",
+];
+
+/// Byte ranges of whitespace-separated tokens that look like a file or folder
+/// path: they contain a `/` or end with a known extension, and are not URLs.
+/// Surrounding punctuation is left outside the range.
+fn brainz_file_like_tokens(text: &str) -> Vec<(usize, usize)> {
+    let mut tokens = Vec::new();
+    let mut offset = 0;
+    for raw in text.split(' ') {
+        let start_of_raw = offset;
+        offset += raw.len() + 1;
+        let leading = raw.len() - raw.trim_start_matches(['(', '[', '"', '\'']).len();
+        let core = &raw[leading..];
+        let trailing = core.len()
+            - core
+                .trim_end_matches(['.', ',', ';', ':', ')', ']', '!', '?', '"', '\''])
+                .len();
+        let core = &core[..core.len() - trailing];
+        if core.len() < 3 || core.contains("://") || !core.chars().any(|c| c.is_alphabetic()) {
+            continue;
+        }
+        let has_slash = core.contains('/') && !core.starts_with('/');
+        let has_extension = core
+            .rsplit_once('.')
+            .is_some_and(|(stem, ext)| !stem.is_empty() && BRAINZ_FILE_EXTENSIONS.contains(&ext));
+        if has_slash || has_extension {
+            tokens.push((start_of_raw + leading, start_of_raw + leading + core.len()));
+        }
+    }
+    tokens
+}
+
 impl MarkdownElement {
     pub fn new(markdown: Entity<Markdown>, style: MarkdownStyle) -> Self {
         Self {
@@ -1891,15 +2003,32 @@ impl MarkdownElement {
 
         if let Some(url) = link_url {
             builder.push_link(url.clone(), range.clone());
-            let link_style = self
+            let mut link_style = self
                 .style
                 .link_callback
                 .as_ref()
                 .and_then(|callback| callback(url.as_ref(), cx))
                 .unwrap_or_else(|| self.style.link.clone());
+            // Brainz: a resolved file reads as a filled pill in the link
+            // colour, not underlined text on a faint tile.
+            link_style.underline = Some(gpui::UnderlineStyle {
+                thickness: px(0.),
+                color: None,
+                wavy: false,
+            });
+            let pill_background = link_style
+                .color
+                .or(code_style.color)
+                .map(|color| color.opacity(0.16))
+                .or(chip_background);
             builder.push_text_style(code_style);
             builder.push_text_style(link_style);
-            builder.push_code_chip_text(text, range, chip_background);
+            // Brainz: a resolved file link shows just the document name; the
+            // full path is still the link destination.
+            // Thin spaces inside the chip reserve real width in layout, so
+            // the pill has air on both sides without crowding its neighbours.
+            let label = format!("\u{2009}{}\u{2009}", brainz_file_link_label(text));
+            builder.push_code_chip_text(&label, range, pill_background);
             builder.pop_text_style();
             builder.pop_text_style();
         } else {
@@ -1909,6 +2038,53 @@ impl MarkdownElement {
             builder.push_text_style(code_style);
             builder.push_code_chip_text(text, range, chip_background);
             builder.pop_text_style();
+        }
+    }
+
+    /// Brainz: plain prose that names a file or folder in the project
+    /// (`CLAUDE.md`, `notes/`) gets the same clickable pill as a code
+    /// span would. Only tokens the resolver recognises are touched.
+    fn push_text_with_file_pills(
+        &self,
+        builder: &mut MarkdownElementBuilder,
+        text: &str,
+        range: Range<usize>,
+        cx: &mut App,
+    ) {
+        let Some(resolver) = self.code_span_link.as_ref() else {
+            builder.push_text(text, range);
+            return;
+        };
+        if !builder.code_block_stack.is_empty()
+            || builder.link_depth > 0
+            || self.style.prevent_mouse_interaction
+            || text.len() != range.len()
+        {
+            builder.push_text(text, range);
+            return;
+        }
+        let mut cursor = 0;
+        for (start, end) in brainz_file_like_tokens(text) {
+            let token = &text[start..end];
+            if resolver(token, cx).is_none() {
+                continue;
+            }
+            if start > cursor {
+                builder.push_text(
+                    &text[cursor..start],
+                    range.start + cursor..range.start + start,
+                );
+            }
+            self.push_markdown_code_span(
+                builder,
+                token,
+                range.start + start..range.start + end,
+                cx,
+            );
+            cursor = end;
+        }
+        if cursor < text.len() {
+            builder.push_text(&text[cursor..], range.start + cursor..range.end);
         }
     }
 
@@ -2073,7 +2249,34 @@ impl MarkdownElement {
         kind: Option<pulldown_cmark::BlockQuoteKind>,
         range: &Range<usize>,
         markdown_end: usize,
+        quote_source: String,
     ) {
+        // Brainz: hovering a quote shows a copy button that copies just the
+        // quoted text, without the `>` markers, so a drafted email or note
+        // can go straight to the clipboard.
+        let unquoted: String = quote_source
+            .lines()
+            .map(|line| {
+                let line = line.trim_start();
+                let line = line.strip_prefix('>').unwrap_or(line);
+                line.strip_prefix(' ').unwrap_or(line)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let copy_text = markdown_to_plain_text(unquoted.trim());
+        let group_name = SharedString::from(format!("markdown-quote-{}", range.start));
+        let has_copy_text = !copy_text.is_empty();
+        // The button rides along the top of the visible part of a long
+        // quote, so a drafted email never needs scrolling back up to copy.
+        let copy_button = StickyTopRight::new(
+            px(0.),
+            div().when(!has_copy_text, |this| this.invisible()).child(
+                CopyButton::new(("markdown-quote-copy", range.start), copy_text)
+                    .icon_size(IconSize::XSmall)
+                    .tooltip_label("Copy quote")
+                    .visible_on_hover(group_name.clone()),
+            ),
+        );
         let border_color = self
             .style
             .block_quote_kind_colors
@@ -2105,10 +2308,14 @@ impl MarkdownElement {
         });
 
         let block_div = div()
+            .relative()
+            .group(group_name)
             .pl_4()
+            .pr_8()
             .mb(self.style.paragraph_spacing)
             .border_l_4()
-            .border_color(border_color);
+            .border_color(border_color)
+            .child(copy_button);
         let block_div = match header {
             Some(header) => block_div.child(header),
             None => block_div,
@@ -2734,11 +2941,17 @@ impl Element for MarkdownElement {
                             );
                         }
                         MarkdownTag::BlockQuote(kind) => {
+                            let quote_source = parsed_markdown
+                                .source
+                                .get(range.clone())
+                                .unwrap_or_default()
+                                .to_owned();
                             self.push_markdown_block_quote(
                                 &mut builder,
                                 *kind,
                                 range,
                                 markdown_end,
+                                quote_source,
                             );
                         }
                         MarkdownTag::CodeBlock { kind, .. } => {
@@ -3211,7 +3424,12 @@ impl Element for MarkdownElement {
                     _ => log::debug!("unsupported markdown tag end: {:?}", tag),
                 },
                 MarkdownEvent::Text => {
-                    builder.push_text(&parsed_markdown.source[range.clone()], range.clone());
+                    self.push_text_with_file_pills(
+                        &mut builder,
+                        &parsed_markdown.source[range.clone()],
+                        range.clone(),
+                        cx,
+                    );
                 }
                 MarkdownEvent::SubstitutedText(text) => {
                     builder.push_text(text, range.clone());
@@ -4331,7 +4549,6 @@ struct RenderedLine {
 impl RenderedLine {
     /// Painted before the glyphs so the text renders on top of the chips
     fn paint_code_chips(&self, window: &mut Window) {
-        const CHIP_CORNER_RADIUS: Pixels = px(4.);
 
         if self.code_chips.is_empty() {
             return;
@@ -4346,9 +4563,9 @@ impl RenderedLine {
                 &wrapped_line_segments,
                 rendered_range.clone(),
                 |bounds| {
-                    // Kept to a hair since the layout reserves no padding and
-                    // anything wider eats the gap to neighboring words
-                    let horizontal_outset = px(1.);
+                    // Brainz: a touch wider than upstream so the pill's round
+                    // ends clear the first and last glyphs.
+                    let horizontal_outset = px(2.);
                     // Inset vertically so the chip hugs the glyphs like a badge
                     // instead of filling the whole line box
                     let vertical_inset = bounds.size.height * 0.1;
@@ -4362,9 +4579,11 @@ impl RenderedLine {
                             bounds.size.height - vertical_inset * 2.,
                         ),
                     };
+                    // Brainz: fully rounded ends, a pill rather than a tile.
+                    let chip_corner_radius = chip_bounds.size.height / 2.;
                     window.paint_quad(quad(
                         chip_bounds,
-                        CHIP_CORNER_RADIUS,
+                        chip_corner_radius,
                         *color,
                         Edges::default(),
                         Hsla::transparent_black(),

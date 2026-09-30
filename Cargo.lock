@@ -2410,6 +2410,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "brainz_calendar"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "editor",
+ "gpui",
+ "log",
+ "markdown",
+ "menu",
+ "paths",
+ "serde",
+ "serde_json",
+ "smol",
+ "terminal_view",
+ "toml 0.8.23",
+ "ui",
+ "workspace",
+]
+
+[[package]]
 name = "breadcrumbs"
 version = "0.1.0"
 dependencies = [
@@ -14199,6 +14220,7 @@ name = "project_panel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "brainz_calendar",
  "client",
  "collections",
  "criterion",
@@ -22793,6 +22815,7 @@ dependencies = [
  "audio",
  "auto_update",
  "auto_update_ui",
+ "brainz_calendar",
  "breadcrumbs",
  "call",
  "call_hierarchy",
