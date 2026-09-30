@@ -1,5 +1,5 @@
 // Brainz calendar helper. Prints the next N days of events as JSON so the
-// Calendar tab can render them. Borrowed from My Man's EventKit reading:
+// Calendar tab can render them. Plain EventKit reading:
 // a fresh EKEventStore per read (cached stores go stale), timed and all-day
 // events, every account macOS Calendar knows about.
 import EventKit
