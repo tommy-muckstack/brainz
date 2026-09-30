@@ -1,7 +1,7 @@
-//! Brainz: the Themes tab. Rising, fading, cross-folder threads, and open
-//! loops over the brain's git history, from `ops/themes/signals.json`
-//! (written by the signals pass in `themes_signals`), plus the Grokbot
-//! narrative block of `ops/themes/themes.md` rendered as Markdown.
+//! Brainz: the Themes tab. Rising and fading themes over the brain's git
+//! history, from `ops/themes/signals.json` (written by the signals pass in
+//! `themes_signals`). Threads, open loops, and the narrative stay in the
+//! files for the bots; the tab shows only the two lists and any pins.
 
 use std::{
     collections::HashSet,
@@ -14,7 +14,6 @@ use gpui::{
     App, Entity, EventEmitter, FocusHandle, Focusable, Global, Subscription, Task, WeakEntity,
     Window, actions,
 };
-use markdown::{Markdown, MarkdownElement, MarkdownStyle};
 use ui::{ContextMenu, Disclosure, PopoverMenu, Tooltip, prelude::*};
 use workspace::{
     HideStatusItem, Item, ItemHandle, OpenOptions, OpenVisible, StatusItemView, Workspace,
@@ -43,10 +42,34 @@ const PICKER_LIMIT: usize = 30;
 pub fn init(cx: &mut App) {
     let global_runner = cx.new(ThemesRunner::new);
     cx.set_global(GlobalRunner(global_runner));
-    cx.observe_new(|workspace: &mut Workspace, _, _| {
+    cx.observe_new(|workspace: &mut Workspace, window, cx| {
         workspace.register_action(|workspace, _: &OpenThemes, window, cx| {
             ThemesView::open(workspace, window, cx);
         });
+        // Brainz: Themes is the landing tab. The project's roots arrive a
+        // moment after the workspace, so wait for them before opening.
+        if let Some(window) = window {
+            cx.spawn_in(window, async move |workspace, cx| {
+                for _ in 0..40 {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(250))
+                        .await;
+                    let opened = workspace.update_in(cx, |workspace, window, cx| {
+                        if workspace.root_paths(cx).is_empty() {
+                            return false;
+                        }
+                        if workspace.items_of_type::<ThemesView>(cx).next().is_none() {
+                            ThemesView::open(workspace, window, cx);
+                        }
+                        true
+                    });
+                    if opened.unwrap_or(true) {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
         workspace.register_action(|workspace, _: &RunThemesPass, _window, cx| {
             let Some(root) = workspace.root_paths(cx).first().map(|path| path.to_path_buf())
             else {
@@ -147,8 +170,6 @@ pub struct ThemesView {
     config: BrainConfig,
     signals: Option<Signals>,
     error: Option<String>,
-    narrative_text: Option<String>,
-    narrative: Option<Entity<Markdown>>,
     themes_md_modified: Option<SystemTime>,
     expanded: HashSet<String>,
     renaming: Option<(String, Entity<Editor>)>,
@@ -212,8 +233,6 @@ impl ThemesView {
             config,
             signals: None,
             error: None,
-            narrative_text: None,
-            narrative: None,
             expanded: HashSet::new(),
             renaming: None,
             merging: None,
@@ -231,15 +250,10 @@ impl ThemesView {
         let config = self.config.clone();
         self._load = Some(cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move {
-                    let signals = signals::load_signals(&repo, &config);
-                    let narrative = signals::load_narrative(&repo, &config);
-                    (signals, narrative)
-                })
+                .background_spawn(async move { signals::load_signals(&repo, &config) })
                 .await;
             this.update(cx, |this, cx| {
-                let (signals, narrative) = result;
-                match signals {
+                match result {
                     Ok(signals) => {
                         this.signals = Some(signals);
                         this.error = None;
@@ -249,12 +263,6 @@ impl ThemesView {
                             this.error = Some(format!("{error:#}"));
                         }
                     }
-                }
-                if narrative != this.narrative_text {
-                    this.narrative = narrative.as_ref().map(|text| {
-                        cx.new(|cx| Markdown::new(text.clone().into(), None, None, cx))
-                    });
-                    this.narrative_text = narrative;
                 }
                 cx.notify();
             })
@@ -720,78 +728,6 @@ impl ThemesView {
         block.into_any_element()
     }
 
-    fn render_open_loops(&self, signals: &Signals) -> AnyElement {
-        let total_now: u32 = signals.open_loops.iter().map(|loops| loops.now).sum();
-        let mut block = v_flex()
-            .w_full()
-            .child(self.section_title("Open loops", total_now as usize));
-        for loops in &signals.open_loops {
-            let delta = loops.now as i64 - loops.week_ago as i64;
-            block = block.child(
-                h_flex()
-                    .w_full()
-                    .px_2()
-                    .py_0p5()
-                    .gap_3()
-                    .child(div().w(px(180.)).child(Label::new(loops.folder.clone())))
-                    .child(
-                        Label::new(format!("{} now", loops.now)).size(LabelSize::Small),
-                    )
-                    .child(
-                        Label::new(format!("{} a week ago", loops.week_ago))
-                            .size(LabelSize::Small)
-                            .color(Color::Muted),
-                    )
-                    .child(
-                        Label::new(format!("{delta:+}"))
-                            .size(LabelSize::Small)
-                            .color(if delta > 0 {
-                                Color::Warning
-                            } else if delta < 0 {
-                                Color::Success
-                            } else {
-                                Color::Placeholder
-                            }),
-                    ),
-            );
-        }
-        block.into_any_element()
-    }
-
-    fn render_narrative(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let mut block = v_flex()
-            .w_full()
-            .child(self.section_title("Narrative", 0));
-        match &self.narrative {
-            Some(markdown) => {
-                let style = MarkdownStyle {
-                    base_text_style: window.text_style(),
-                    syntax: cx.theme().syntax().clone(),
-                    selection_background_color: cx.theme().colors().element_selection_background,
-                    ..Default::default()
-                };
-                block = block.child(
-                    div()
-                        .px_2()
-                        .child(MarkdownElement::new(markdown.clone(), style)),
-                );
-            }
-            None => {
-                block = block.child(
-                    div().px_2().py_1().child(
-                        Label::new(format!(
-                            "No narrative yet. Whatever bot you use writes prose into the narrative \
-                             block of {}; see the prompt file next to it.",
-                            self.config.themes_file(signals::THEMES_NAME)
-                        ))
-                        .size(LabelSize::Small)
-                        .color(Color::Placeholder),
-                    ),
-                );
-            }
-        }
-        block.into_any_element()
-    }
 }
 
 impl EventEmitter<()> for ThemesView {}
@@ -889,13 +825,10 @@ impl Render for ThemesView {
                 self.render_theme_list("Rising", &signals.rising, 0, window, cx),
                 self.render_theme_list("Fading", &signals.fading, 2000, window, cx),
             ));
-            body.push(pair(
-                self.render_theme_list("New", &signals.fresh, 1000, window, cx),
-                self.render_theme_list("Pinned", &pinned, 3000, window, cx),
-            ));
-            body.push(self.render_open_loops(&signals));
+            if !pinned.is_empty() {
+                body.push(self.render_theme_list("Pinned", &pinned, 3000, window, cx));
+            }
         }
-        body.push(self.render_narrative(window, cx));
 
         v_flex()
             .id("brainz-themes")
