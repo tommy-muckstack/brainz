@@ -2025,7 +2025,9 @@ impl MarkdownElement {
             builder.push_text_style(link_style);
             // Brainz: a resolved file link shows just the document name; the
             // full path is still the link destination.
-            let label = brainz_file_link_label(text);
+            // Thin spaces inside the chip reserve real width in layout, so
+            // the pill has air on both sides without crowding its neighbours.
+            let label = format!("\u{2009}{}\u{2009}", brainz_file_link_label(text));
             builder.push_code_chip_text(&label, range, pill_background);
             builder.pop_text_style();
             builder.pop_text_style();
@@ -4563,7 +4565,7 @@ impl RenderedLine {
                 |bounds| {
                     // Brainz: a touch wider than upstream so the pill's round
                     // ends clear the first and last glyphs.
-                    let horizontal_outset = px(3.);
+                    let horizontal_outset = px(2.);
                     // Inset vertically so the chip hugs the glyphs like a badge
                     // instead of filling the whole line box
                     let vertical_inset = bounds.size.height * 0.1;
