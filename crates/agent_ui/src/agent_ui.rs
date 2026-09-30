@@ -70,6 +70,7 @@ use workspace::{OpenOptions, Workspace};
 
 use crate::agent_configuration::ManageProfilesModal;
 pub use crate::agent_connection_store::{ActiveAcpConnection, AgentConnectionStore};
+pub use crate::conversation_view::BrainzThreadColors;
 pub use crate::agent_panel::{
     AgentPanel, AgentPanelEvent, AgentPanelTerminalInfo, TerminalId, ThreadTitleRegenerationResult,
 };
