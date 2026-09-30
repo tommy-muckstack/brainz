@@ -199,7 +199,12 @@ impl ReleaseChannel {
 
     /// Returns whether we want to poll for updates for this [`ReleaseChannel`]
     pub fn poll_for_updates(&self) -> bool {
-        !matches!(self, ReleaseChannel::Dev)
+        // Brainz ships on the dev channel; only packaged releases (built with
+        // BRAINZ_VERSION) poll, so source builds never try to update.
+        match self {
+            ReleaseChannel::Dev => option_env!("BRAINZ_VERSION").is_some(),
+            _ => true,
+        }
     }
 
     /// Returns the display name for this [`ReleaseChannel`].
