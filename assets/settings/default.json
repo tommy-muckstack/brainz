@@ -54,7 +54,7 @@
   "buffer_line_height": "comfortable",
   // The name of a font to use for rendering text in the UI
   // You can set this to ".SystemUIFont" to use the system font
-  "ui_font_family": "Gellix",
+  "ui_font_family": "DM Sans",
   // Set the UI's font fallbacks, this will be merged with the platform's
   // default font fallbacks.
   "ui_font_fallbacks": null,
@@ -68,11 +68,11 @@
   // The default font size for text in the UI
   "ui_font_size": 16,
   // The font family for agent responses in the agent panel. Falls back to the UI font family if unset.
-  "agent_ui_font_family": "Gellix",
+  "agent_ui_font_family": "DM Sans",
   // The default font size for agent responses in the agent panel. Falls back to the UI font size if unset.
   "agent_ui_font_size": 16,
   // The font family for user messages in the agent panel. Falls back to the buffer font family if unset.
-  "agent_buffer_font_family": "Gellix",
+  "agent_buffer_font_family": "DM Sans",
   // The default font size for user messages in the agent panel.
   "agent_buffer_font_size": 14,
   // The default font size for the commit editor in the git panel and commit modal.
