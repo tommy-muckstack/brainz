@@ -620,8 +620,8 @@ fn default_pins() -> String {
     "# Themes pins\n\nHuman curation for the signals pass. The Themes tab in Brainz appends lines \
      here; editing by hand works too. The pass reads this file and never rewrites it. Hidden themes \
      stay in `signals.json`, they just stop rendering.\n\nOne line per rule, in these forms \
-     (uncomment to use):\n\n<!-- - pin: tekmetric -->\n<!-- - rename: pls => product-led sales -->\n\
-     <!-- - merge: roofer, roofr => roofr -->\n<!-- - hide: read -->\n"
+     (uncomment to use):\n\n<!-- - pin: acme -->\n<!-- - rename: pls => product-led sales -->\n\
+     <!-- - merge: globex corp, globex inc => globex -->\n<!-- - hide: read -->\n"
         .to_owned()
 }
 
@@ -1139,7 +1139,7 @@ pub fn repo_path(repo: &Path, relative: &str) -> PathBuf {
     repo.join(relative)
 }
 
-/// `interviews/companies/tekmetric/CLAUDE.md` → `tekmetric / CLAUDE`.
+/// `interviews/companies/acme/CLAUDE.md` → `acme / CLAUDE`.
 pub fn file_label(path: &str) -> String {
     let mut parts = path.rsplit('/');
     let file = parts.next().unwrap_or(path);
@@ -1157,9 +1157,9 @@ mod tests {
     fn vocab() -> Vocabulary {
         Vocabulary::from_tree(
             &[
-                "network/rich-rutitis.md".into(),
+                "network/ada-lovelace.md".into(),
                 "network/CLAUDE.md".into(),
-                "interviews/companies/tekmetric/notes.md".into(),
+                "interviews/companies/acme/notes.md".into(),
                 "interviews/companies/archive/old.md".into(),
                 "muckstack/projects/Course-and-Cloth/CLAUDE.md".into(),
             ],
@@ -1171,16 +1171,16 @@ mod tests {
     #[test]
     fn extracts_bold_wiki_vocabulary_and_capitalized_runs() {
         let terms = extract_terms(
-            "**Cold Start Problem** with [[tekmetric/roster|the roster]] and pls for Rich Rutitis at Roofr Inc.",
+            "**Cold Start Problem** with [[acme/roster|the roster]] and pls for Ada Lovelace at Globex Inc.",
             &vocab(),
         );
         let keys: Vec<&str> = terms.iter().map(|t| t.key.as_str()).collect();
         assert!(keys.contains(&"cold start problem"), "{keys:?}");
         assert!(keys.contains(&"roster"), "{keys:?}");
         assert!(keys.contains(&"pls"), "{keys:?}");
-        assert!(keys.contains(&"rich rutitis"), "{keys:?}");
-        assert!(keys.contains(&"roofr inc"), "{keys:?}");
-        assert!(keys.contains(&"tekmetric"), "{keys:?}");
+        assert!(keys.contains(&"ada lovelace"), "{keys:?}");
+        assert!(keys.contains(&"globex inc"), "{keys:?}");
+        assert!(keys.contains(&"acme"), "{keys:?}");
         assert!(!keys.contains(&"archive"));
     }
 
@@ -1200,7 +1200,7 @@ mod tests {
     #[test]
     fn dates_times_identifiers_and_sentences_are_not_terms() {
         let terms = extract_terms(
-            "**Fri 2026-09-25 1:00pm ET** and **calories_kcal** and **calendar personal wins over toni email where they disagree** but **Cold Start**",
+            "**Fri 2026-09-25 1:00pm ET** and **calories_kcal** and **calendar personal wins over the email where they disagree** but **Cold Start**",
             &vocab(),
         );
         let keys: Vec<&str> = terms.iter().map(|t| t.key.as_str()).collect();
@@ -1218,20 +1218,20 @@ mod tests {
     #[test]
     fn parses_pins_forms_and_ignores_comments() {
         let pins = parse_pins(
-            "# Pins\n<!-- - pin: ignored -->\n- pin: Tekmetric\n- rename: pls => product-led sales\n- merge: roofer, Roofr Inc => roofr\n- hide: read\n- bogus: x\n",
+            "# Pins\n<!-- - pin: ignored -->\n- pin: Acme\n- rename: pls => product-led sales\n- merge: globex corp, Globex Inc => globex\n- hide: read\n- bogus: x\n",
         );
-        assert_eq!(pins.pin, vec!["tekmetric"]);
+        assert_eq!(pins.pin, vec!["acme"]);
         assert_eq!(
             pins.rename,
             vec![("pls".to_owned(), "product-led sales".to_owned())]
         );
         assert_eq!(
             pins.merge,
-            vec![(vec!["roofer".to_owned(), "roofr inc".to_owned()], "roofr".to_owned())]
+            vec![(vec!["globex corp".to_owned(), "globex inc".to_owned()], "globex".to_owned())]
         );
         assert_eq!(pins.hide, vec!["read"]);
         assert_eq!(pins.canonical("pls").0, "product-led sales");
-        assert_eq!(pins.canonical("roofer").0, "roofr");
+        assert_eq!(pins.canonical("globex corp").0, "globex");
         assert_eq!(pins.canonical("other").0, "other");
     }
 
@@ -1320,7 +1320,7 @@ mod real_brain {
             println!("THREAD {} {:?} gaps {}", t.theme, t.folders, t.links.iter().filter(|l| !l.linked).count());
         }
         println!("LOOPS {:?}", signals.open_loops.iter().map(|l| (l.folder.as_str(), l.now, l.week_ago)).collect::<Vec<_>>());
-        for want in ["tekmetric", "pls", "product-led sales"] {
+        for want in ["pls", "product-led sales"] {
             if let Some(t) = signals.themes.iter().find(|t| t.id == want) {
                 println!("CHECK {want}: {:?}", t.series);
             } else {
