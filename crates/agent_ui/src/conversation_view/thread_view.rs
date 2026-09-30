@@ -4378,6 +4378,8 @@ impl ThreadView {
         let max_content_width = AgentSettings::get_global(cx).max_content_width;
         let has_messages = self.list_state.item_count() > 0;
         let fills_container = !has_messages || editor_expanded;
+        // Brainz: the card outlines in amber while there is a draft in it.
+        let has_draft = !self.message_editor.read(cx).is_empty(cx);
 
         // Brainz: the composer is a rounded card floating inside the panel,
         // like the ChatGPT input: text on top, plus at bottom-left, send at
@@ -4409,7 +4411,11 @@ impl ThreadView {
                     .pb_2p5()
                     .rounded(px(22.))
                     .border_1()
-                    .border_color(cx.theme().colors().border)
+                    .border_color(if has_draft {
+                        cx.theme().colors().text_accent
+                    } else {
+                        cx.theme().colors().border
+                    })
                     .bg(cx.theme().colors().editor_background)
                     .shadow_sm()
                     .flex_shrink_1()
