@@ -282,7 +282,7 @@ repl = { workspace = true, features = ["test-support"] }
 
 [package.metadata.bundle-dev]
 icon = ["resources/brainz-icon.png"]
-identifier = "com.tommymuckstack.brainz"
+identifier = "app.brainz.desktop"
 name = "Brainz"
 osx_minimum_system_version = "10.15.7"
 osx_info_plist_exts = ["resources/info/*"]

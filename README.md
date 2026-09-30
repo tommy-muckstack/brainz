@@ -3,7 +3,7 @@
 
 # Brainz
 
-A personal desktop workspace for `tommy-brain`, built from Zed. Files on the left,
+A personal desktop workspace for a Markdown notes repo (your "brain"), built from Zed. Files on the left,
 Markdown reading in the center, and a terminal below, with Gellix typography and
 a charcoal-and-amber theme.
 
@@ -32,7 +32,7 @@ you send.
 The calendar button in the status bar (bottom left) opens a **Calendar** tab
 with the next seven days, read from every account macOS Calendar knows about.
 It uses a small bundled helper built from `script/brainz-calendar.swift`, the
-same EventKit approach as My Man. macOS asks for Calendar access the first
+standard EventKit approach. macOS asks for Calendar access the first
 time; the tab refreshes every five minutes and on demand. Sent messages sit on
 the right in the tab's colour; replies sit on the left. Hovering a reply or a
 quoted draft shows a copy button that rides along the top of the visible part
@@ -47,12 +47,12 @@ approves that one tool call in place, next to View and Dismiss. The message box 
 "Type message…", grows as you type, and keeps model and mode options behind the
 gear button.
 
-The checkbox button next to the calendar opens a **To-Do** tab over
-`ops/desk/TODO.md`, the check-off board TodoBot maintains in the brain. It shows
-Today, Urgent, and Delayed sections with Done folded away, and refreshes every
-30 seconds. Ticking an item checks it in place with today's date and shows it
-struck through in amber, so nothing vanishes; un-ticking clears the box.
-TodoBot tidies checked items into Done on its next pass.
+The checkbox button next to the calendar opens a **To-Do** tab over the
+brain's check-off board (`TODO.md` at the root, or the `todo` path in
+`brainz.toml`). Sections are `##` headings, items are `- [ ]` lines, and Done
+folds away; it refreshes every 30 seconds. Ticking an item checks it in place
+with today's date and shows it struck through in amber, so nothing vanishes;
+un-ticking clears the box. Whoever maintains the board tidies Done later.
 
 The trend-line button next to the MCP button opens a **Themes** tab: what the
 brain has been about, computed from its git history. **Run now** (or a daily
@@ -62,11 +62,11 @@ in the repo, and capitalized phrases into weighted themes with a 12-week
 sparkline and momentum. The tab shows Rising, New, and Fading themes, Threads
 (themes spanning three or more folders, with the files that fail to link to
 each other), Open loops (⏳ and ⏰ lines per folder against a week ago), your
-Pinned themes, and the narrative Grokbot writes from its own prompt file.
+Pinned themes, and the narrative your bot writes from its own prompt file.
 Expand a theme for its top files and co-mentioned people; click either to
 open it. Pin, Rename, Merge into…, and Hide append a line to
-`ops/themes/pins.md` and re-run the pass, so nothing is ever deleted from
-`signals.json`. Output lands in `ops/themes/` in the working tree and the
+the themes folder's `pins.md` and re-run the pass, so nothing is ever
+deleted from `signals.json`. Output lands in the themes folder of the working tree and the
 Sync banner carries it to GitHub like any other change.
 
 The MCP button next to it opens an **MCP Connectors** tab listing the servers
@@ -85,7 +85,8 @@ macOS remembers permission grants across rebuilds. Override it with
 **Another machine or another brain.** Nothing about one machine is baked
 into the code. The build script takes `BRAINZ_SIGNING_IDENTITY` (falls back
 to ad-hoc signing with a warning) and `BRAINZ_WORKSPACE` (the brain to open;
-default `~/tommy-brain`). Gellix font files are not in Git, so copy
+default `~/brain`), both of which can live in an untracked
+`script/brainz-local.env`. Gellix font files are not in Git, so copy
 `assets/fonts/gellix/` over. Sign in to Claude and Codex once there; their
 config lives under `~/.config/brainz/`. The brain's layout comes from an
 optional `brainz.toml` at the brain's root, every key optional: `todo` (the

@@ -50,7 +50,7 @@ const NARRATIVE_START: &str = "<!-- narrative:start -->";
 const NARRATIVE_END: &str = "<!-- narrative:end -->";
 
 const STOPLIST: &[&str] = &[
-    "tommy", "claude", "read", "status", "next", "the", "monday", "tuesday", "wednesday",
+    "claude", "read", "status", "next", "the", "monday", "tuesday", "wednesday",
     "thursday", "friday", "saturday", "sunday", "mon", "tue", "tues", "wed", "thu", "thur",
     "thurs", "fri", "sat", "sun", "january", "february", "march", "april", "may", "june", "july",
     "august", "september", "october", "november", "december", "jan", "feb", "mar", "apr", "jun",
@@ -235,8 +235,9 @@ pub fn normalize_key(term: &str) -> String {
     key.trim().to_owned()
 }
 
-fn is_stopword(word: &str) -> bool {
-    STOPLIST.contains(&word.to_ascii_lowercase().as_str())
+fn is_stopword(word: &str, extra: &[String]) -> bool {
+    let word = word.to_ascii_lowercase();
+    STOPLIST.contains(&word.as_str()) || extra.iter().any(|stop| stop.eq_ignore_ascii_case(&word))
 }
 
 /// A term the pass will count, with the display casing to show for it.
@@ -246,7 +247,7 @@ pub struct Term {
     pub display: String,
 }
 
-fn make_term(display: &str) -> Option<Term> {
+fn make_term(display: &str, stop_words: &[String]) -> Option<Term> {
     let display = display.trim().trim_matches(|c: char| !c.is_alphanumeric() && c != '&');
     let key = normalize_key(display);
     if key.chars().count() < MIN_TERM_CHARS || key.chars().count() > MAX_TERM_CHARS {
@@ -265,7 +266,7 @@ fn make_term(display: &str) -> Option<Term> {
     if display.contains('_') {
         return None;
     }
-    if key.split(' ').any(is_stopword) {
+    if key.split(' ').any(|word| is_stopword(word, stop_words)) {
         return None;
     }
     Some(Term {
@@ -279,6 +280,7 @@ fn make_term(display: &str) -> Option<Term> {
 pub struct Vocabulary {
     /// (lowercase match text, display name, is a person)
     entries: Vec<(String, String, bool)>,
+    stop_words: Vec<String>,
 }
 
 impl Vocabulary {
@@ -323,7 +325,10 @@ impl Vocabulary {
                 entries.push((key, acronym.trim().to_owned(), false));
             }
         }
-        Self { entries }
+        Self {
+            entries,
+            stop_words: config.stop_words.clone(),
+        }
     }
 
     pub fn is_person(&self, key: &str) -> bool {
@@ -333,7 +338,7 @@ impl Vocabulary {
     }
 }
 
-/// `kelly-jacobs` → `Kelly Jacobs`; `24Mason` stays `24Mason`.
+/// `jane-doe` → `Jane Doe`; `3Dprint` stays `3Dprint`.
 fn title_case(stem: &str) -> String {
     stem.split(['-', '_'])
         .filter(|part| !part.is_empty())
@@ -393,6 +398,7 @@ fn is_capitalized_word(word: &str) -> bool {
 pub fn extract_terms(line: &str, vocabulary: &Vocabulary) -> Vec<Term> {
     let mut terms: Vec<Term> = Vec::new();
     let mut seen = HashSet::new();
+    let stop_words = &vocabulary.stop_words;
     let mut push = |term: Option<Term>| {
         if let Some(term) = term
             && seen.insert(term.key.clone())
@@ -411,7 +417,7 @@ pub fn extract_terms(line: &str, vocabulary: &Vocabulary) -> Vec<Term> {
         let Some(close) = after.find("**") else {
             break;
         };
-        push(make_term(&after[..close]));
+        push(make_term(&after[..close], stop_words));
         rest = &after[close + 2..];
     }
 
@@ -425,21 +431,21 @@ pub fn extract_terms(line: &str, vocabulary: &Vocabulary) -> Vec<Term> {
         let target = target.split('#').next().unwrap_or("");
         let target = target.rsplit('/').next().unwrap_or("");
         let target = target.strip_suffix(".md").unwrap_or(target);
-        push(make_term(&title_case(target)));
+        push(make_term(&title_case(target), stop_words));
         rest = &after[close + 2..];
     }
 
     let lower = line.to_ascii_lowercase();
     for (key, display, _) in &vocabulary.entries {
         if contains_word(&lower, key) {
-            push(make_term(display));
+            push(make_term(display, stop_words));
         }
     }
 
     let mut run: Vec<&str> = Vec::new();
     let flush = |run: &mut Vec<&str>, push: &mut dyn FnMut(Option<Term>)| {
         if run.len() >= 2 && run.len() <= MAX_RUN_WORDS {
-            push(make_term(&run.join(" ")));
+            push(make_term(&run.join(" "), stop_words));
         }
         run.clear();
     };
@@ -1056,14 +1062,14 @@ fn write_themes_md(repo: &Path, config: &BrainConfig, signals: &Signals) -> Resu
         .map(|(narrative, _)| narrative.trim().to_owned())
         .unwrap_or_default();
     let narrative = if narrative.is_empty() {
-        "_No narrative yet. Paste `grokbot-prompt.md` into Grokbot to write one._".to_owned()
+        "_No narrative yet. Point your narrative bot at the prompt file in this folder._".to_owned()
     } else {
         narrative
     };
     let text = format!(
         "# Themes\n\nWhat the brain has been about, computed from git history by Brainz. The \
          generated block is overwritten by every signals pass and is never hand-edited; the \
-         narrative block is written by Grokbot from `grokbot-prompt.md`. Curation lives in \
+         narrative block is written by your narrative bot from its prompt file. Curation lives in \
          `pins.md`. See `CLAUDE.md` in this folder.\n\n{GENERATED_START}\n{}\n{GENERATED_END}\n\n\
          {NARRATIVE_START}\n{narrative}\n{NARRATIVE_END}\n",
         render_generated(signals).trim_end()
@@ -1079,7 +1085,7 @@ pub fn load_signals(repo: &Path, config: &BrainConfig) -> Result<Signals> {
     serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
-/// The Grokbot-written block of `themes.md`, if any.
+/// The bot-written narrative block of `themes.md`, if any.
 pub fn load_narrative(repo: &Path, config: &BrainConfig) -> Option<String> {
     let text = std::fs::read_to_string(config.themes_path(repo, THEMES_NAME)).ok()?;
     let (_, rest) = text.split_once(NARRATIVE_START)?;
@@ -1139,7 +1145,7 @@ pub fn repo_path(repo: &Path, relative: &str) -> PathBuf {
     repo.join(relative)
 }
 
-/// `interviews/companies/acme/CLAUDE.md` → `acme / CLAUDE`.
+/// `companies/acme/CLAUDE.md` → `acme / CLAUDE`.
 pub fn file_label(path: &str) -> String {
     let mut parts = path.rsplit('/');
     let file = parts.next().unwrap_or(path);
@@ -1157,14 +1163,17 @@ mod tests {
     fn vocab() -> Vocabulary {
         Vocabulary::from_tree(
             &[
-                "network/ada-lovelace.md".into(),
-                "network/CLAUDE.md".into(),
-                "interviews/companies/acme/notes.md".into(),
-                "interviews/companies/archive/old.md".into(),
-                "muckstack/projects/Course-and-Cloth/CLAUDE.md".into(),
+                "people/ada-lovelace.md".into(),
+                "people/CLAUDE.md".into(),
+                "companies/acme/notes.md".into(),
+                "companies/archive/old.md".into(),
+                "projects/Some-App/CLAUDE.md".into(),
             ],
             &["PLS".into(), "MCP".into()],
-            &BrainConfig::default(),
+            &BrainConfig {
+                stop_words: vec!["jane".into()],
+                ..BrainConfig::default()
+            },
         )
     }
 
@@ -1187,11 +1196,11 @@ mod tests {
     #[test]
     fn stoplist_drops_noise_words() {
         let terms = extract_terms(
-            "Status Next Tommy Keeley met The Team on Monday Morning; **Read** this.",
+            "Status Next Jane Doe met The Team on Monday Morning; **Read** this.",
             &vocab(),
         );
         let keys: Vec<&str> = terms.iter().map(|t| t.key.as_str()).collect();
-        assert!(!keys.iter().any(|k| k.contains("tommy")), "{keys:?}");
+        assert!(!keys.iter().any(|k| k.contains("jane")), "{keys:?}");
         assert!(!keys.iter().any(|k| k.contains("status")), "{keys:?}");
         assert!(!keys.iter().any(|k| k.contains("monday")), "{keys:?}");
         assert!(!keys.contains(&"read"), "{keys:?}");
@@ -1256,9 +1265,14 @@ mod tests {
 
     #[test]
     fn exclusions_cover_themes_reports_and_dated_health_files() {
-        let config = BrainConfig::default();
+        let config = BrainConfig {
+            themes_dir: "ops/themes".into(),
+            exclude_prefixes: vec![".claude/reports".into()],
+            dated_exclude_dirs: vec!["health".into()],
+            ..BrainConfig::default()
+        };
         assert!(excluded("ops/themes/signals.json", &config));
-        assert!(excluded(".claude/librarian-reports/2026-09-21.md", &config));
+        assert!(excluded(".claude/reports/2026-09-21.md", &config));
         assert!(excluded("health/2026-09-21.md", &config));
         assert!(excluded("health/whoop/sleep-2026-09-21.md", &config));
         assert!(!excluded("health/rolling-summary.md", &config));
@@ -1289,12 +1303,15 @@ mod tests {
 mod real_brain {
     use super::*;
 
-    /// Runs the pass on the real brain checkout. Writes `ops/themes/` there.
+    /// Runs the pass on a real brain checkout (`BRAINZ_WORKSPACE`, default
+    /// `~/brain`) and writes its themes folder there.
     /// `cargo test -p brainz_calendar real_brain -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn run_on_tommy_brain() {
-        let repo = PathBuf::from(std::env::var("HOME").unwrap()).join("tommy-brain");
+    fn run_on_brain() {
+        let repo = std::env::var("BRAINZ_WORKSPACE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap()).join("brain"));
         let signals = run_pass(&repo).unwrap();
         println!(
             "commit {} commits {} run {}ms themes {}",

@@ -1,17 +1,16 @@
 //! Brainz: per-brain layout, read from an optional `brainz.toml` at the
-//! workspace root, so another brain (a work machine, a different folder
-//! structure, no GitHub) works without touching the code. Every field
-//! defaults to the tommy-brain layout.
+//! workspace root, so any notes repo works without touching the code.
 //!
 //! ```toml
 //! # brainz.toml at the brain's root; every key is optional
-//! todo = "ops/desk/TODO.md"
-//! themes_dir = "ops/themes"
-//! people_dir = "network"
-//! vocabulary_folders = ["interviews/companies", "muckstack/projects"]
-//! exclude_prefixes = [".claude/librarian-reports"]
+//! todo = "TODO.md"
+//! themes_dir = "themes"
+//! people_dir = "people"
+//! vocabulary_folders = ["projects", "companies"]
+//! exclude_prefixes = ["reports"]
 //! dated_exclude_dirs = ["health"]
-//! sync = true   # false hides the Sync to GitHub banner entirely
+//! stop_words = ["yourname"]   # extra terms the themes pass never counts
+//! sync = true                 # false hides the Sync to GitHub banner
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -38,6 +37,9 @@ pub struct BrainConfig {
     pub exclude_prefixes: Vec<String>,
     /// Folders where files named with a date (daily syncs) are ignored.
     pub dated_exclude_dirs: Vec<String>,
+    /// Extra words the themes pass never counts (your own name, say), on
+    /// top of the built-in stoplist.
+    pub stop_words: Vec<String>,
     /// Whether the Sync to GitHub banner is offered at all.
     pub sync: bool,
 }
@@ -45,16 +47,13 @@ pub struct BrainConfig {
 impl Default for BrainConfig {
     fn default() -> Self {
         Self {
-            todo: "ops/desk/TODO.md".into(),
-            themes_dir: "ops/themes".into(),
-            people_dir: "network".into(),
-            vocabulary_folders: vec![
-                "interviews/companies".into(),
-                "muckstack/projects".into(),
-                "muckstack/advisory/companies".into(),
-            ],
-            exclude_prefixes: vec![".claude/librarian-reports".into()],
-            dated_exclude_dirs: vec!["health".into()],
+            todo: "TODO.md".into(),
+            themes_dir: "themes".into(),
+            people_dir: "people".into(),
+            vocabulary_folders: vec!["projects".into(), "companies".into()],
+            exclude_prefixes: vec![],
+            dated_exclude_dirs: vec![],
+            stop_words: vec![],
             sync: true,
         }
     }
@@ -100,8 +99,8 @@ mod tests {
             toml::from_str("todo = \"TODO.md\"\nsync = false\n").unwrap();
         assert_eq!(config.todo, "TODO.md");
         assert!(!config.sync);
-        assert_eq!(config.themes_dir, "ops/themes");
-        assert_eq!(config.people_dir, "network");
+        assert_eq!(config.themes_dir, "themes");
+        assert_eq!(config.people_dir, "people");
     }
 
     #[test]

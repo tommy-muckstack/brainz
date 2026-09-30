@@ -1797,7 +1797,7 @@ pub fn markdown_to_plain_text(source: &str) -> String {
     out.trim_end().to_owned()
 }
 
-/// Brainz: `interviews/companies/x/2026-09-28/onsite-debrief.md:12` renders
+/// Brainz: `notes/x/2026-09-28/debrief.md:12` renders
 /// as `onsite-debrief.md:12`. Text without a directory is returned as is.
 fn brainz_file_link_label(text: &str) -> String {
     let trimmed = text.trim();
@@ -2042,7 +2042,7 @@ impl MarkdownElement {
     }
 
     /// Brainz: plain prose that names a file or folder in the project
-    /// (`CLAUDE.md`, `ops/desk/`) gets the same clickable pill as a code
+    /// (`CLAUDE.md`, `notes/`) gets the same clickable pill as a code
     /// span would. Only tokens the resolver recognises are touched.
     fn push_text_with_file_pills(
         &self,
