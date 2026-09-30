@@ -2899,7 +2899,7 @@ impl AgentPanel {
 
                     this.dismiss_terminal_notifications(terminal_id, cx);
                 }
-                AgentNotificationEvent::Dismissed => {
+                AgentNotificationEvent::Dismissed | AgentNotificationEvent::Allowed => {
                     this.dismiss_terminal_notifications(terminal_id, cx);
                 }
             }

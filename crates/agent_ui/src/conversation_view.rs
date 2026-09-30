@@ -645,6 +645,9 @@ pub struct ConversationView {
     focus_handle: FocusHandle,
     notifications: Vec<WindowHandle<AgentNotification>>,
     notification_subscriptions: HashMap<WindowHandle<AgentNotification>, Vec<Subscription>>,
+    /// Brainz: set while showing a "waiting for tool confirmation" popup so
+    /// its Yes button knows which session's pending call to approve.
+    notification_allow_session: Option<acp_v1::SessionId>,
     auth_task: Option<Task<()>>,
     loading_status: Option<SharedString>,
     /// When settings change, use this to see if the theme has changed (which
@@ -926,6 +929,7 @@ impl ConversationView {
             ),
             notifications: Vec::new(),
             notification_subscriptions: HashMap::default(),
+            notification_allow_session: None,
             auth_task: None,
             loading_status: None,
             last_theme_id: Some(cx.theme().id.clone()),
@@ -1699,7 +1703,9 @@ impl ConversationView {
                 self.load_subagent_session(subagent_session_id.clone(), session_id, window, cx)
             }
             AcpThreadEvent::ToolAuthorizationRequested(_) => {
+                self.notification_allow_session = Some(session_id.clone());
                 self.notify_with_sound("Waiting for tool confirmation", IconName::Info, window, cx);
+                self.notification_allow_session = None;
             }
             AcpThreadEvent::ToolAuthorizationReceived(_) => {}
             AcpThreadEvent::ElicitationRequested(_) => {
@@ -3062,10 +3068,13 @@ impl ConversationView {
                 .map(|worktree| worktree.read(cx).root_name_str().to_string())
         });
 
+        let allow_session = self.notification_allow_session.clone();
+        let can_allow = allow_session.is_some();
         if let Some(screen_window) = cx
             .open_window(options, |_window, cx| {
                 cx.new(|_cx| {
                     AgentNotification::new(title.clone(), Some(caption.clone()), icon, project_name)
+                        .with_allow(can_allow)
                 })
             })
             .log_err()
@@ -3128,6 +3137,22 @@ impl ConversationView {
                             this.dismiss_notifications(cx);
                         }
                         AgentNotificationEvent::Dismissed => {
+                            this.dismiss_notifications(cx);
+                        }
+                        AgentNotificationEvent::Allowed => {
+                            if let Some(session_id) = allow_session.as_ref()
+                                && let Some(conversation) = this
+                                    .as_connected()
+                                    .map(|connected| connected.conversation.clone())
+                            {
+                                conversation.update(cx, |conversation, cx| {
+                                    conversation.authorize_pending_tool_call(
+                                        session_id,
+                                        acp_v1::PermissionOptionKind::AllowOnce,
+                                        cx,
+                                    )
+                                });
+                            }
                             this.dismiss_notifications(cx);
                         }
                     }

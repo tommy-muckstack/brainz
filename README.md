@@ -38,7 +38,9 @@ Hovering one of your own messages shows a send-again button that posts the
 same text as a new message. The options drawer behind the sliders button has
 a reset button that starts a fresh conversation with the same agent in the
 same tab (position and colour kept) without reconnecting; the old
-conversation stays in the sidebar. The message box says
+conversation stays in the sidebar. When an agent is waiting for permission
+while its tab is out of view, the corner popup has a **Yes** button that
+approves that one tool call in place, next to View and Dismiss. The message box says
 "Type message…", grows as you type, and keeps model and mode options behind the
 gear button.
 
