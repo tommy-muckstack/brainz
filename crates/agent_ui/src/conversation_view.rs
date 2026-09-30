@@ -3673,6 +3673,12 @@ impl AgentCodeSpanResolver {
                 let Some(entry) = project.entry_for_path(&project_path, cx) else {
                     continue;
                 };
+                // Brainz: a folder path is a link too; clicking reveals it
+                // in the file tree.
+                if entry.is_dir() {
+                    let abs_path = worktree.absolutize(&relative_path);
+                    return Some(MentionUri::Directory { abs_path }.to_uri().to_string().into());
+                }
                 if !entry.is_file() {
                     continue;
                 }

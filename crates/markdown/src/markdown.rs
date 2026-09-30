@@ -1815,6 +1815,41 @@ fn brainz_file_link_label(text: &str) -> String {
     }
 }
 
+const BRAINZ_FILE_EXTENSIONS: &[&str] = &[
+    "md", "json", "toml", "yaml", "yml", "txt", "csv", "rs", "ts", "tsx", "js", "py", "swift",
+    "sh", "html", "css",
+];
+
+/// Byte ranges of whitespace-separated tokens that look like a file or folder
+/// path: they contain a `/` or end with a known extension, and are not URLs.
+/// Surrounding punctuation is left outside the range.
+fn brainz_file_like_tokens(text: &str) -> Vec<(usize, usize)> {
+    let mut tokens = Vec::new();
+    let mut offset = 0;
+    for raw in text.split(' ') {
+        let start_of_raw = offset;
+        offset += raw.len() + 1;
+        let leading = raw.len() - raw.trim_start_matches(['(', '[', '"', '\'']).len();
+        let core = &raw[leading..];
+        let trailing = core.len()
+            - core
+                .trim_end_matches(['.', ',', ';', ':', ')', ']', '!', '?', '"', '\''])
+                .len();
+        let core = &core[..core.len() - trailing];
+        if core.len() < 3 || core.contains("://") || !core.chars().any(|c| c.is_alphabetic()) {
+            continue;
+        }
+        let has_slash = core.contains('/') && !core.starts_with('/');
+        let has_extension = core
+            .rsplit_once('.')
+            .is_some_and(|(stem, ext)| !stem.is_empty() && BRAINZ_FILE_EXTENSIONS.contains(&ext));
+        if has_slash || has_extension {
+            tokens.push((start_of_raw + leading, start_of_raw + leading + core.len()));
+        }
+    }
+    tokens
+}
+
 impl MarkdownElement {
     pub fn new(markdown: Entity<Markdown>, style: MarkdownStyle) -> Self {
         Self {
@@ -1968,18 +2003,30 @@ impl MarkdownElement {
 
         if let Some(url) = link_url {
             builder.push_link(url.clone(), range.clone());
-            let link_style = self
+            let mut link_style = self
                 .style
                 .link_callback
                 .as_ref()
                 .and_then(|callback| callback(url.as_ref(), cx))
                 .unwrap_or_else(|| self.style.link.clone());
+            // Brainz: a resolved file reads as a filled pill in the link
+            // colour, not underlined text on a faint tile.
+            link_style.underline = Some(gpui::UnderlineStyle {
+                thickness: px(0.),
+                color: None,
+                wavy: false,
+            });
+            let pill_background = link_style
+                .color
+                .or(code_style.color)
+                .map(|color| color.opacity(0.16))
+                .or(chip_background);
             builder.push_text_style(code_style);
             builder.push_text_style(link_style);
             // Brainz: a resolved file link shows just the document name; the
             // full path is still the link destination.
             let label = brainz_file_link_label(text);
-            builder.push_code_chip_text(&label, range, chip_background);
+            builder.push_code_chip_text(&label, range, pill_background);
             builder.pop_text_style();
             builder.pop_text_style();
         } else {
@@ -1989,6 +2036,53 @@ impl MarkdownElement {
             builder.push_text_style(code_style);
             builder.push_code_chip_text(text, range, chip_background);
             builder.pop_text_style();
+        }
+    }
+
+    /// Brainz: plain prose that names a file or folder in the project
+    /// (`CLAUDE.md`, `ops/desk/`) gets the same clickable pill as a code
+    /// span would. Only tokens the resolver recognises are touched.
+    fn push_text_with_file_pills(
+        &self,
+        builder: &mut MarkdownElementBuilder,
+        text: &str,
+        range: Range<usize>,
+        cx: &mut App,
+    ) {
+        let Some(resolver) = self.code_span_link.as_ref() else {
+            builder.push_text(text, range);
+            return;
+        };
+        if !builder.code_block_stack.is_empty()
+            || builder.link_depth > 0
+            || self.style.prevent_mouse_interaction
+            || text.len() != range.len()
+        {
+            builder.push_text(text, range);
+            return;
+        }
+        let mut cursor = 0;
+        for (start, end) in brainz_file_like_tokens(text) {
+            let token = &text[start..end];
+            if resolver(token, cx).is_none() {
+                continue;
+            }
+            if start > cursor {
+                builder.push_text(
+                    &text[cursor..start],
+                    range.start + cursor..range.start + start,
+                );
+            }
+            self.push_markdown_code_span(
+                builder,
+                token,
+                range.start + start..range.start + end,
+                cx,
+            );
+            cursor = end;
+        }
+        if cursor < text.len() {
+            builder.push_text(&text[cursor..], range.start + cursor..range.end);
         }
     }
 
@@ -3328,7 +3422,12 @@ impl Element for MarkdownElement {
                     _ => log::debug!("unsupported markdown tag end: {:?}", tag),
                 },
                 MarkdownEvent::Text => {
-                    builder.push_text(&parsed_markdown.source[range.clone()], range.clone());
+                    self.push_text_with_file_pills(
+                        &mut builder,
+                        &parsed_markdown.source[range.clone()],
+                        range.clone(),
+                        cx,
+                    );
                 }
                 MarkdownEvent::SubstitutedText(text) => {
                     builder.push_text(text, range.clone());
@@ -4448,7 +4547,6 @@ struct RenderedLine {
 impl RenderedLine {
     /// Painted before the glyphs so the text renders on top of the chips
     fn paint_code_chips(&self, window: &mut Window) {
-        const CHIP_CORNER_RADIUS: Pixels = px(4.);
 
         if self.code_chips.is_empty() {
             return;
@@ -4463,9 +4561,9 @@ impl RenderedLine {
                 &wrapped_line_segments,
                 rendered_range.clone(),
                 |bounds| {
-                    // Kept to a hair since the layout reserves no padding and
-                    // anything wider eats the gap to neighboring words
-                    let horizontal_outset = px(1.);
+                    // Brainz: a touch wider than upstream so the pill's round
+                    // ends clear the first and last glyphs.
+                    let horizontal_outset = px(3.);
                     // Inset vertically so the chip hugs the glyphs like a badge
                     // instead of filling the whole line box
                     let vertical_inset = bounds.size.height * 0.1;
@@ -4479,9 +4577,11 @@ impl RenderedLine {
                             bounds.size.height - vertical_inset * 2.,
                         ),
                     };
+                    // Brainz: fully rounded ends, a pill rather than a tile.
+                    let chip_corner_radius = chip_bounds.size.height / 2.;
                     window.paint_quad(quad(
                         chip_bounds,
-                        CHIP_CORNER_RADIUS,
+                        chip_corner_radius,
                         *color,
                         Edges::default(),
                         Hsla::transparent_black(),
