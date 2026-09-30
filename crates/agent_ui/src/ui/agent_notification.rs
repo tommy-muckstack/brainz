@@ -4,7 +4,7 @@ use gpui::{
     linear_color_stop, linear_gradient, point,
 };
 use release_channel::ReleaseChannel;
-use std::rc::Rc;
+use std::{rc::Rc, time::Duration};
 use ui::{Render, prelude::*};
 
 pub struct AgentNotification {
@@ -35,6 +35,19 @@ impl AgentNotification {
 
     pub fn with_allow(mut self, can_allow: bool) -> Self {
         self.can_allow = can_allow;
+        self
+    }
+
+    pub fn auto_dismiss(self, requires_response: bool, cx: &mut Context<Self>) -> Self {
+        if !requires_response && !self.can_allow {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+                if let Some(this) = this.upgrade() {
+                    this.update(cx, |this, cx| this.dismiss(cx));
+                }
+            })
+            .detach();
+        }
         self
     }
 
@@ -84,6 +97,65 @@ pub enum AgentNotificationEvent {
 }
 
 impl EventEmitter<AgentNotificationEvent> for AgentNotification {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{AppContext, TestAppContext};
+    use std::cell::Cell;
+
+    #[gpui::test]
+    fn routine_notification_expires_after_five_seconds(cx: &mut TestAppContext) {
+        let dismissed = Rc::new(Cell::new(false));
+        let notification = cx.new(|cx| {
+            AgentNotification::new("Done", None, IconName::Check, None::<SharedString>)
+                .auto_dismiss(false, cx)
+        });
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&notification, {
+                let dismissed = dismissed.clone();
+                move |_, event, _| {
+                    if matches!(event, AgentNotificationEvent::Dismissed) {
+                        dismissed.set(true);
+                    }
+                }
+            })
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(4));
+        cx.run_until_parked();
+        assert!(!dismissed.get());
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        assert!(dismissed.get());
+    }
+
+    #[gpui::test]
+    fn permission_and_input_notifications_remain_visible(cx: &mut TestAppContext) {
+        for (can_allow, requires_response) in [(true, false), (false, true)] {
+            let dismissed = Rc::new(Cell::new(false));
+            let notification = cx.new(|cx| {
+                AgentNotification::new("Waiting", None, IconName::Info, None::<SharedString>)
+                    .with_allow(can_allow)
+                    .auto_dismiss(requires_response, cx)
+            });
+            let _subscription = cx.update(|cx| {
+                cx.subscribe(&notification, {
+                    let dismissed = dismissed.clone();
+                    move |_, event, _| {
+                        if matches!(event, AgentNotificationEvent::Dismissed) {
+                            dismissed.set(true);
+                        }
+                    }
+                })
+            });
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_secs(30));
+            cx.run_until_parked();
+            assert!(!dismissed.get());
+        }
+    }
+}
 
 impl AgentNotification {
     pub fn accept(&mut self, cx: &mut Context<Self>) {

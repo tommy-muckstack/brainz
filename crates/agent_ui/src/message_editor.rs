@@ -40,7 +40,9 @@ use std::{cmp::min, fmt::Write, ops::Range, rc::Rc, sync::Arc};
 use text::LineEnding;
 use theme_settings::ThemeSettings;
 use collections::HashSet;
-use ui::{ButtonStyle, ContextMenu, IconButton, Tooltip, prelude::*};
+use ui::{
+    ButtonStyle, ContextMenu, IconButton, ScrollAxes, Scrollbars, Tooltip, WithScrollbar, prelude::*,
+};
 use util::paths::PathStyle;
 use util::{ResultExt, debug_panic};
 use workspace::{CollaboratorId, Workspace};
@@ -211,6 +213,7 @@ pub struct MessageEditor {
     /// Brainz: image attachments whose decode is still in flight; the
     /// composer re-renders once each one resolves.
     pending_image_previews: HashSet<CreaseId>,
+    image_preview_scroll: gpui::ScrollHandle,
     /// Brainz: solid bubble colour when this editor shows a sent message.
     bubble_color: Option<gpui::Hsla>,
     _subscriptions: Vec<Subscription>,
@@ -616,6 +619,7 @@ impl MessageEditor {
             agent_id,
             thread_store,
             pending_image_previews: HashSet::default(),
+            image_preview_scroll: gpui::ScrollHandle::new(),
             bubble_color: None,
             _subscriptions: subscriptions,
             _parse_slash_command_task: Task::ready(()),
@@ -2155,6 +2159,7 @@ impl MessageEditor {
     /// screenshot shows up here before it is sent.
     fn render_image_previews(
         &mut self,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
         let previews = self.mention_set.read(cx).image_previews(cx);
@@ -2182,10 +2187,13 @@ impl MessageEditor {
             thumbnails.push(
                 div()
                     .id(("brainz-image-preview", ix))
+                    .debug_selector(move || format!("BRAINZ_IMAGE_PREVIEW_{ix}"))
                     .group("brainz-image-preview")
                     .relative()
                     .flex_none()
-                    .h_20()
+                    .w(px(140.))
+                    .h(px(80.))
+                    .overflow_hidden()
                     .rounded_md()
                     .cursor_pointer()
                     .map(|this| match image {
@@ -2200,18 +2208,22 @@ impl MessageEditor {
                             }))
                             .child(
                                 gpui::img(image)
-                                    .h_full()
                                     .w(px(140.))
+                                    .h(px(80.))
                                     .rounded_md()
                                     .object_fit(gpui::ObjectFit::Contain),
                             ),
-                        None => this.w_20().border_1().border_color(border).bg(placeholder_bg).child(
-                            h_flex().size_full().justify_center().child(
-                                Icon::new(IconName::Image)
-                                    .size(IconSize::Small)
-                                    .color(Color::Muted),
+                        None => this
+                            .border_1()
+                            .border_color(border)
+                            .bg(placeholder_bg)
+                            .child(
+                                h_flex().size_full().justify_center().child(
+                                    Icon::new(IconName::Image)
+                                        .size(IconSize::Small)
+                                        .color(Color::Muted),
+                                ),
                             ),
-                        ),
                     })
                     .child(
                         div()
@@ -2234,17 +2246,35 @@ impl MessageEditor {
         }
 
         Some(
-            v_flex()
-                .w_full()
-                .child(h_flex().flex_wrap().gap_2().pb_1p5().children(thumbnails)),
+            v_flex().w_full().min_w_0().flex_none().child(
+                h_flex()
+                    .id("brainz-image-strip")
+                    .debug_selector(|| "BRAINZ_IMAGE_STRIP".into())
+                    .w_full()
+                    .min_w_0()
+                    .flex_none()
+                    .overflow_x_scroll()
+                    .track_scroll(&self.image_preview_scroll)
+                    .gap_2()
+                    .pb_2()
+                    .children(thumbnails)
+                    .custom_scrollbars(
+                        Scrollbars::new(ScrollAxes::Horizontal)
+                            .tracked_scroll_handle(&self.image_preview_scroll),
+                        window,
+                        cx,
+                    ),
+            ),
         )
     }
 }
 
 impl Render for MessageEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let image_previews = self.render_image_previews(cx);
+        let image_previews = self.render_image_previews(_window, cx);
+        let fills_container = matches!(self.editor.read(cx).mode(), EditorMode::Full { .. });
         v_flex()
+            .debug_selector(|| "BRAINZ_MESSAGE_EDITOR".into())
             .key_context("MessageEditor")
             .on_action(cx.listener(Self::chat))
             .on_action(cx.listener(Self::send_immediately))
@@ -2254,7 +2284,15 @@ impl Render for MessageEditor {
             .capture_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::paste_raw))
             .capture_action(cx.listener(Self::paste))
-            .flex_1()
+            .w_full()
+            .min_w_0()
+            .map(|this| {
+                if fills_container {
+                    this.flex_1()
+                } else {
+                    this.flex_none()
+                }
+            })
             .children(image_previews)
             .child({
                 let settings = ThemeSettings::get_global(cx);
@@ -5824,6 +5862,147 @@ mod tests {
         let text = message_editor.update(cx, |editor, cx| editor.text(cx));
         assert_eq!(text, "hello world");
         assert!(!message_editor.update(cx, |editor, cx| editor.is_empty(cx)));
+    }
+
+    #[gpui::test]
+    async fn test_brainz_image_and_text_have_separate_layout_rows(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (message_editor, cx) = setup_message_editor(cx).await;
+        cx.simulate_resize(gpui::size(gpui::px(800.), gpui::px(600.)));
+        let mut image_bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(1600, 600)
+            .write_to(&mut image_bytes, image::ImageFormat::Png)
+            .expect("encode wide screenshot");
+        let image_bytes = image_bytes.into_inner();
+        let image = base64::prelude::BASE64_STANDARD.encode(&image_bytes);
+        let workspace = message_editor.read_with(cx, |editor, _| {
+            editor.workspace.upgrade().expect("message workspace")
+        });
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.active_pane().update(cx, |pane, cx| {
+                pane.add_item(
+                    Box::new(cx.new(|_| MessageEditorItem(message_editor.clone()))),
+                    true,
+                    true,
+                    None,
+                    window,
+                    cx,
+                );
+            });
+        });
+        for read_only in [false, true] {
+            message_editor.update_in(cx, |editor, window, cx| {
+                editor
+                    .image_preview_scroll
+                    .set_offset(gpui::point(gpui::px(0.), gpui::px(0.)));
+                editor.set_read_only(read_only, cx);
+                editor.set_mode(
+                    EditorMode::AutoHeight {
+                        min_lines: 1,
+                        max_lines: if read_only { None } else { Some(3) },
+                    },
+                    cx,
+                );
+                editor.set_message(
+                    std::iter::repeat_n(
+                        acp_v1::ContentBlock::Image(acp_v1::ImageContent::new(
+                            image.clone(),
+                            "image/png",
+                        )),
+                        12,
+                    )
+                    .chain([acp_v1::ContentBlock::Text(acp_v1::TextContent::new(
+                        "A message below its screenshot",
+                    ))])
+                    .collect(),
+                    window,
+                    cx,
+                );
+            });
+            cx.run_until_parked();
+            let preview = cx
+                .debug_bounds("BRAINZ_IMAGE_PREVIEW_0")
+                .expect("thumbnail bounds");
+            let message = cx
+                .debug_bounds("BRAINZ_MESSAGE_EDITOR")
+                .expect("message bounds");
+            let text = message_editor.read_with(cx, |editor, cx| {
+                *editor
+                    .editor
+                    .read(cx)
+                    .last_bounds()
+                    .expect("text editor bounds")
+            });
+            assert_eq!(preview.size.width, gpui::px(140.));
+            assert_eq!(preview.size.height, gpui::px(80.));
+            assert!(
+                text.top() >= preview.bottom(),
+                "text must stay below the image"
+            );
+            assert!(
+                message.bottom() >= text.bottom(),
+                "the bubble must include its text"
+            );
+            let strip = cx.debug_bounds("BRAINZ_IMAGE_STRIP").expect("image strip");
+            assert!(strip.size.height < gpui::px(110.), "images must not wrap");
+            message_editor.update(cx, |editor, cx| {
+                assert_eq!(editor.mention_set.read(cx).image_previews(cx).len(), 12);
+                assert!(editor.image_preview_scroll.max_offset().x > gpui::px(0.));
+                editor
+                    .image_preview_scroll
+                    .set_offset(gpui::point(gpui::px(-100.), gpui::px(0.)));
+                cx.notify();
+            });
+            cx.run_until_parked();
+            let scrolled = cx
+                .debug_bounds("BRAINZ_IMAGE_PREVIEW_0")
+                .expect("scrolled image");
+            assert!(
+                scrolled.left() < preview.left(),
+                "images must scroll horizontally"
+            );
+        }
+
+        message_editor.update_in(cx, |editor, window, cx| {
+            editor.set_read_only(false, cx);
+            editor.set_message(Vec::new(), window, cx);
+            editor
+                .session_capabilities
+                .write()
+                .set_prompt_capabilities(acp_v1::PromptCapabilities::new().image(true));
+        });
+        for expected_count in [2, 4] {
+            let clipboard = ClipboardItem {
+                entries: (0..2)
+                    .map(|_| {
+                        ClipboardEntry::Image(gpui::Image::from_bytes(
+                            gpui::ImageFormat::Png,
+                            image_bytes.clone(),
+                        ))
+                    })
+                    .collect(),
+            };
+            cx.write_to_clipboard(clipboard);
+            message_editor.update_in(cx, |editor, window, cx| editor.paste(&Paste, window, cx));
+            cx.run_until_parked();
+            message_editor.read_with(cx, |editor, cx| {
+                assert_eq!(
+                    editor.mention_set.read(cx).image_previews(cx).len(),
+                    expected_count
+                );
+            });
+        }
+        let (contents, _) = message_editor
+            .update(cx, |editor, cx| editor.contents(true, cx))
+            .await
+            .expect("pasted message contents");
+        assert_eq!(
+            contents
+                .iter()
+                .filter(|content| matches!(content, acp_v1::ContentBlock::Image(_)))
+                .count(),
+            4
+        );
     }
 
     #[gpui::test]

@@ -29,13 +29,14 @@ Brainz uses `~/.config/brainz` and `~/Library/Application Support/Brainz`. Edit
 The bottom panel's **Launch** button (rocket) opens a Shell or a native Claude or
 Codex conversation in the current project. Everything you open becomes a tab in the
 strip under the toolbar, shells and conversations side by side. Click a tab to
-switch, use its close button to drop it, and right-click it to give it a color
-(a filled rounded square replaces the tab icon).
+switch, use its close button to drop it, and click its icon (or right-click the tab) to give it a color
+(a filled rounded square replaces the tab icon and the provider icon in thread lists).
 Tabs and colors are remembered between launches. Conversations and the message
 box use Gellix with natural spacing. Shell content uses Lilex for a fixed
-character grid. The message box stays one line tall until you click into it.
-Paste or attach a screenshot and it shows as a thumbnail above the text before
-you send.
+character grid. The message box starts one line tall, including in a new chat,
+and grows as you type.
+Paste or attach multiple screenshots to collect them in one horizontally scrollable
+thumbnail strip above the text before you send.
 
 The calendar button in the status bar (bottom left) opens a **Calendar** tab
 with the next seven days, read from every account macOS Calendar knows about.
@@ -45,13 +46,18 @@ time; the tab refreshes every five minutes and on demand. Sent messages sit on
 the right in the tab's colour; replies sit on the left. Hovering a reply or a
 quoted draft shows a copy button that rides along the top of the visible part
 of the text while you scroll, so a long email never needs scrolling back up.
+Plain-text and code blocks use the same sticky copy control and keep the
+"Copied" confirmation visible briefly even after the pointer moves away.
 Hovering one of your own messages shows a send-again button that posts the
 same text as a new message. The options drawer behind the sliders button has
 a reset button that starts a fresh conversation with the same agent in the
 same tab (position and colour kept) without reconnecting; the old
 conversation stays in the sidebar. When an agent is waiting for permission
 while its tab is out of view, the corner popup has a **Yes** button that
-approves that one tool call in place, next to View and Dismiss. The message box says
+approves that one tool call in place, next to View and Dismiss. Routine popups
+dismiss after five seconds; permission and input requests stay visible.
+While an agent is working, the send button's hover menu has a clickable
+**Send Immediately** action. The message box says
 "Type message…", grows as you type, and keeps model and mode options behind the
 gear button.
 
@@ -63,14 +69,17 @@ with today's date and shows it struck through in amber, so nothing vanishes;
 un-ticking clears the box. Whoever maintains the board tidies Done later.
 
 The trend-line button next to the MCP button opens a **Themes** tab: what the
-brain has been about, computed from its git history. **Run now** (or a daily
+brain has been about, computed from its git history. **Sync** (or a daily
 run while Brainz is open) walks every commit, takes the added lines of `.md`
 files, and turns bold spans, wiki links, the names of people and companies
 in the repo, and capitalized phrases into weighted themes with a 12-week
-sparkline and momentum. The tab shows Rising, New, and Fading themes, Threads
-(themes spanning three or more folders, with the files that fail to link to
-each other), Open loops (⏳ and ⏰ lines per folder against a week ago), your
-Pinned themes, and the narrative your bot writes from its own prompt file.
+sparkline and momentum. The tab shows Rising, Fading, and Pinned themes.
+The sliders button to the left of Sync filters People, Places, and Things;
+only Things (topics, projects, and organizations) are shown by default.
+People and places are identified from their configured folders and labeled
+note context, including interview headings, attendees, and locations.
+Filters are remembered on this computer. The generated files also retain
+new themes, cross-folder threads, open loops, and the bot-written narrative.
 Expand a theme for its top files and co-mentioned people; click either to
 open it. Pin, Rename, Merge into…, and Hide append a line to
 the themes folder's `pins.md` and re-run the pass, so nothing is ever
@@ -107,7 +116,7 @@ default `~/brain`), both of which can live in an untracked
 `assets/fonts/gellix/` over. Sign in to Claude and Codex once there; their
 config lives under `~/.config/brainz/`. The brain's layout comes from an
 optional `brainz.toml` at the brain's root, every key optional: `todo` (the
-To-Do file), `themes_dir`, `people_dir`, `vocabulary_folders`,
+To-Do file), `themes_dir`, `people_dir`, `places_dir`, `vocabulary_folders`,
 `exclude_prefixes`, `dated_exclude_dirs`, and `sync`. A brain with no
 `origin` remote, or with `sync = false`, never shows the Sync banner. The
 Themes narrative is written by whatever bot you point at the prompt file in

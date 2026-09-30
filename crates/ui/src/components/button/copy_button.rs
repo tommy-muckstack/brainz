@@ -127,8 +127,9 @@ impl RenderOnce for CopyButton {
             .disabled(self.disabled)
             .tooltip(Tooltip::text(tooltip))
             .on_click(move |_, window, cx| {
-                state.update(cx, |state, _cx| {
+                state.update(cx, |state, cx| {
                     state.mark_copied();
+                    cx.notify();
                 });
 
                 if let Some(custom_on_click) = custom_on_click.as_ref() {

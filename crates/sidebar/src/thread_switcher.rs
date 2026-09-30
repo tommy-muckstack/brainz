@@ -203,6 +203,8 @@ impl ThreadSwitcher {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.observe_global::<agent_ui::BrainzThreadColors>(|_, cx| cx.notify())
+            .detach();
         let init_modifiers = window.modifiers().modified().then_some(window.modifiers());
         let selected_index = if entries.is_empty() {
             0
@@ -376,10 +378,19 @@ impl Render for ThreadSwitcher {
                     .track_scroll(&self.scroll_handle)
                     .children(self.entries.iter().enumerate().map(|(ix, entry)| {
                         let diff_stats = entry.diff_stats();
+                        let chat_color = match entry {
+                            ThreadSwitcherEntry::Thread(thread) => cx
+                                .try_global::<agent_ui::BrainzThreadColors>()
+                                .and_then(|colors| {
+                                    colors.0.get(&thread.metadata.thread_id).copied()
+                                }),
+                            ThreadSwitcherEntry::Terminal(_) => None,
+                        };
 
                         ThreadItem::new(entry.element_id(), entry.title())
                             .rounded(true)
                             .icon(entry.icon())
+                            .when_some(chat_color, |this, color| this.color_swatch(color))
                             .when(entry.is_draft(), |this| {
                                 this.icon_color(Color::Custom(
                                     cx.theme().colors().icon_muted.opacity(0.2),

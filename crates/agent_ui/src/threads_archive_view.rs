@@ -169,6 +169,9 @@ impl ThreadsArchiveView {
     ) -> Self {
         let focus_handle = cx.focus_handle();
 
+        cx.observe_global::<crate::BrainzThreadColors>(|_, cx| cx.notify())
+            .detach();
+
         let filter_editor = cx.new(|cx| {
             let mut editor = Editor::single_line(window, cx);
             editor.set_placeholder_text("Search all threads…", window, cx);
@@ -664,6 +667,11 @@ impl ThreadsArchiveView {
 
                 let base = ThreadItem::new(id, thread.display_title())
                     .icon(icon)
+                    .when_some(
+                        cx.try_global::<crate::BrainzThreadColors>()
+                            .and_then(|colors| colors.0.get(&thread.thread_id).copied()),
+                        |this, color| this.color_swatch(color),
+                    )
                     .when(is_archived, |this| {
                         this.archived(true)
                             .icon_color(archived_color)
