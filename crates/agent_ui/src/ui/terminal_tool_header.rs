@@ -133,31 +133,18 @@ impl RenderOnce for TerminalToolHeader {
             .element_background
             .blend(cx.theme().colors().editor_foreground.opacity(0.025));
 
-        let header_row = h_flex()
-            .id(child_id("header"))
-            .pt_1()
-            .pl_1p5()
-            .pr_1()
+        let disclosure = Disclosure::new(child_id("disclosure"), is_expanded)
+            .opened_icon(IconName::ChevronUp)
+            .closed_icon(IconName::ChevronDown)
+            .visible_on_hover(&hover_group)
+            .when_some(on_toggle_expand, |this, handler| this.on_click(handler));
+
+        // Brainz: collapsed terminal calls are one quiet line, terminal icon
+        // plus the command, with the directory only in the icon's tooltip.
+        // The full card with the directory header comes back when expanded.
+        let status_row = h_flex()
             .flex_none()
             .gap_1()
-            .justify_between()
-            .rounded_t_md()
-            .child(
-                div().w_full().min_w_0().overflow_hidden().child(
-                    Label::new(working_dir)
-                        .buffer_font(cx)
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted)
-                        .truncate_start(),
-                ),
-            )
-            .child(
-                Disclosure::new(child_id("disclosure"), is_expanded)
-                    .opened_icon(IconName::ChevronUp)
-                    .closed_icon(IconName::ChevronDown)
-                    .visible_on_hover(&hover_group)
-                    .when_some(on_toggle_expand, |this, handler| this.on_click(handler)),
-            )
             .when(show_elapsed, |header| {
                 let elapsed = elapsed.unwrap_or_default();
                 header.child(
@@ -243,12 +230,74 @@ impl RenderOnce for TerminalToolHeader {
                 )
             });
 
+        if !is_expanded {
+            return h_flex()
+                .id(child_id("header"))
+                .group(hover_group)
+                .text_xs()
+                .w_full()
+                .min_w_0()
+                .py_0p5()
+                .pl_1p5()
+                .pr_1()
+                .gap_1p5()
+                .justify_between()
+                .child(
+                    h_flex()
+                        .min_w_0()
+                        .flex_1()
+                        .gap_1p5()
+                        .child(
+                            div()
+                                .id(child_id("dir"))
+                                .flex_none()
+                                .tooltip(Tooltip::text(working_dir))
+                                .child(
+                                    Icon::new(IconName::Terminal)
+                                        .size(IconSize::Small)
+                                        .color(Color::Muted),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .overflow_hidden()
+                                .children(command_slot),
+                        ),
+                )
+                .child(status_row.child(disclosure))
+                .into_any_element();
+        }
+
+        let header_row = h_flex()
+            .id(child_id("header"))
+            .pt_1()
+            .pl_1p5()
+            .pr_1()
+            .flex_none()
+            .gap_1()
+            .justify_between()
+            .rounded_t_md()
+            .child(
+                div().w_full().min_w_0().overflow_hidden().child(
+                    Label::new(working_dir)
+                        .buffer_font(cx)
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted)
+                        .truncate_start(),
+                ),
+            )
+            .child(disclosure)
+            .child(status_row);
+
         v_flex()
             .group(hover_group)
             .text_xs()
             .bg(header_bg)
             .child(header_row)
             .children(command_slot)
+            .into_any_element()
     }
 }
 

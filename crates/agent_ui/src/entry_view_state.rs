@@ -225,6 +225,15 @@ impl EntryViewState {
         }
     }
 
+    /// Brainz: paints every user-message editor with the thread's bubble colour.
+    pub fn set_bubble_color(&mut self, color: Option<gpui::Hsla>, cx: &mut App) {
+        for entry in &self.entries {
+            if let Some(editor) = entry.message_editor() {
+                editor.update(cx, |editor, _| editor.set_bubble_color(color));
+            }
+        }
+    }
+
     pub fn entry(&self, index: usize) -> Option<&Entry> {
         self.entries.get(index)
     }

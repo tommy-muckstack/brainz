@@ -42,6 +42,7 @@ util.workspace = true
 client.workspace = true
 worktree.workspace = true
 workspace.workspace = true
+brainz_calendar.workspace = true
 language.workspace = true
 markdown.workspace = true
 markdown_preview.workspace = true

@@ -6,7 +6,7 @@ version = "1.23.0"
 publish.workspace = true
 license = "GPL-3.0-or-later"
 authors = ["Zed Team <hi@zed.dev>"]
-default-run = "zed"
+default-run = "brainz"
 
 [lints]
 workspace = true
@@ -54,7 +54,7 @@ visual-tests = [
 ]
 
 [[bin]]
-name = "zed"
+name = "brainz"
 path = "src/main.rs"
 
 [[bin]]
@@ -189,6 +189,7 @@ reqwest_client.workspace = true
 rope.workspace = true
 sandbox.workspace = true
 search.workspace = true
+brainz_calendar.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 session.workspace = true
@@ -280,9 +281,9 @@ repl = { workspace = true, features = ["test-support"] }
 
 
 [package.metadata.bundle-dev]
-icon = ["resources/app-icon-dev@2x.png", "resources/app-icon-dev.png"]
-identifier = "dev.zed.Zed-Dev"
-name = "Zed Dev"
+icon = ["resources/brainz-icon.png"]
+identifier = "app.brainz.desktop"
+name = "Brainz"
 osx_minimum_system_version = "10.15.7"
 osx_info_plist_exts = ["resources/info/*"]
 osx_url_schemes = ["zed"]

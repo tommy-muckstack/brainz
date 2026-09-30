@@ -3053,7 +3053,8 @@ impl Pane {
             .child(
                 h_flex()
                     .id(("pane-tab-content", ix))
-                    .gap_1()
+                    // Brainz: a little more air between the tab icon and its title.
+                    .gap_2()
                     .children(if let Some(icon) = icon {
                         Some(icon)
                     } else if !capability.editable() {
@@ -4350,34 +4351,38 @@ fn default_render_tab_bar_buttons(
                     }))
                 }),
         )
-        .child(
-            PopoverMenu::new("pane-tab-bar-split")
-                .trigger_with_tooltip(
-                    IconButton::new("split", IconName::Split)
-                        .icon_size(IconSize::Small)
-                        .disabled(!can_clone && !can_split_move),
-                    Tooltip::text("Split Pane"),
-                )
-                .anchor(Anchor::TopRight)
-                .with_handle(pane.split_item_context_menu_handle.clone())
-                .menu(move |window, cx| {
-                    ContextMenu::build(window, cx, |menu, _, _| {
-                        let mode = SplitMode::MovePane;
-                        if can_split_move {
-                            menu.action("Split Right", SplitRight { mode }.boxed_clone())
-                                .action("Split Left", SplitLeft { mode }.boxed_clone())
-                                .action("Split Up", SplitUp { mode }.boxed_clone())
-                                .action("Split Down", SplitDown { mode }.boxed_clone())
-                        } else {
-                            menu.action("Split Right", SplitRight::default().boxed_clone())
-                                .action("Split Left", SplitLeft::default().boxed_clone())
-                                .action("Split Up", SplitUp::default().boxed_clone())
-                                .action("Split Down", SplitDown::default().boxed_clone())
-                        }
-                    })
-                    .into()
-                }),
-        )
+        .child({
+            // Brainz: split is a simple on/off. On splits to the right; off
+            // joins every pane back into one.
+            let is_split = pane
+                .workspace
+                .upgrade()
+                .is_some_and(|workspace| workspace.read(cx).panes().len() > 1);
+            IconButton::new("split", IconName::Split)
+                .icon_size(IconSize::Small)
+                .toggle_state(is_split)
+                .disabled(!is_split && !can_clone && !can_split_move)
+                .tooltip(Tooltip::text(if is_split {
+                    "Close Split"
+                } else {
+                    "Split"
+                }))
+                .on_click(cx.listener(move |_pane, _, window, cx| {
+                    if is_split {
+                        cx.emit(Event::JoinAll);
+                    } else if can_split_move {
+                        window.dispatch_action(
+                            SplitRight {
+                                mode: SplitMode::MovePane,
+                            }
+                            .boxed_clone(),
+                            cx,
+                        );
+                    } else {
+                        window.dispatch_action(SplitRight::default().boxed_clone(), cx);
+                    }
+                }))
+        })
         .child({
             let zoomed = pane.is_zoomed();
             IconButton::new("toggle_zoom", IconName::Maximize)

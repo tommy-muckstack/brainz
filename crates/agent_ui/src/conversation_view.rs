@@ -645,6 +645,9 @@ pub struct ConversationView {
     focus_handle: FocusHandle,
     notifications: Vec<WindowHandle<AgentNotification>>,
     notification_subscriptions: HashMap<WindowHandle<AgentNotification>, Vec<Subscription>>,
+    /// Brainz: set while showing a "waiting for tool confirmation" popup so
+    /// its Yes button knows which session's pending call to approve.
+    notification_allow_session: Option<acp_v1::SessionId>,
     auth_task: Option<Task<()>>,
     loading_status: Option<SharedString>,
     /// When settings change, use this to see if the theme has changed (which
@@ -926,6 +929,7 @@ impl ConversationView {
             ),
             notifications: Vec::new(),
             notification_subscriptions: HashMap::default(),
+            notification_allow_session: None,
             auth_task: None,
             loading_status: None,
             last_theme_id: Some(cx.theme().id.clone()),
@@ -1699,7 +1703,9 @@ impl ConversationView {
                 self.load_subagent_session(subagent_session_id.clone(), session_id, window, cx)
             }
             AcpThreadEvent::ToolAuthorizationRequested(_) => {
+                self.notification_allow_session = Some(session_id.clone());
                 self.notify_with_sound("Waiting for tool confirmation", IconName::Info, window, cx);
+                self.notification_allow_session = None;
             }
             AcpThreadEvent::ToolAuthorizationReceived(_) => {}
             AcpThreadEvent::ElicitationRequested(_) => {
@@ -2167,6 +2173,11 @@ impl ConversationView {
         };
 
         window.spawn(cx, async move |cx| {
+            // Brainz: the login runs in the terminal panel, which is normally
+            // hidden. Show it while signing in and bring the conversation
+            // back afterwards, whatever the outcome.
+            let panel_workspace = workspace.clone();
+            let result: Result<()> = async {
             let mut task = login.clone();
             if let Some(cmd) = &task.command {
                 // Have "node" command use Zed's managed Node runtime by default
@@ -2198,6 +2209,11 @@ impl ConversationView {
                     terminal_panel.spawn_task(&task, window, cx)
                 })?
                 .await?;
+            panel_workspace
+                .update_in(cx, |workspace, window, cx| {
+                    workspace.open_panel::<TerminalPanel>(window, cx);
+                })
+                .ok();
 
             let success_patterns = match method.0.as_ref() {
                 "claude-login" | GEMINI_TERMINAL_AUTH_METHOD_ID => vec![
@@ -2277,6 +2293,14 @@ impl ConversationView {
                 terminal.update(cx, |terminal, _| terminal.kill_active_task())?;
                 Ok(())
             }
+            }
+            .await;
+            panel_workspace
+                .update_in(cx, |workspace, window, cx| {
+                    workspace.open_panel::<AgentPanel>(window, cx);
+                })
+                .ok();
+            result
         })
     }
 
@@ -3044,10 +3068,13 @@ impl ConversationView {
                 .map(|worktree| worktree.read(cx).root_name_str().to_string())
         });
 
+        let allow_session = self.notification_allow_session.clone();
+        let can_allow = allow_session.is_some();
         if let Some(screen_window) = cx
             .open_window(options, |_window, cx| {
                 cx.new(|_cx| {
                     AgentNotification::new(title.clone(), Some(caption.clone()), icon, project_name)
+                        .with_allow(can_allow)
                 })
             })
             .log_err()
@@ -3110,6 +3137,22 @@ impl ConversationView {
                             this.dismiss_notifications(cx);
                         }
                         AgentNotificationEvent::Dismissed => {
+                            this.dismiss_notifications(cx);
+                        }
+                        AgentNotificationEvent::Allowed => {
+                            if let Some(session_id) = allow_session.as_ref()
+                                && let Some(conversation) = this
+                                    .as_connected()
+                                    .map(|connected| connected.conversation.clone())
+                            {
+                                conversation.update(cx, |conversation, cx| {
+                                    conversation.authorize_pending_tool_call(
+                                        session_id,
+                                        acp_v1::PermissionOptionKind::AllowOnce,
+                                        cx,
+                                    )
+                                });
+                            }
                             this.dismiss_notifications(cx);
                         }
                     }
@@ -3373,6 +3416,11 @@ fn native_available_skills(
 }
 
 fn placeholder_text(agent_name: &str, has_commands: bool) -> String {
+    // Brainz: one calm prompt for every agent.
+    let _ = (agent_name, has_commands);
+    if true {
+        return "Type message…".to_string();
+    }
     if agent_name == agent::ZED_AGENT_ID.as_ref() {
         format!(
             "Message the {}, @ to include context, / for commands",
@@ -3625,6 +3673,12 @@ impl AgentCodeSpanResolver {
                 let Some(entry) = project.entry_for_path(&project_path, cx) else {
                     continue;
                 };
+                // Brainz: a folder path is a link too; clicking reveals it
+                // in the file tree.
+                if entry.is_dir() {
+                    let abs_path = worktree.absolutize(&relative_path);
+                    return Some(MentionUri::Directory { abs_path }.to_uri().to_string().into());
+                }
                 if !entry.is_file() {
                     continue;
                 }

@@ -179,6 +179,45 @@ impl MentionSet {
         self.recompute_disambiguation(cx);
     }
 
+    /// Brainz: every attached image, in insertion order, with the shared
+    /// decode task the composer renders as a thumbnail.
+    pub fn image_previews(
+        &self,
+        cx: &App,
+    ) -> Vec<(CreaseId, Shared<Task<Result<Arc<Image>, String>>>)> {
+        let mut previews = self
+            .crease_entities
+            .iter()
+            .filter_map(|(crease_id, entity)| {
+                entity
+                    .read(cx)
+                    .image
+                    .clone()
+                    .map(|image| (*crease_id, image))
+            })
+            .collect::<Vec<_>>();
+        previews.sort_by_key(|(crease_id, _)| *crease_id);
+        previews
+    }
+
+    /// Brainz: drops an attached image by deleting its crease text from the
+    /// editor and forgetting the mention.
+    pub fn remove_image_mention(&mut self, crease_id: CreaseId, cx: &mut App) {
+        let Some(entity) = self.crease_entities.get(&crease_id) else {
+            return;
+        };
+        let (range, editor) = {
+            let context = entity.read(cx);
+            (context.range.clone(), context.editor.clone())
+        };
+        editor
+            .update(cx, |editor, cx| {
+                editor.edit([(range, "")], cx);
+            })
+            .ok();
+        self.remove_mention(&crease_id, cx);
+    }
+
     pub fn creases(&self) -> HashSet<CreaseId> {
         self.mentions.keys().cloned().collect()
     }
@@ -1384,6 +1423,11 @@ pub struct LoadingContext {
 
 impl Render for LoadingContext {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Brainz: pasted images are shown as thumbnails above the text, so the
+        // inline "Image" chip is just noise.
+        if self.image.is_some() {
+            return div().into_any_element();
+        }
         let is_in_text_selection = self
             .editor
             .update(cx, |editor, cx| editor.is_range_selected(&self.range, cx))
@@ -1419,6 +1463,7 @@ impl Render for LoadingContext {
                     .into()
                 })
             })
+            .into_any_element()
     }
 }
 

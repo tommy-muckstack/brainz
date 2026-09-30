@@ -12,6 +12,9 @@ pub struct AgentNotification {
     caption: Option<SharedString>,
     icon: IconName,
     project_name: Option<SharedString>,
+    /// Brainz: offers a "Yes" button that approves the waiting tool call
+    /// without switching to the conversation.
+    can_allow: bool,
 }
 
 impl AgentNotification {
@@ -26,7 +29,13 @@ impl AgentNotification {
             caption: caption,
             icon,
             project_name: project_name.map(|name| name.into()),
+            can_allow: false,
         }
+    }
+
+    pub fn with_allow(mut self, can_allow: bool) -> Self {
+        self.can_allow = can_allow;
+        self
     }
 
     pub fn window_options(screen: Rc<dyn PlatformDisplay>, cx: &App) -> WindowOptions {
@@ -70,6 +79,8 @@ impl AgentNotification {
 pub enum AgentNotificationEvent {
     Accepted,
     Dismissed,
+    /// Brainz: the user approved the pending tool call from the popup.
+    Allowed,
 }
 
 impl EventEmitter<AgentNotificationEvent> for AgentNotification {}
@@ -81,6 +92,10 @@ impl AgentNotification {
 
     pub fn dismiss(&mut self, cx: &mut Context<Self>) {
         cx.emit(AgentNotificationEvent::Dismissed);
+    }
+
+    pub fn allow(&mut self, cx: &mut Context<Self>) {
+        cx.emit(AgentNotificationEvent::Allowed);
     }
 }
 
@@ -175,25 +190,57 @@ impl Render for AgentNotification {
                             ),
                     ),
             )
-            .child(
-                v_flex()
-                    .gap_1()
-                    .items_center()
-                    .child(
-                        Button::new("open", "View")
-                            .style(ButtonStyle::Tinted(ui::TintColor::Accent))
-                            .full_width()
-                            .on_click({
-                                cx.listener(move |this, _event, _, cx| {
+            .map(|this| {
+                if self.can_allow {
+                    this.child(
+                        h_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                Button::new("allow", "Yes")
+                                    .style(ButtonStyle::Tinted(ui::TintColor::Success))
+                                    .start_icon(
+                                        Icon::new(IconName::Check)
+                                            .size(IconSize::XSmall)
+                                            .color(Color::Success),
+                                    )
+                                    .on_click(cx.listener(move |this, _event, _, cx| {
+                                        this.allow(cx);
+                                    })),
+                            )
+                            .child(Button::new("open", "View").on_click(cx.listener(
+                                move |this, _event, _, cx| {
                                     this.accept(cx);
-                                })
-                            }),
+                                },
+                            )))
+                            .child(Button::new("dismiss", "Dismiss").on_click(cx.listener(
+                                move |this, _event, _, cx| {
+                                    this.dismiss(cx);
+                                },
+                            ))),
                     )
-                    .child(Button::new("dismiss", "Dismiss").full_width().on_click({
-                        cx.listener(move |this, _event, _, cx| {
-                            this.dismiss(cx);
-                        })
-                    })),
-            )
+                } else {
+                    this.child(
+                        v_flex()
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                Button::new("open", "View")
+                                    .style(ButtonStyle::Tinted(ui::TintColor::Accent))
+                                    .full_width()
+                                    .on_click({
+                                        cx.listener(move |this, _event, _, cx| {
+                                            this.accept(cx);
+                                        })
+                                    }),
+                            )
+                            .child(Button::new("dismiss", "Dismiss").full_width().on_click({
+                                cx.listener(move |this, _event, _, cx| {
+                                    this.dismiss(cx);
+                                })
+                            })),
+                    )
+                }
+            })
     }
 }

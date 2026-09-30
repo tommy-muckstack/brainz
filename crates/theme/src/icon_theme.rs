@@ -328,7 +328,7 @@ const FILE_ICONS: &[(&str, &str)] = &[
     ("css", "icons/file_icons/css.svg"),
     ("cue", "icons/file_icons/file.svg"),
     ("dart", "icons/file_icons/dart.svg"),
-    ("default", "icons/file_icons/file.svg"),
+    ("default", "icons/brainz/file.svg"),
     ("diff", "icons/file_icons/diff.svg"),
     ("docker", "icons/file_icons/docker.svg"),
     ("document", "icons/file_icons/book.svg"),
@@ -361,7 +361,7 @@ const FILE_ICONS: &[(&str, &str)] = &[
     ("log", "icons/file_icons/info.svg"),
     ("lua", "icons/file_icons/lua.svg"),
     ("luau", "icons/file_icons/luau.svg"),
-    ("markdown", "icons/file_icons/book.svg"),
+    ("markdown", "icons/brainz/file.svg"),
     ("metal", "icons/file_icons/metal.svg"),
     ("nim", "icons/file_icons/nim.svg"),
     ("nix", "icons/file_icons/nix.svg"),
@@ -429,8 +429,8 @@ static DEFAULT_ICON_THEME: LazyLock<Arc<IconTheme>> = LazyLock::new(|| {
         name: DEFAULT_ICON_THEME_NAME.into(),
         appearance: Appearance::Dark,
         directory_icons: DirectoryIcons {
-            collapsed: Some("icons/file_icons/folder.svg".into()),
-            expanded: Some("icons/file_icons/folder_open.svg".into()),
+            collapsed: Some("icons/brainz/folder.svg".into()),
+            expanded: Some("icons/brainz/folder-open.svg".into()),
         },
         named_directory_icons: HashMap::default(),
         chevron_icons: ChevronIcons {

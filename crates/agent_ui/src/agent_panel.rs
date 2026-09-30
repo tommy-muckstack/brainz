@@ -75,9 +75,9 @@ use fs::Fs;
 use futures::FutureExt as _;
 use gpui::{
     Action, Anchor, Animation, AnimationExt, AnyElement, App, AsyncWindowContext, ClipboardItem,
-    Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, KeyContext, Pixels,
-    PlatformDisplay, Subscription, Task, TaskExt, WeakEntity, WindowHandle, prelude::*,
-    pulsating_between,
+    Entity, EventEmitter, ExternalPaths, FocusHandle, Focusable, Hsla, KeyContext, Pixels,
+    PlatformDisplay, ScrollHandle, Subscription, Task, TaskExt, WeakEntity, WindowHandle,
+    prelude::*, pulsating_between,
 };
 use language::LanguageRegistry;
 use language_model::LanguageModelRegistry;
@@ -93,8 +93,9 @@ use terminal_view::TerminalView;
 use text::OffsetRangeExt;
 use theme_settings::ThemeSettings;
 use ui::{
-    ContextMenu, ContextMenuEntry, GradientFade, IconButton, KeyBinding, PopoverMenu,
-    PopoverMenuHandle, ProjectEmptyState, Tab, Tooltip, prelude::*, utils::WithRemSize,
+    ButtonLike, ButtonSize, ContextMenu, ContextMenuEntry, GradientFade, IconButton, KeyBinding,
+    PopoverMenu, PopoverMenuHandle, ProjectEmptyState, Tab, TabBar, TabPosition, Tooltip,
+    prelude::*, right_click_menu, utils::WithRemSize,
 };
 use util::ResultExt as _;
 use workspace::{
@@ -412,6 +413,58 @@ pub fn init(cx: &mut App) {
                         panel.update(cx, |panel, cx| {
                             panel.new_external_agent_thread(action, window, cx);
                         });
+                    }
+                })
+                .register_action(
+                    |workspace, _: &terminal_view::terminal_panel::OpenClaude, window, cx| {
+                        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                            workspace.focus_panel::<AgentPanel>(window, cx);
+                            panel.update(cx, |panel, cx| {
+                                panel.new_external_agent_thread(
+                                    &NewExternalAgentThread {
+                                        agent: AgentId::new("claude-acp"),
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            });
+                        }
+                    },
+                )
+                .register_action(
+                    |workspace, _: &terminal_view::terminal_panel::OpenShell, window, cx| {
+                        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                            workspace.focus_panel::<AgentPanel>(window, cx);
+                            panel.update(cx, |panel, cx| {
+                                panel.new_terminal(
+                                    Some(workspace),
+                                    AgentThreadSource::AgentPanel,
+                                    window,
+                                    cx,
+                                );
+                            });
+                        }
+                    },
+                )
+                .register_action(
+                    |workspace, _: &terminal_view::terminal_panel::OpenCodex, window, cx| {
+                        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                            workspace.focus_panel::<AgentPanel>(window, cx);
+                            panel.update(cx, |panel, cx| {
+                                panel.new_external_agent_thread(
+                                    &NewExternalAgentThread {
+                                        agent: AgentId::new("codex-acp"),
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            });
+                        }
+                    },
+                )
+                .register_action(|workspace, _: &crate::BrainzResetThread, window, cx| {
+                    if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                        panel.update(cx, |panel, cx| panel.reset_active_thread(window, cx));
                     }
                 })
                 .register_action(|workspace, action: &SelectAgent, window, cx| {
@@ -1061,6 +1114,77 @@ impl AgentTerminal {
     }
 }
 
+/// Brainz: one entry in the bottom panel's tab strip. Shells and agent
+/// conversations sit side by side, like tabs in a terminal app.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum PanelTab {
+    Thread(ThreadId),
+    Terminal(TerminalId),
+}
+
+impl PanelTab {
+    fn to_key_string(self) -> String {
+        match self {
+            PanelTab::Thread(id) => format!("thread:{}", id.to_key_string()),
+            PanelTab::Terminal(id) => format!("terminal:{}", id.to_key_string()),
+        }
+    }
+
+    fn from_key_string(key: &str) -> Option<Self> {
+        if let Some(id) = key.strip_prefix("thread:") {
+            serde_json::from_value::<ThreadId>(serde_json::Value::String(id.to_owned()))
+                .ok()
+                .map(PanelTab::Thread)
+        } else if let Some(id) = key.strip_prefix("terminal:") {
+            TerminalId::from_key_string(id).ok().map(PanelTab::Terminal)
+        } else {
+            None
+        }
+    }
+}
+
+const BRAINZ_PANEL_TABS_KEY: &str = "brainz-panel-tabs";
+
+/// Persisted tab strip: open tabs in order plus the colour picked for each.
+#[derive(Serialize, Deserialize, Default)]
+struct SerializedPanelTabs {
+    tabs: Vec<String>,
+    colors: HashMap<String, usize>,
+}
+
+fn read_panel_tabs(kvp: &KeyValueStore) -> Option<SerializedPanelTabs> {
+    kvp.read_kvp(BRAINZ_PANEL_TABS_KEY)
+        .log_err()
+        .flatten()
+        .and_then(|json| serde_json::from_str::<SerializedPanelTabs>(&json).log_err())
+}
+
+/// Tab colours tuned to the charcoal-and-amber theme.
+const BRAINZ_TAB_COLORS: &[(&str, u32)] = &[
+    ("Amber", 0xe3c568),
+    ("Coral", 0xe8836f),
+    ("Sage", 0x9cc48f),
+    ("Sky", 0x7fb3d5),
+    ("Lilac", 0xb59ad9),
+    ("Rose", 0xd98fb0),
+    ("Slate", 0x9aa5b1),
+];
+
+fn brainz_tab_color(index: usize) -> Hsla {
+    let (_, rgb) = BRAINZ_TAB_COLORS[index % BRAINZ_TAB_COLORS.len()];
+    gpui::rgb(rgb).into()
+}
+
+/// Short names for the agents Brainz ships with; other agents keep their
+/// registry display name.
+fn brainz_agent_short_name(agent_id: &AgentId) -> Option<SharedString> {
+    match agent_id.as_ref() {
+        "claude-acp" => Some("Claude".into()),
+        "codex-acp" => Some("Codex".into()),
+        _ => None,
+    }
+}
+
 enum BaseView {
     Uninitialized,
     AgentThread {
@@ -1138,6 +1262,15 @@ pub struct AgentPanel {
     _settings_subscription: Subscription,
     retained_thread_subscriptions: HashMap<ThreadId, Subscription>,
     last_context_source: Option<AgentContextSource>,
+
+    /// Brainz: open tabs, in display order.
+    panel_tabs: Vec<PanelTab>,
+    /// Brainz: index into `BRAINZ_TAB_COLORS` per tab.
+    tab_colors: HashMap<PanelTab, usize>,
+    tab_bar_scroll_handle: ScrollHandle,
+    /// Brainz: the tab whose title is being edited inline.
+    renaming_tab: Option<(PanelTab, Entity<Editor>)>,
+    _renaming_subscription: Option<Subscription>,
 
     is_active: bool,
 }
@@ -1237,7 +1370,12 @@ impl AgentPanel {
                 .ok()
                 .flatten();
 
-            let (serialized_panel, global_last_used_agent, global_last_created_entry_kind) = cx
+            let (
+                serialized_panel,
+                global_last_used_agent,
+                global_last_created_entry_kind,
+                serialized_panel_tabs,
+            ) = cx
                 .background_spawn(async move {
                     match kvp {
                         Some(kvp) => {
@@ -1246,9 +1384,10 @@ impl AgentPanel {
                                 .or_else(|| read_legacy_serialized_panel(&kvp));
                             let global_agent = read_global_last_used_agent(&kvp);
                             let global_entry_kind = read_global_last_created_entry_kind(&kvp);
-                            (panel, global_agent, global_entry_kind)
+                            let panel_tabs = read_panel_tabs(&kvp);
+                            (panel, global_agent, global_entry_kind, panel_tabs)
                         }
-                        None => (None, None, None),
+                        None => (None, None, None, None),
                     }
                 })
                 .await;
@@ -1372,6 +1511,10 @@ impl AgentPanel {
                     };
                     let global_fallback =
                         global_last_used_agent.filter(|agent| !is_via_collab || agent.is_native());
+
+                    if let Some(serialized_panel_tabs) = serialized_panel_tabs {
+                        panel.restore_panel_tabs(serialized_panel_tabs, cx);
+                    }
 
                     if let Some(serialized_panel) = &serialized_panel {
                         panel.last_created_entry_kind = serialized_panel.last_created_entry_kind;
@@ -1542,6 +1685,11 @@ impl AgentPanel {
             test_terminal_spawn_gate: None,
             new_thread_menu_handle: PopoverMenuHandle::default(),
             agent_panel_menu_handle: PopoverMenuHandle::default(),
+            panel_tabs: Vec::new(),
+            tab_colors: HashMap::default(),
+            tab_bar_scroll_handle: ScrollHandle::new(),
+            renaming_tab: None,
+            _renaming_subscription: None,
 
             _extension_subscription: extension_subscription,
             _project_subscription,
@@ -1549,7 +1697,7 @@ impl AgentPanel {
             pending_serialization: None,
             new_user_onboarding: onboarding,
             thread_store,
-            selected_agent: Agent::default(),
+            selected_agent: AgentId::new("claude-acp").into(),
             _thread_view_subscription: None,
             _active_thread_focus_subscription: None,
             new_user_onboarding_upsell_dismissed: AtomicBool::new(OnboardingUpsell::dismissed(cx)),
@@ -2317,6 +2465,7 @@ impl AgentPanel {
         if self.terminals.remove(&terminal_id).is_none() {
             return;
         }
+        self.forget_panel_tab(PanelTab::Terminal(terminal_id), cx);
         if let Some(store) = TerminalThreadMetadataStore::try_global(cx) {
             store.update(cx, |store, cx| {
                 store.delete(terminal_id, cx);
@@ -2750,7 +2899,7 @@ impl AgentPanel {
 
                     this.dismiss_terminal_notifications(terminal_id, cx);
                 }
-                AgentNotificationEvent::Dismissed => {
+                AgentNotificationEvent::Dismissed | AgentNotificationEvent::Allowed => {
                     this.dismiss_terminal_notifications(terminal_id, cx);
                 }
             }
@@ -3307,6 +3456,7 @@ impl AgentPanel {
         cx: &mut Context<Self>,
     ) {
         self.remove_retained_thread(&id);
+        self.forget_panel_tab(PanelTab::Thread(id), cx);
         ThreadMetadataStore::global(cx).update(cx, |store, cx| {
             store.delete(id, cx);
         });
@@ -4298,6 +4448,7 @@ impl AgentPanel {
     ) {
         let old_view = std::mem::replace(&mut self.base_view, new_view);
         self.retain_running_thread(old_view, cx);
+        self.track_active_panel_tab(cx);
 
         if let BaseView::AgentThread { conversation_view } = &self.base_view {
             let conversation_view = conversation_view.read(cx);
@@ -5011,14 +5162,21 @@ impl Panel for AgentPanel {
         agent_panel_dock_position(cx)
     }
 
-    fn position_is_valid(&self, position: DockPosition) -> bool {
-        position != DockPosition::Bottom
+    fn position_is_valid(&self, _position: DockPosition) -> bool {
+        true
+    }
+
+    /// Brainz: the conversation panel is the bottom panel, so it opens with
+    /// the window.
+    fn starts_open(&self, _window: &Window, _cx: &App) -> bool {
+        true
     }
 
     fn set_position(&mut self, position: DockPosition, _: &mut Window, cx: &mut Context<Self>) {
         let side = match position {
             DockPosition::Left => "left",
-            DockPosition::Right | DockPosition::Bottom => "right",
+            DockPosition::Right => "right",
+            DockPosition::Bottom => "bottom",
         };
         telemetry::event!("Agent Panel Side Changed", side = side);
         settings::update_settings_file(self.fs.clone(), cx, move |settings, _| {
@@ -5831,6 +5989,7 @@ impl AgentPanel {
         })
     }
 
+    #[allow(dead_code)]
     fn render_toolbar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let agent_server_store = self.project.read(cx).agent_server_store().clone();
 
@@ -5873,40 +6032,9 @@ impl AgentPanel {
             Rc::new(move |window, cx| {
                 Some(ContextMenu::build(window, cx, |menu, _window, cx| {
                     menu.context(focus_handle.clone())
-                        .item(
-                            ContextMenuEntry::new("Zed Agent")
-                                .when(
-                                    !showing_terminal && is_agent_selected(Agent::NativeAgent),
-                                    |this| this.action(Box::new(NewThread)),
-                                )
-                                .icon(IconName::ZedAgent)
-                                .icon_color(Color::Muted)
-                                .handler({
-                                    let workspace = workspace.clone();
-                                    move |window, cx| {
-                                        if let Some(workspace) = workspace.upgrade() {
-                                            workspace.update(cx, |workspace, cx| {
-                                                if let Some(panel) =
-                                                    workspace.panel::<AgentPanel>(cx)
-                                                {
-                                                    panel.update(cx, |panel, cx| {
-                                                        panel.selected_agent = Agent::NativeAgent;
-                                                        panel.activate_new_thread(
-                                                            true,
-                                                            AgentThreadSource::AgentPanel,
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    });
-                                                }
-                                            });
-                                        }
-                                    }
-                                }),
-                        )
                         .when(supports_terminal, |menu| {
                             menu.item(
-                                ContextMenuEntry::new("Terminal")
+                                ContextMenuEntry::new("Shell")
                                     .when(showing_terminal, |this| this.action(Box::new(NewThread)))
                                     .when(!showing_terminal, |this| {
                                         this.action(Box::new(NewTerminalThread))
@@ -6025,18 +6153,6 @@ impl AgentPanel {
 
                             menu
                         })
-                        .separator()
-                        .item(
-                            ContextMenuEntry::new("Add More Agents")
-                                .icon(IconName::Plus)
-                                .icon_color(Color::Muted)
-                                .handler({
-                                    move |window, cx| {
-                                        window
-                                            .dispatch_action(Box::new(zed_actions::AcpRegistry), cx)
-                                    }
-                                }),
-                        )
                 }))
             })
         };
@@ -6132,7 +6248,7 @@ impl AgentPanel {
             .justify_between();
 
         let empty_thread_title = matches!(mode, ToolbarMode::EmptyThread).then(|| {
-            Label::new(format!("New {} Thread", selected_agent_label))
+            Label::new(selected_agent_label.clone())
                 .color(Color::Muted)
                 .truncate()
                 .into_any_element()
@@ -6141,8 +6257,9 @@ impl AgentPanel {
         let toolbar_content = {
             let new_thread_menu = PopoverMenu::new("new_thread_menu")
                 .trigger_with_tooltip(
-                    IconButton::new("new_thread_menu_btn", IconName::Plus)
-                        .icon_size(IconSize::Small),
+                    Button::new("new_thread_menu_btn", "Launch")
+                        .start_icon(Icon::new(IconName::Launch).size(IconSize::Small))
+                        .style(ButtonStyle::Filled),
                     {
                         move |_window, cx| {
                             Tooltip::for_action_in(
@@ -6207,6 +6324,10 @@ impl AgentPanel {
     }
 
     fn should_render_trial_end_upsell(&self, cx: &mut Context<Self>) -> bool {
+        // Brainz: no Zed account, so never pitch signing in.
+        if cfg!(not(test)) {
+            return false;
+        }
         if TrialEndUpsell::dismissed(cx) {
             return false;
         }
@@ -6240,6 +6361,10 @@ impl AgentPanel {
     }
 
     fn should_render_new_user_onboarding(&mut self, cx: &mut Context<Self>) -> bool {
+        // Brainz: no Zed account, so never pitch signing in.
+        if cfg!(not(test)) {
+            return false;
+        }
         if self
             .new_user_onboarding_upsell_dismissed
             .load(Ordering::Acquire)
@@ -6483,6 +6608,634 @@ impl AgentPanel {
     }
 }
 
+/// Brainz: the colour picker shown for a tab, from its swatch or a right-click.
+fn build_tab_color_menu(
+    panel: WeakEntity<AgentPanel>,
+    tab: PanelTab,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<ContextMenu> {
+    ContextMenu::build(window, cx, move |menu, _, _| {
+        let mut menu = menu.fixed_width(px(150.).into()).header("Tab Color");
+        for (color_ix, (name, _)) in BRAINZ_TAB_COLORS.iter().enumerate() {
+            let panel = panel.clone();
+            menu = menu.item(
+                ContextMenuEntry::new(*name)
+                    .icon(IconName::Swatch)
+                    .icon_color(Color::Custom(brainz_tab_color(color_ix)))
+                    .handler(move |_, cx| {
+                        panel
+                            .update(cx, |panel, cx| {
+                                panel.set_panel_tab_color(tab, Some(color_ix), cx)
+                            })
+                            .ok();
+                    }),
+            );
+        }
+        let panel = panel.clone();
+        menu.separator().entry("No Color", None, move |_, cx| {
+            panel
+                .update(cx, |panel, cx| panel.set_panel_tab_color(tab, None, cx))
+                .ok();
+        })
+    })
+}
+
+/// Brainz: tab strip management.
+impl AgentPanel {
+    fn active_panel_tab(&self, cx: &App) -> Option<PanelTab> {
+        match &self.base_view {
+            BaseView::AgentThread { conversation_view } => {
+                Some(PanelTab::Thread(conversation_view.read(cx).thread_id))
+            }
+            BaseView::Terminal { terminal_id } => Some(PanelTab::Terminal(*terminal_id)),
+            BaseView::Uninitialized => None,
+        }
+    }
+
+    /// Publishes thread colours so message bubbles can match their tab.
+    fn sync_thread_colors(&self, cx: &mut App) {
+        let colors = self
+            .tab_colors
+            .iter()
+            .filter_map(|(tab, color)| match tab {
+                PanelTab::Thread(thread_id) => Some((*thread_id, brainz_tab_color(*color))),
+                PanelTab::Terminal(_) => None,
+            })
+            .collect();
+        cx.set_global(crate::conversation_view::BrainzThreadColors(colors));
+    }
+
+    fn restore_panel_tabs(&mut self, serialized: SerializedPanelTabs, cx: &mut App) {
+        self.panel_tabs = serialized
+            .tabs
+            .iter()
+            .filter_map(|key| PanelTab::from_key_string(key))
+            .collect::<Vec<_>>();
+        self.panel_tabs.dedup();
+        self.tab_colors = serialized
+            .colors
+            .iter()
+            .filter_map(|(key, color)| Some((PanelTab::from_key_string(key)?, *color)))
+            .collect();
+        self.sync_thread_colors(cx);
+    }
+
+    fn persist_panel_tabs(&self, cx: &App) {
+        let serialized = SerializedPanelTabs {
+            tabs: self
+                .panel_tabs
+                .iter()
+                .map(|tab| tab.to_key_string())
+                .collect(),
+            colors: self
+                .tab_colors
+                .iter()
+                .map(|(tab, color)| (tab.to_key_string(), *color))
+                .collect(),
+        };
+        let Some(json) = serde_json::to_string(&serialized).log_err() else {
+            return;
+        };
+        let kvp = KeyValueStore::global(cx);
+        cx.background_spawn(async move {
+            kvp.write_kvp(BRAINZ_PANEL_TABS_KEY.to_string(), json)
+                .await
+                .log_err();
+        })
+        .detach();
+    }
+
+    /// Makes sure whatever just became active has a tab.
+    fn track_active_panel_tab(&mut self, cx: &App) {
+        let Some(tab) = self.active_panel_tab(cx) else {
+            return;
+        };
+        if !self.panel_tabs.contains(&tab) {
+            self.panel_tabs.push(tab);
+            self.persist_panel_tabs(cx);
+        }
+    }
+
+    fn forget_panel_tab(&mut self, tab: PanelTab, cx: &mut App) {
+        let had_tab = self.panel_tabs.contains(&tab);
+        self.panel_tabs.retain(|existing| *existing != tab);
+        let had_color = self.tab_colors.remove(&tab).is_some();
+        if had_color {
+            self.sync_thread_colors(cx);
+        }
+        if had_tab || had_color {
+            self.persist_panel_tabs(cx);
+        }
+    }
+
+    /// Drops tabs whose thread or terminal no longer exists anywhere.
+    fn prune_panel_tabs(&mut self, cx: &App) {
+        let thread_store = ThreadMetadataStore::try_global(cx);
+        let terminal_store = TerminalThreadMetadataStore::try_global(cx);
+        let active = self.active_panel_tab(cx);
+        let before = self.panel_tabs.len();
+        let retained_threads = &self.retained_threads;
+        let draft_thread = &self.draft_thread;
+        let terminals = &self.terminals;
+        self.panel_tabs.retain(|tab| {
+            if Some(*tab) == active {
+                return true;
+            }
+            match tab {
+                PanelTab::Thread(thread_id) => {
+                    retained_threads.contains_key(thread_id)
+                        || draft_thread
+                            .as_ref()
+                            .is_some_and(|draft| draft.read(cx).thread_id == *thread_id)
+                        || thread_store
+                            .as_ref()
+                            .is_some_and(|store| store.read(cx).entry(*thread_id).is_some())
+                }
+                PanelTab::Terminal(terminal_id) => {
+                    terminals.contains_key(terminal_id)
+                        || terminal_store
+                            .as_ref()
+                            .is_some_and(|store| store.read(cx).entry(*terminal_id).is_some())
+                }
+            }
+        });
+        if self.panel_tabs.len() != before {
+            self.persist_panel_tabs(cx);
+        }
+    }
+
+    fn activate_panel_tab(&mut self, tab: PanelTab, window: &mut Window, cx: &mut Context<Self>) {
+        match tab {
+            PanelTab::Thread(thread_id) => {
+                let metadata = ThreadMetadataStore::try_global(cx)
+                    .and_then(|store| store.read(cx).entry(thread_id).cloned());
+                let in_memory = self.retained_threads.contains_key(&thread_id)
+                    || self
+                        .draft_thread
+                        .as_ref()
+                        .is_some_and(|draft| draft.read(cx).thread_id == thread_id);
+                let Some(agent) = metadata
+                    .as_ref()
+                    .map(|metadata| Agent::from(metadata.agent_id.clone()))
+                    .or_else(|| in_memory.then(|| self.selected_agent.clone()))
+                else {
+                    self.forget_panel_tab(tab, cx);
+                    cx.notify();
+                    return;
+                };
+                let work_dirs = metadata
+                    .as_ref()
+                    .map(|metadata| metadata.folder_paths().clone());
+                let title = metadata.as_ref().and_then(|metadata| metadata.title());
+                self.load_agent_thread(
+                    agent,
+                    thread_id,
+                    work_dirs,
+                    title,
+                    true,
+                    AgentThreadSource::AgentPanel,
+                    window,
+                    cx,
+                );
+            }
+            PanelTab::Terminal(terminal_id) => {
+                if self.terminals.contains_key(&terminal_id) {
+                    self.activate_terminal(terminal_id, true, window, cx);
+                } else if let Some(metadata) = TerminalThreadMetadataStore::try_global(cx)
+                    .and_then(|store| store.read(cx).entry(terminal_id).cloned())
+                {
+                    self.restore_terminal(
+                        metadata,
+                        true,
+                        AgentThreadSource::AgentPanel,
+                        None,
+                        window,
+                        cx,
+                    );
+                } else {
+                    self.forget_panel_tab(tab, cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn close_panel_tab(&mut self, tab: PanelTab, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.panel_tabs.iter().position(|existing| *existing == tab) else {
+            return;
+        };
+        let was_active = self.active_panel_tab(cx) == Some(tab);
+        self.forget_panel_tab(tab, cx);
+        match tab {
+            PanelTab::Thread(thread_id) => {
+                // Free the memory; the conversation stays in the sidebar.
+                self.remove_retained_thread(&thread_id);
+            }
+            PanelTab::Terminal(terminal_id) => {
+                self.close_terminal_without_activating_draft(terminal_id, window, cx);
+            }
+        }
+        if was_active {
+            let next = self
+                .panel_tabs
+                .get(ix)
+                .or_else(|| self.panel_tabs.last())
+                .copied();
+            match next {
+                Some(next) => self.activate_panel_tab(next, window, cx),
+                None => self.activate_draft(true, AgentThreadSource::AgentPanel, window, cx),
+            }
+        }
+        cx.notify();
+    }
+
+    /// Replaces the active conversation with a fresh one on the same agent
+    /// connection, so the model forgets the context but nothing reconnects.
+    /// The tab keeps its position and colour; the old conversation stays in
+    /// the sidebar history.
+    pub fn reset_active_thread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(old_tab @ PanelTab::Thread(old_thread_id)) = self.active_panel_tab(cx) else {
+            return;
+        };
+        let BaseView::AgentThread { conversation_view } = &self.base_view else {
+            return;
+        };
+        let agent = conversation_view.read(cx).agent_key().clone();
+        let position = self.panel_tabs.iter().position(|tab| *tab == old_tab);
+        let color = self.tab_colors.get(&old_tab).copied();
+
+        self.selected_agent = agent;
+        self.activate_new_thread(true, AgentThreadSource::AgentPanel, window, cx);
+
+        let Some(new_tab) = self.active_panel_tab(cx) else {
+            return;
+        };
+        if new_tab == old_tab {
+            return;
+        }
+        self.forget_panel_tab(old_tab, cx);
+        self.remove_retained_thread(&old_thread_id);
+        self.panel_tabs.retain(|tab| *tab != new_tab);
+        match position {
+            Some(position) if position <= self.panel_tabs.len() => {
+                self.panel_tabs.insert(position, new_tab);
+            }
+            _ => self.panel_tabs.push(new_tab),
+        }
+        if let Some(color) = color {
+            self.tab_colors.insert(new_tab, color);
+            self.sync_thread_colors(cx);
+        }
+        self.persist_panel_tabs(cx);
+        cx.notify();
+    }
+
+    fn set_panel_tab_color(
+        &mut self,
+        tab: PanelTab,
+        color: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        match color {
+            Some(color) => {
+                self.tab_colors.insert(tab, color);
+            }
+            None => {
+                self.tab_colors.remove(&tab);
+            }
+        }
+        self.sync_thread_colors(cx);
+        self.persist_panel_tabs(cx);
+        cx.notify();
+    }
+
+    fn panel_tab_title(&self, tab: PanelTab, cx: &App) -> SharedString {
+        match tab {
+            PanelTab::Thread(thread_id) => {
+                let conversation_view = match &self.base_view {
+                    BaseView::AgentThread { conversation_view }
+                        if conversation_view.read(cx).thread_id == thread_id =>
+                    {
+                        Some(conversation_view)
+                    }
+                    _ => self.retained_threads.get(&thread_id).or_else(|| {
+                        self.draft_thread
+                            .as_ref()
+                            .filter(|draft| draft.read(cx).thread_id == thread_id)
+                    }),
+                };
+                let metadata = ThreadMetadataStore::try_global(cx)
+                    .and_then(|store| store.read(cx).entry(thread_id).cloned());
+                let title = metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.title_override.clone())
+                    .or_else(|| {
+                        conversation_view
+                            .map(|view| view.read(cx).title(cx))
+                            .filter(|title| !title.is_empty())
+                    })
+                    .or_else(|| metadata.as_ref().and_then(|metadata| metadata.title()));
+                let agent = conversation_view
+                    .map(|view| view.read(cx).agent_key().clone())
+                    .or_else(|| {
+                        metadata
+                            .as_ref()
+                            .map(|metadata| Agent::from(metadata.agent_id.clone()))
+                    })
+                    .unwrap_or_else(|| self.selected_agent.clone());
+                let agent_name = self.panel_tab_agent_name(&agent, cx);
+                match title {
+                    Some(title) if title.as_ref() != crate::DEFAULT_THREAD_TITLE => title,
+                    _ => agent_name,
+                }
+            }
+            PanelTab::Terminal(terminal_id) => self
+                .terminals
+                .get(&terminal_id)
+                .map(|terminal| terminal.title(cx))
+                .filter(|title| !title.is_empty())
+                .or_else(|| {
+                    TerminalThreadMetadataStore::try_global(cx)
+                        .and_then(|store| store.read(cx).entry(terminal_id).cloned())
+                        .and_then(|metadata| Self::terminal_restore_initial_title(&metadata))
+                })
+                .unwrap_or_else(|| "Shell".into()),
+        }
+    }
+
+    /// Brainz: click the active tab's title to rename it inline.
+    fn start_renaming_tab(&mut self, tab: PanelTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.renaming_tab.as_ref().is_some_and(|(t, _)| *t == tab) {
+            return;
+        }
+        let title = self.panel_tab_title(tab, cx).to_string();
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_text(title, window, cx);
+            editor
+        });
+        self._renaming_subscription = Some(cx.subscribe_in(
+            &editor,
+            window,
+            |this, _editor, event: &editor::EditorEvent, window, cx| {
+                if matches!(event, editor::EditorEvent::Blurred) {
+                    this.commit_tab_rename(window, cx);
+                }
+            },
+        ));
+        editor.update(cx, |editor, cx| {
+            editor.select_all(&editor::actions::SelectAll, window, cx);
+            editor.focus_handle(cx).focus(window, cx);
+        });
+        self.renaming_tab = Some((tab, editor));
+        cx.notify();
+    }
+
+    fn commit_tab_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((tab, editor)) = self.renaming_tab.take() else {
+            return;
+        };
+        self._renaming_subscription = None;
+        let title = editor.read(cx).text(cx).trim().to_string();
+        if !title.is_empty() {
+            match tab {
+                PanelTab::Thread(thread_id) => {
+                    ThreadMetadataStore::global(cx).update(cx, |store, cx| {
+                        store.set_title_override(thread_id, title.into(), cx);
+                    });
+                }
+                PanelTab::Terminal(terminal_id) => {
+                    self.rename_terminal(terminal_id, title.into(), cx);
+                }
+            }
+        }
+        self.activation_focus_handle(cx).focus(window, cx);
+        cx.notify();
+    }
+
+    fn cancel_tab_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.renaming_tab.take().is_some() {
+            self._renaming_subscription = None;
+            self.activation_focus_handle(cx).focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn panel_tab_agent_name(&self, agent: &Agent, cx: &App) -> SharedString {
+        match agent {
+            Agent::Custom { id } => brainz_agent_short_name(id).unwrap_or_else(|| {
+                self.project
+                    .read(cx)
+                    .agent_server_store()
+                    .read(cx)
+                    .agent_display_name(id)
+                    .unwrap_or_else(|| agent.label())
+            }),
+            _ => agent.label(),
+        }
+    }
+
+    fn panel_tab_icon(&self, tab: PanelTab, cx: &App) -> Icon {
+        match tab {
+            PanelTab::Terminal(_) => Icon::new(IconName::Terminal),
+            PanelTab::Thread(thread_id) => {
+                let agent_id = ThreadMetadataStore::try_global(cx)
+                    .and_then(|store| {
+                        store
+                            .read(cx)
+                            .entry(thread_id)
+                            .map(|metadata| metadata.agent_id.clone())
+                    })
+                    .or_else(|| match &self.selected_agent {
+                        Agent::Custom { id } => Some(id.clone()),
+                        _ => None,
+                    });
+                agent_id
+                    .and_then(|id| {
+                        self.project
+                            .read(cx)
+                            .agent_server_store()
+                            .read(cx)
+                            .agent_icon(&id)
+                    })
+                    .map(Icon::from_path)
+                    .unwrap_or_else(|| Icon::new(IconName::Sparkle))
+            }
+        }
+    }
+
+    /// Brainz: full-screen toggle and the options menu, at the end of the tab strip.
+    fn render_tab_strip_controls(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let is_full_screen = self.is_zoomed(window, cx);
+        let (icon_name, tooltip_text) = if is_full_screen {
+            (IconName::Minimize, "Disable Full Screen")
+        } else {
+            (IconName::Maximize, "Enable Full Screen")
+        };
+        h_flex()
+            .h_full()
+            .items_center()
+            .gap_0p5()
+            .px_1()
+            .child(
+                IconButton::new("toggle-full-screen", icon_name)
+                    .icon_size(IconSize::Small)
+                    .toggle_state(is_full_screen)
+                    .tooltip(move |_, cx| Tooltip::for_action(tooltip_text, &ToggleZoom, cx))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.toggle_zoom(&ToggleZoom, window, cx);
+                    })),
+            )
+            .child(self.render_panel_options_menu(window, cx))
+            .into_any_element()
+    }
+
+    fn render_panel_tabs(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        self.prune_panel_tabs(cx);
+        let controls = self.render_tab_strip_controls(window, cx);
+
+        let active = self.active_panel_tab(cx);
+        let tabs = self.panel_tabs.clone();
+        let active_ix = tabs.iter().position(|tab| Some(*tab) == active);
+        let last_ix = tabs.len().saturating_sub(1);
+
+        let mut elements = Vec::with_capacity(tabs.len());
+        for (ix, tab) in tabs.into_iter().enumerate() {
+            let selected = Some(tab) == active;
+            let title = self.panel_tab_title(tab, cx);
+            let color = self
+                .tab_colors
+                .get(&tab)
+                .map(|color| brainz_tab_color(*color));
+            let icon = self.panel_tab_icon(tab, cx);
+            let position = if ix == 0 {
+                TabPosition::First
+            } else if ix == last_ix {
+                TabPosition::Last
+            } else {
+                TabPosition::Middle(ix.cmp(&active_ix.unwrap_or(0)))
+            };
+
+            let swatch_icon: AnyElement = match color {
+                Some(color) => Icon::new(IconName::Swatch)
+                    .size(IconSize::Small)
+                    .color(Color::Custom(color))
+                    .into_any_element(),
+                None => icon
+                    .size(IconSize::Small)
+                    .color(if selected {
+                        Color::Default
+                    } else {
+                        Color::Muted
+                    })
+                    .into_any_element(),
+            };
+
+            let panel = cx.weak_entity();
+            let close_panel = panel.clone();
+            let click_panel = panel.clone();
+            let swatch_panel = panel.clone();
+            let rename_editor = self
+                .renaming_tab
+                .as_ref()
+                .filter(|(renaming, _)| *renaming == tab)
+                .map(|(_, editor)| editor.clone());
+            let title_element: AnyElement = match rename_editor {
+                Some(editor) => div()
+                    .key_context("BrainzTabRename")
+                    .w(px(160.))
+                    .px_1()
+                    .rounded_sm()
+                    .bg(cx.theme().colors().editor_background)
+                    .border_1()
+                    .border_color(cx.theme().colors().border_focused)
+                    .on_action(cx.listener(|this, _: &menu::Confirm, window, cx| {
+                        this.commit_tab_rename(window, cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &menu::Cancel, window, cx| {
+                        this.cancel_tab_rename(window, cx);
+                    }))
+                    .child(editor)
+                    .into_any_element(),
+                None => Label::new(title)
+                    .size(LabelSize::Small)
+                    .truncate()
+                    .when_some(color.filter(|_| selected), |label, color| {
+                        label.color(Color::Custom(color))
+                    })
+                    .into_any_element(),
+            };
+            // Clicking the swatch (or the agent icon) opens the colour picker.
+            let swatch = PopoverMenu::new(("brainz-panel-tab-color", ix))
+                .trigger(
+                    ButtonLike::new(("brainz-panel-tab-swatch", ix))
+                        .size(ButtonSize::None)
+                        .child(swatch_icon),
+                )
+                .anchor(Anchor::TopLeft)
+                .menu(move |window, cx| {
+                    Some(build_tab_color_menu(swatch_panel.clone(), tab, window, cx))
+                });
+            let tab_element = Tab::new(("brainz-panel-tab", ix))
+                .position(position)
+                .toggle_state(selected)
+                .start_slot(swatch)
+                .end_slot(
+                    IconButton::new(("brainz-panel-tab-close", ix), IconName::Close)
+                        .icon_size(IconSize::XSmall)
+                        .tooltip(Tooltip::text("Close tab"))
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            close_panel
+                                .update(cx, |panel, cx| panel.close_panel_tab(tab, window, cx))
+                                .ok();
+                        }),
+                )
+                .child(title_element)
+                .tooltip(Tooltip::text(if selected {
+                    "Click to rename"
+                } else {
+                    "Click to open"
+                }))
+                .on_click(move |event, window, cx| {
+                    click_panel
+                        .update(cx, |panel, cx| {
+                            if selected || event.click_count() >= 2 {
+                                panel.start_renaming_tab(tab, window, cx);
+                            } else {
+                                panel.activate_panel_tab(tab, window, cx);
+                            }
+                        })
+                        .ok();
+                });
+
+            let menu_panel = panel.clone();
+            elements.push(
+                right_click_menu(("brainz-panel-tab-menu", ix))
+                    .trigger(move |_, _, _| tab_element)
+                    .menu(move |window, cx| {
+                        build_tab_color_menu(menu_panel.clone(), tab, window, cx)
+                    })
+                    .into_any_element(),
+            );
+        }
+
+        TabBar::new("brainz-panel-tabs")
+            .track_scroll(&self.tab_bar_scroll_handle)
+            .children(elements)
+            .end_child(controls)
+    }
+}
+
 impl Render for AgentPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // WARNING: Changes to this element hierarchy can have
@@ -6501,6 +7254,9 @@ impl Render for AgentPanel {
             .justify_between()
             .track_focus(&self.focus_handle)
             .bg(cx.theme().colors().panel_background)
+            // Brainz: a visible seam between the document above and this panel.
+            .border_t_1()
+            .border_color(cx.theme().colors().text_muted.opacity(0.35))
             .on_action(cx.listener(|this, action: &NewThread, window, cx| {
                 this.new_thread(action, window, cx);
             }))
@@ -6539,7 +7295,8 @@ impl Render for AgentPanel {
                     })
                 }
             }))
-            .child(self.render_toolbar(window, cx))
+            // Brainz: no title row; the tab strip carries the controls.
+            .child(self.render_panel_tabs(window, cx))
             .children(self.render_new_user_onboarding(window, cx))
             .map(|parent| match self.visible_surface() {
                 VisibleSurface::Uninitialized if !self.has_open_project(cx) => {
@@ -6578,7 +7335,21 @@ impl Render for AgentPanel {
                         .child(self.render_drag_target(cx))
                 }
             })
-            .children(self.render_trial_end_upsell(window, cx));
+            .children(self.render_trial_end_upsell(window, cx))
+            // Brainz: a soft shadow falling from the seam onto the tab strip.
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(14.))
+                    .bg(gpui::linear_gradient(
+                        180.,
+                        gpui::linear_color_stop(gpui::black().opacity(0.45), 0.),
+                        gpui::linear_color_stop(gpui::black().opacity(0.), 1.),
+                    )),
+            );
 
         match self.visible_font_size() {
             WhichFontSize::AgentFont => {
