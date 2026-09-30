@@ -1,0 +1,187 @@
+#!/bin/bash
+set -euo pipefail
+
+# Builds a signed, notarized Brainz.dmg for direct download and publishes it
+# with the update feed the app polls. Mirrors the My Man / Mumbls pipeline:
+#
+#   brainz-$VERSION.dmg   immutable versioned artifact (cache 1 year)
+#   brainz.dmg            stable alias for muckstack.com/download/brainz
+#   brainz-latest.json    {"version": "...", "url": "..."} read by the in-app updater
+#
+# Also creates a GitHub release with the DMG attached when `gh` is available.
+#
+# Per-machine values come from script/brainz-local.env (untracked):
+#   BRAINZ_NOTARY_PROFILE   notarytool keychain profile (default: mumbls-notary)
+#   BLOB_READ_WRITE_TOKEN   Vercel Blob token for the muckstack download store
+#   BRAINZ_BLOB_HOST        public blob host (default below)
+#
+# Usage: script/brainz-release VERSION [--skip-notarize] [--no-upload] [--no-github]
+# Prereqs: Developer ID Application certificate in the login keychain,
+# `create-dmg` (brew), Node for `npx vercel blob`, Rust 1.98.1.
+
+repository=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$repository"
+
+if [[ -f script/brainz-local.env ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source script/brainz-local.env
+    set +a
+fi
+
+VERSION="${1:-}"
+if [[ -z "$VERSION" || "$VERSION" == --* ]]; then
+    echo "usage: script/brainz-release VERSION [--skip-notarize] [--no-upload] [--no-github]" >&2
+    exit 1
+fi
+shift
+SKIP_NOTARIZE=false
+NO_UPLOAD=false
+NO_GITHUB=false
+for arg in "$@"; do
+    case "$arg" in
+        --skip-notarize) SKIP_NOTARIZE=true ;;
+        --no-upload) NO_UPLOAD=true ;;
+        --no-github) NO_GITHUB=true ;;
+        *) echo "unknown flag: $arg" >&2; exit 1 ;;
+    esac
+done
+
+SLUG="brainz"
+APP_NAME="Brainz"
+NOTARY_PROFILE="${BRAINZ_NOTARY_PROFILE:-mumbls-notary}"
+BLOB_HOST="${BRAINZ_BLOB_HOST:-https://ihvfw4x5q9iy9zx1.public.blob.vercel-storage.com}"
+BUILD_NUMBER="$(git rev-list --count HEAD)"
+DIST="$repository/target/release-dist"
+APP_DIR="$DIST/$APP_NAME.app"
+DMG_PATH="$DIST/$SLUG-$VERSION.dmg"
+FEED_PATH="$DIST/$SLUG-latest.json"
+
+export PATH="${HOME}/.cargo/bin:${PATH}"
+# notarytool and stapler need the full Xcode; cargo is happier with the
+# command line tools, so each step picks its own DEVELOPER_DIR.
+XCODE_DEV="/Applications/Xcode.app/Contents/Developer"
+CLT_DEV="/Library/Developer/CommandLineTools"
+
+DEV_ID_IDENTITY=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+if [[ -z "$DEV_ID_IDENTITY" ]]; then
+    echo "ERROR: no 'Developer ID Application' certificate in the keychain" >&2
+    exit 1
+fi
+echo "==> Brainz $VERSION (build $BUILD_NUMBER), signing as: $DEV_ID_IDENTITY"
+
+echo "==> Release build (this takes a while)..."
+export DEVELOPER_DIR="$CLT_DEV"
+export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+BRAINZ_VERSION="$VERSION" ZED_BUILD_ID="$BUILD_NUMBER" \
+    cargo +1.98.1 build --locked --release -p zed --bin brainz \
+    --features util/debug-embed,gpui_platform/runtime_shaders
+
+echo "==> Bundling $APP_NAME.app..."
+rm -rf "$DIST"
+mkdir -p "$DIST"
+BRAINZ_NO_OPEN=1 BRAINZ_APP_DIR="$APP_DIR" BRAINZ_BINARY="$repository/target/release/brainz" \
+    BRAINZ_VERSION="$VERSION" BRAINZ_BUILD="$BUILD_NUMBER" BRAINZ_SIGNING_IDENTITY="" \
+    script/brainz-local --no-build
+
+echo "==> Signing with Developer ID and the hardened runtime..."
+ENTITLEMENTS="$repository/crates/zed/resources/zed.entitlements"
+codesign --force --timestamp --options runtime --sign "$DEV_ID_IDENTITY" \
+    "$APP_DIR/Contents/MacOS/brainz-calendar"
+codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" \
+    --sign "$DEV_ID_IDENTITY" "$APP_DIR/Contents/MacOS/brainz"
+codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" \
+    --sign "$DEV_ID_IDENTITY" "$APP_DIR"
+codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+
+notarize() {
+    local path="$1" attempt
+    for attempt in 1 2 3; do
+        DEVELOPER_DIR="$XCODE_DEV" xcrun notarytool submit "$path" \
+            --keychain-profile "$NOTARY_PROFILE" --no-s3-acceleration --wait && return 0
+        echo "==> notarization attempt $attempt failed; retrying in 20s..." >&2
+        sleep 20
+    done
+    echo "ERROR: notarization failed after 3 attempts" >&2
+    return 1
+}
+
+if $SKIP_NOTARIZE; then
+    echo "==> Skipping notarization (--skip-notarize)"
+else
+    echo "==> Notarizing app (2-10 minutes)..."
+    ZIP_PATH="$DIST/$SLUG-notarize.zip"
+    /usr/bin/ditto -c -k --keepParent "$APP_DIR" "$ZIP_PATH"
+    notarize "$ZIP_PATH"
+    rm -f "$ZIP_PATH"
+    DEVELOPER_DIR="$XCODE_DEV" xcrun stapler staple "$APP_DIR"
+fi
+
+echo "==> Creating DMG..."
+rm -f "$DMG_PATH"
+if ! create-dmg \
+    --volname "$APP_NAME $VERSION" \
+    --window-size 540 360 \
+    --icon-size 96 \
+    --icon "$APP_NAME.app" 140 180 \
+    --app-drop-link 400 180 \
+    --hide-extension "$APP_NAME.app" \
+    --no-internet-enable \
+    "$DMG_PATH" "$APP_DIR"
+then
+    echo "==> create-dmg failed; falling back to hdiutil..."
+    rm -f "$DMG_PATH"
+    STAGE="$DIST/.dmg-stage"
+    rm -rf "$STAGE"
+    mkdir -p "$STAGE"
+    cp -aR "$APP_DIR" "$STAGE/"
+    ln -s /Applications "$STAGE/Applications"
+    hdiutil create -volname "$APP_NAME $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG_PATH"
+    rm -rf "$STAGE"
+fi
+
+if ! $SKIP_NOTARIZE; then
+    echo "==> Signing, notarizing, and stapling the DMG..."
+    codesign --force --timestamp --sign "$DEV_ID_IDENTITY" "$DMG_PATH"
+    notarize "$DMG_PATH"
+    DEVELOPER_DIR="$XCODE_DEV" xcrun stapler staple "$DMG_PATH"
+fi
+
+VERSIONED_URL="$BLOB_HOST/$SLUG-$VERSION.dmg"
+printf '{"version": "%s", "url": "%s"}\n' "$VERSION" "$VERSIONED_URL" > "$FEED_PATH"
+
+if $NO_UPLOAD; then
+    echo "==> Upload skipped (--no-upload)"
+elif [[ -n "${BLOB_READ_WRITE_TOKEN:-}" ]]; then
+    echo "==> Uploading to Vercel Blob..."
+    npx --yes vercel@51.6.1 blob put "$DMG_PATH" --pathname "$SLUG-$VERSION.dmg" \
+        --access public --allow-overwrite true --content-type application/x-apple-diskimage \
+        --cache-control-max-age 31536000
+    npx --yes vercel@51.6.1 blob put "$DMG_PATH" --pathname "$SLUG.dmg" \
+        --access public --allow-overwrite true --content-type application/x-apple-diskimage \
+        --cache-control-max-age 300
+    npx --yes vercel@51.6.1 blob put "$FEED_PATH" --pathname "$SLUG-latest.json" \
+        --access public --allow-overwrite true --content-type application/json \
+        --cache-control-max-age 300
+else
+    echo "==> Upload skipped: BLOB_READ_WRITE_TOKEN not set"
+fi
+
+if ! $NO_GITHUB && command -v gh >/dev/null 2>&1; then
+    # This is a fork, so `gh` would otherwise target upstream Zed.
+    GH_REPO="$(git remote get-url origin | sed -E 's#.*github.com[:/]##; s#\.git$##')"
+    echo "==> Creating GitHub release v$VERSION on $GH_REPO..."
+    if gh release view "v$VERSION" --repo "$GH_REPO" >/dev/null 2>&1; then
+        gh release upload "v$VERSION" "$DMG_PATH" --repo "$GH_REPO" --clobber
+    else
+        gh release create "v$VERSION" "$DMG_PATH" --repo "$GH_REPO" --title "Brainz $VERSION" \
+            --notes "Signed and notarized macOS build. Download the DMG, drag Brainz to Applications; the app updates itself from then on."
+    fi
+fi
+
+echo ""
+echo "✓ Done."
+echo "  App:    $APP_DIR"
+echo "  DMG:    $DMG_PATH"
+echo "  Feed:   $FEED_PATH"
+echo "  Latest: $BLOB_HOST/$SLUG.dmg"

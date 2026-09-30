@@ -342,6 +342,15 @@ pub fn check(_: &Check, window: &mut Window, cx: &mut App) {
     }
 }
 
+/// Brainz: the release feed, a JSON document `{"version": "…", "url": "…"}`
+/// pointing at the latest DMG. `script/brainz-release` writes it.
+pub const BRAINZ_UPDATE_FEED: &str =
+    "https://ihvfw4x5q9iy9zx1.public.blob.vercel-storage.com/brainz-latest.json";
+
+fn brainz_update_feed() -> String {
+    env::var("BRAINZ_UPDATE_FEED").unwrap_or_else(|_| BRAINZ_UPDATE_FEED.to_owned())
+}
+
 pub fn release_notes_url(cx: &mut App) -> Option<String> {
     let release_channel = ReleaseChannel::try_global(cx)?;
     let url = match release_channel {
@@ -358,7 +367,7 @@ pub fn release_notes_url(cx: &mut App) -> Option<String> {
         ReleaseChannel::Nightly => {
             "https://github.com/zed-industries/zed/commits/nightly/".to_string()
         }
-        ReleaseChannel::Dev => "https://github.com/zed-industries/zed/commits/main/".to_string(),
+        ReleaseChannel::Dev => "https://github.com/tommy-muckstack/brainz/releases".to_string(),
     };
     Some(url)
 }
@@ -703,6 +712,29 @@ impl AutoUpdater {
             "latest".to_string()
         };
         let http_client = client.http_client();
+
+        // Brainz: app updates come from the Brainz feed, not zed.dev. Other
+        // assets (the remote server binary) keep the upstream path.
+        if asset == "zed" {
+            let feed = brainz_update_feed();
+            let mut response = http_client
+                .get(&feed, Default::default(), true)
+                .await
+                .with_context(|| format!("fetching {feed}"))?;
+            let mut body = Vec::new();
+            response.body_mut().read_to_end(&mut body).await?;
+            anyhow::ensure!(
+                response.status().is_success(),
+                "failed to fetch release feed: {:?}",
+                String::from_utf8_lossy(&body),
+            );
+            return serde_json::from_slice(body.as_slice()).with_context(|| {
+                format!(
+                    "error deserializing release feed {:?}",
+                    String::from_utf8_lossy(&body),
+                )
+            });
+        }
 
         let path = format!("/releases/{}/{}/asset", release_channel.dev_name(), version,);
         let url = http_client.build_zed_cloud_url_with_query(

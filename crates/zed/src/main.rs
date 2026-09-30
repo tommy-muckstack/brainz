@@ -304,7 +304,13 @@ fn main() {
     let version = option_env!("ZED_BUILD_ID");
     let app_commit_sha =
         option_env!("ZED_COMMIT_SHA").map(|commit_sha| AppCommitSha::new(commit_sha.to_string()));
-    let app_version = AppVersion::load(env!("CARGO_PKG_VERSION"), version, app_commit_sha.clone());
+    // Brainz: packaged releases carry their own version (set by
+    // script/brainz-release); source builds keep Zed's crate version.
+    let app_version = AppVersion::load(
+        option_env!("BRAINZ_VERSION").unwrap_or(env!("CARGO_PKG_VERSION")),
+        version,
+        app_commit_sha.clone(),
+    );
 
     if args.system_specs {
         let system_specs = system_specs::SystemSpecs::new_stateless(
