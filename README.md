@@ -8,8 +8,11 @@ Markdown reading in the center, and a terminal below, with Gellix typography and
 a charcoal-and-amber theme.
 
 Run `./script/brainz-local` on macOS to build and open `~/Applications/Brainz.app`.
-The first build requires Rust 1.98.1, Xcode, and CMake. Local Gellix font files live
-in `assets/fonts/gellix/` and are excluded from Git.
+The first build requires Rust 1.98.1, Xcode, and CMake. The bundled UI font is
+DM Sans (SIL Open Font License, in `assets/fonts/dm-sans/`). Gellix is a
+commercial font, so its files are excluded from Git; drop them into
+`assets/fonts/gellix/` and set `"ui_font_family": "Gellix"` in
+`~/.config/brainz/settings.json` to use it.
 
 Brainz uses `~/.config/brainz` and `~/Library/Application Support/Brainz`. Edit
 `~/.config/brainz/themes/brainz.json` to adjust colors live, or

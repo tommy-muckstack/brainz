@@ -3053,7 +3053,8 @@ impl Pane {
             .child(
                 h_flex()
                     .id(("pane-tab-content", ix))
-                    .gap_1()
+                    // Brainz: a little more air between the tab icon and its title.
+                    .gap_2()
                     .children(if let Some(icon) = icon {
                         Some(icon)
                     } else if !capability.editable() {
