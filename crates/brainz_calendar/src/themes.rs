@@ -501,7 +501,7 @@ impl ThemesView {
                     }
                 })),
             )
-            .child(div().min_w(px(140.)).child(name))
+            .child(div().min_w(px(110.)).max_w(px(180.)).overflow_hidden().child(name))
             .child(
                 Label::new(signals::sparkline(&theme.series))
                     .buffer_font(cx)
@@ -511,11 +511,6 @@ impl ThemesView {
                 Label::new(momentum)
                     .size(LabelSize::XSmall)
                     .color(momentum_color),
-            )
-            .child(
-                Label::new(format!("{}", theme.total))
-                    .size(LabelSize::XSmall)
-                    .color(Color::Placeholder),
             )
             .child(
                 div().flex_1().min_w_0().child(
@@ -725,91 +720,6 @@ impl ThemesView {
         block.into_any_element()
     }
 
-    fn render_threads(&self, signals: &Signals, cx: &mut Context<Self>) -> AnyElement {
-        let mut block = v_flex()
-            .w_full()
-            .child(self.section_title("Threads", signals.threads.len()));
-        if signals.threads.is_empty() {
-            block = block.child(
-                div().px_2().py_1().child(
-                    Label::new("No theme spans three or more folders yet")
-                        .size(LabelSize::Small)
-                        .color(Color::Placeholder),
-                ),
-            );
-        }
-        for (ix, thread) in signals.threads.iter().enumerate() {
-            let name = self
-                .theme(&thread.theme)
-                .map(|theme| theme.name.clone())
-                .unwrap_or_else(|| thread.theme.clone());
-            let gaps: Vec<&signals::LinkCheck> =
-                thread.links.iter().filter(|link| !link.linked).collect();
-            let mut card = v_flex()
-                .w_full()
-                .px_2()
-                .py_1p5()
-                .gap_0p5()
-                .rounded_md()
-                .hover(|this| this.bg(cx.theme().colors().element_hover))
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(Label::new(name).weight(gpui::FontWeight::SEMIBOLD))
-                        .child(
-                            Label::new(thread.folders.join(" · "))
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
-                        )
-                        .child(
-                            Label::new(if gaps.is_empty() {
-                                "all linked".to_owned()
-                            } else {
-                                format!("{} link gaps", gaps.len())
-                            })
-                            .size(LabelSize::XSmall)
-                            .color(if gaps.is_empty() {
-                                Color::Success
-                            } else {
-                                Color::Warning
-                            }),
-                        ),
-                );
-            for (gap_ix, gap) in gaps.iter().enumerate() {
-                let from = gap.from_file.clone();
-                let to = gap.to_file.clone();
-                card = card.child(
-                    h_flex()
-                        .gap_1()
-                        .pl_2()
-                        .child(
-                            Button::new(("brainz-gap-from", ix * 100 + gap_ix), signals::file_label(&gap.from_file))
-                                .label_size(LabelSize::XSmall)
-                                .tooltip(Tooltip::text(gap.from_file.clone()))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_relative(&from, window, cx)
-                                })),
-                        )
-                        .child(
-                            Label::new("does not link to")
-                                .size(LabelSize::XSmall)
-                                .color(Color::Placeholder),
-                        )
-                        .child(
-                            Button::new(("brainz-gap-to", ix * 100 + gap_ix), signals::file_label(&gap.to_file))
-                                .label_size(LabelSize::XSmall)
-                                .tooltip(Tooltip::text(gap.to_file.clone()))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_relative(&to, window, cx)
-                                })),
-                        ),
-                );
-            }
-            block = block.child(card);
-        }
-        block.into_any_element()
-    }
-
     fn render_open_loops(&self, signals: &Signals) -> AnyElement {
         let total_now: u32 = signals.open_loops.iter().map(|loops| loops.now).sum();
         let mut block = v_flex()
@@ -958,18 +868,32 @@ impl Render for ThemesView {
             );
         }
         if let Some(signals) = self.signals.clone() {
-            body.push(self.render_theme_list("Rising", &signals.rising, 0, window, cx));
-            body.push(self.render_theme_list("New", &signals.fresh, 1000, window, cx));
-            body.push(self.render_theme_list("Fading", &signals.fading, 2000, window, cx));
-            body.push(self.render_threads(&signals, cx));
-            body.push(self.render_open_loops(&signals));
             let pinned: Vec<String> = signals
                 .themes
                 .iter()
                 .filter(|theme| theme.pinned)
                 .map(|theme| theme.id.clone())
                 .collect();
-            body.push(self.render_theme_list("Pinned", &pinned, 3000, window, cx));
+            // Two lists side by side so Rising and Fading read together
+            // without scrolling, even with the conversation panel open.
+            let pair = |left: AnyElement, right: AnyElement| {
+                h_flex()
+                    .w_full()
+                    .items_start()
+                    .gap_6()
+                    .child(div().flex_1().min_w_0().child(left))
+                    .child(div().flex_1().min_w_0().child(right))
+                    .into_any_element()
+            };
+            body.push(pair(
+                self.render_theme_list("Rising", &signals.rising, 0, window, cx),
+                self.render_theme_list("Fading", &signals.fading, 2000, window, cx),
+            ));
+            body.push(pair(
+                self.render_theme_list("New", &signals.fresh, 1000, window, cx),
+                self.render_theme_list("Pinned", &pinned, 3000, window, cx),
+            ));
+            body.push(self.render_open_loops(&signals));
         }
         body.push(self.render_narrative(window, cx));
 
@@ -983,7 +907,7 @@ impl Render for ThemesView {
             .child(
                 v_flex()
                     .w_full()
-                    .max_w(px(860.))
+                    .max_w(px(1240.))
                     .mx_auto()
                     .pt_6()
                     .pb_10()
