@@ -13,6 +13,9 @@ DMG on the [releases page](https://github.com/tommy-muckstack/brainz/releases)),
 drag Brainz to Applications, and open it. Packaged builds check
 `brainz-latest.json` on the download host once an hour and install updates in
 place, the same mechanism Zed uses, so end users never rebuild anything.
+When an update is ready, a persistent notification in the bottom-right of each
+Brainz window offers **Update & Restart** or **Later** (remind me in one hour).
+Restart uses the normal unsaved-work prompts; cancelling keeps the update available.
 
 **Build from source:** run `./script/brainz-local` on macOS to build and open
 `~/Applications/Brainz.app`. Source builds never auto-update.

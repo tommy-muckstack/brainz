@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+mod update_ready_notification;
+
 use agent_skills::GLOBAL_SKILLS_DIR_DISPLAY;
 use auto_update::{AutoUpdater, release_notes_url};
 use client::zed_urls;
@@ -36,6 +38,7 @@ actions!(
 );
 
 pub fn init(cx: &mut App) {
+    update_ready_notification::init(cx);
     notify_if_app_was_updated(cx);
     cx.observe_new(|workspace: &mut Workspace, _window, cx| {
         workspace.register_action(|workspace, _: &ViewReleaseNotesLocally, window, cx| {
