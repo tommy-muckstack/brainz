@@ -47,24 +47,36 @@ pub fn init(cx: &mut App) {
             ThemesView::open(workspace, window, cx);
         });
         // Brainz: Themes is the landing tab. The project's roots arrive a
-        // moment after the workspace, so wait for them before opening.
+        // moment after the workspace, so poll briefly; with no folder after
+        // two seconds the tab opens as a landing card and attaches itself
+        // once a folder shows up.
         if let Some(window) = window {
             cx.spawn_in(window, async move |workspace, cx| {
-                for _ in 0..40 {
+                for tick in 0..240 {
                     cx.background_executor()
                         .timer(Duration::from_millis(250))
                         .await;
-                    let opened = workspace.update_in(cx, |workspace, window, cx| {
-                        if workspace.root_paths(cx).is_empty() {
-                            return false;
+                    let done = workspace.update_in(cx, |workspace, window, cx| {
+                        let root = workspace.root_paths(cx).first().map(|p| p.to_path_buf());
+                        let existing = workspace.items_of_type::<ThemesView>(cx).next();
+                        match (root, existing) {
+                            (Some(root), Some(view)) => {
+                                view.update(cx, |view, cx| view.attach(root, cx));
+                                true
+                            }
+                            (Some(_), None) => {
+                                ThemesView::open(workspace, window, cx);
+                                true
+                            }
+                            (None, None) if tick >= 8 => {
+                                ThemesView::open(workspace, window, cx);
+                                false
+                            }
+                            (None, _) => false,
                         }
-                        if workspace.items_of_type::<ThemesView>(cx).next().is_none() {
-                            ThemesView::open(workspace, window, cx);
-                        }
-                        true
                     });
-                    if opened.unwrap_or(true) {
-                        break;
+                    if done.unwrap_or(true) {
+                        return;
                     }
                 }
             })
@@ -167,6 +179,7 @@ pub struct ThemesView {
     focus_handle: FocusHandle,
     workspace: WeakEntity<Workspace>,
     repo: PathBuf,
+    has_repo: bool,
     config: BrainConfig,
     signals: Option<Signals>,
     error: Option<String>,
@@ -188,15 +201,21 @@ impl ThemesView {
             existing.update(cx, |view, cx| view.reload(cx));
             return;
         }
-        let Some(root) = workspace.root_paths(cx).first().map(|path| path.to_path_buf()) else {
-            return;
-        };
+        // No folder open yet: the tab still opens, as a landing card that
+        // offers to open one.
+        let root = workspace.root_paths(cx).first().map(|path| path.to_path_buf());
         let weak = cx.entity().downgrade();
         let view = cx.new(|cx| ThemesView::new(weak, root, cx));
         workspace.add_item_to_active_pane(Box::new(view), None, true, window, cx);
     }
 
-    fn new(workspace: WeakEntity<Workspace>, repo: PathBuf, cx: &mut Context<Self>) -> Self {
+    fn new(
+        workspace: WeakEntity<Workspace>,
+        repo: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let has_repo = repo.is_some();
+        let repo = repo.unwrap_or_default();
         let runner_observation = runner(cx).map(|runner| {
             cx.observe(&runner, |this, runner, cx| {
                 if !runner.read(cx).is_running() {
@@ -230,6 +249,7 @@ impl ThemesView {
             workspace,
             themes_md_modified: signals::themes_md_modified(&repo, &config),
             repo,
+            has_repo,
             config,
             signals: None,
             error: None,
@@ -241,11 +261,29 @@ impl ThemesView {
             _disk_poll: disk_poll,
             _load: None,
         };
-        this.reload(cx);
+        if this.has_repo {
+            this.reload(cx);
+        }
         this
     }
 
+    /// Points a landing-card view at a folder that was opened after it.
+    fn attach(&mut self, repo: PathBuf, cx: &mut Context<Self>) {
+        if self.has_repo {
+            return;
+        }
+        self.config = BrainConfig::load(&repo);
+        self.themes_md_modified = signals::themes_md_modified(&repo, &self.config);
+        self.repo = repo;
+        self.has_repo = true;
+        self.reload(cx);
+        cx.notify();
+    }
+
     fn reload(&mut self, cx: &mut Context<Self>) {
+        if !self.has_repo {
+            return;
+        }
         let repo = self.repo.clone();
         let config = self.config.clone();
         self._load = Some(cx.spawn(async move |this, cx| {
@@ -271,6 +309,9 @@ impl ThemesView {
     }
 
     fn run_now(&mut self, cx: &mut Context<Self>) {
+        if !self.has_repo {
+            return;
+        }
         let repo = self.repo.clone();
         if let Some(runner) = runner(cx) {
             runner.update(cx, |runner, cx| runner.run(repo, cx));
@@ -771,7 +812,7 @@ impl Render for ThemesView {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(self.render_run_button(cx))
+                    .when(self.has_repo, |this| this.child(self.render_run_button(cx)))
                     .child(
                         IconButton::new("brainz-themes-refresh", IconName::ArrowCircle)
                             .icon_size(IconSize::Small)
@@ -781,6 +822,46 @@ impl Render for ThemesView {
             );
 
         let mut body: Vec<AnyElement> = Vec::new();
+        if !self.has_repo {
+            body.push(
+                v_flex()
+                    .mt_3()
+                    .p_5()
+                    .gap_3()
+                    .items_start()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().colors().border)
+                    .bg(cx.theme().colors().surface_background)
+                    .child(Label::new("No brain open yet").size(LabelSize::Large))
+                    .child(
+                        Label::new(
+                            "Brainz works on a folder of Markdown notes, ideally a git repo. \
+                             Open one and the file tree, To-Do, and Themes tabs fill in from it.",
+                        )
+                        .color(Color::Muted),
+                    )
+                    .child(
+                        Button::new("brainz-open-folder", "Open a folder…")
+                            .style(ButtonStyle::Filled)
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(
+                                    Box::new(workspace::Open::default()),
+                                    cx,
+                                );
+                            }),
+                    )
+                    .child(
+                        Label::new(
+                            "Optional: a brainz.toml at the folder's root sets where the to-do \
+                             board, people files, and themes live.",
+                        )
+                        .size(LabelSize::Small)
+                        .color(Color::Placeholder),
+                    )
+                    .into_any_element(),
+            );
+        }
         if let Some(error) = &self.error {
             body.push(
                 v_flex()

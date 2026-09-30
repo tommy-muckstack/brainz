@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
+# Optional per-machine settings: BRAINZ_SIGNING_IDENTITY, BRAINZ_WORKSPACE.
+if [[ -f "$(dirname "$0")/brainz-local.env" ]]; then
+    # shellcheck disable=SC1091
+    source "$(dirname "$0")/brainz-local.env"
+fi
 export PATH="${HOME}/.cargo/bin:${PATH}"
 if ! xcrun clang --version >/dev/null 2>&1 && [[ -d /Library/Developer/CommandLineTools ]]; then
     export DEVELOPER_DIR=/Library/Developer/CommandLineTools
@@ -45,7 +51,7 @@ metadata = {
     'CFBundleName': 'Brainz',
     'CFBundleDisplayName': 'Brainz',
     'CFBundleExecutable': 'brainz',
-    'CFBundleIdentifier': 'com.tommymuckstack.brainz',
+    'CFBundleIdentifier': 'app.brainz.desktop',
     'CFBundlePackageType': 'APPL',
     'CFBundleShortVersionString': '0.1.0',
     'CFBundleVersion': '1',
@@ -67,7 +73,7 @@ cat > "$helper_plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>com.tommymuckstack.brainz.calendar</string>
+<key>CFBundleIdentifier</key><string>app.brainz.desktop.calendar</string>
 <key>CFBundleName</key><string>brainz-calendar</string>
 <key>NSCalendarsFullAccessUsageDescription</key><string>Brainz shows your next seven days in the Calendar tab.</string>
 </dict></plist>
@@ -85,8 +91,10 @@ iconutil -c icns "$repository/target/Brainz.iconset" \
     -o "$application/Contents/Resources/Brainz.icns"
 # Sign with a real identity so macOS keeps permission grants (Calendar, etc.)
 # across rebuilds; an ad-hoc signature looks like a brand-new app every time.
-signing_identity="${BRAINZ_SIGNING_IDENTITY:-Apple Development: Thomas Keeley (LJL42NP3MF)}"
-if security find-identity -v -p codesigning 2>/dev/null | grep -q "$signing_identity"; then
+# Per-machine values (signing identity, workspace) live in the untracked
+# script/brainz-local.env; see README.
+signing_identity="${BRAINZ_SIGNING_IDENTITY:-}"
+if [[ -n "$signing_identity" ]] && security find-identity -v -p codesigning 2>/dev/null | grep -q "$signing_identity"; then
     codesign --force --deep --sign "$signing_identity" "$application"
 else
     echo "warning: signing identity '$signing_identity' not found; using ad-hoc signature (permission prompts will repeat)" >&2
@@ -104,7 +112,7 @@ if [[ "${BRAINZ_NO_OPEN:-0}" != 1 ]]; then
         pgrep -x brainz >/dev/null && pkill -x brainz || true
         sleep 0.5
     fi
-    workspace="${BRAINZ_WORKSPACE:-${HOME}/tommy-brain}"
+    workspace="${BRAINZ_WORKSPACE:-${HOME}/brain}"
     if [[ -d "$workspace" ]]; then
         open "$application" --args "$workspace"
     else

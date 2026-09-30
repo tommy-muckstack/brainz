@@ -1,6 +1,6 @@
-//! Brainz: a To-Do tab over `ops/desk/TODO.md`, the check-off board that
-//! TodoBot maintains in the brain. Brainz only flips checkboxes; TodoBot
-//! keeps the counts, Notion mirror, and wording in order.
+//! Brainz: a To-Do tab over the brain's check-off board (`todo` in
+//! `brainz.toml`, `TODO.md` by default). Brainz only flips checkboxes; a bot
+//! or the person keeps the wording and sections in order.
 
 use std::{path::PathBuf, time::Duration};
 
@@ -115,8 +115,8 @@ fn load_board(path: &PathBuf) -> Result<TodoBoard> {
 }
 
 /// Flips one checkbox in place. Checking appends today's date; the item
-/// stays in its section so it reads as done rather than vanishing. TodoBot
-/// tidies it into "## Done" on its next pass.
+/// stays in its section so it reads as done rather than vanishing; whoever
+/// maintains the board tidies it into "## Done" later.
 fn toggle_item(path: &PathBuf, line_index: usize) -> Result<()> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading {}", path.display()))?;
