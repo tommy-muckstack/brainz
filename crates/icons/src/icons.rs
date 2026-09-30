@@ -194,6 +194,7 @@ pub enum IconName {
     BrainzCalendar,
     /// Brainz: MCP connectors tab button.
     BrainzMcp,
+    BrainzTheme,
     /// Brainz: sliders used for the composer's model/mode options toggle.
     BrainzSliders,
     /// Brainz: open to-do item (rounded square).
@@ -340,6 +341,7 @@ impl IconName {
             Self::Launch => return "icons/brainz/launch.svg".into(),
             Self::BrainzCalendar => return "icons/brainz/calendar.svg".into(),
             Self::BrainzMcp => return "icons/brainz/mcp.svg".into(),
+            Self::BrainzTheme => return "icons/brainz/theme.svg".into(),
             Self::BrainzClaude => return "icons/brainz/claude.svg".into(),
             Self::BrainzCodex => return "icons/brainz/codex.svg".into(),
             Self::Split => return "icons/brainz/split.svg".into(),

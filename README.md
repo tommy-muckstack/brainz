@@ -87,7 +87,8 @@ history, with a short amber prompt and no system login banner. Explicit custom
 shell settings take precedence. The profile lives in `assets/brainz/shell/`.
 
 Custom icons live in `assets/icons/brainz/`; their central mapping is
-`IconName::path` in `crates/icons/src/icons.rs`. Search shows the query and match
+`IconName::path` in `crates/icons/src/icons.rs`. `IconName::BrainzTheme` (a
+rising trend line) is reserved for a future Themes view. Search shows the query and match
 navigation. Advanced controls appear only when their mode is already active,
 so keyboard shortcuts cannot leave an invisible filter enabled.
 
