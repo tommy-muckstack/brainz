@@ -84,6 +84,19 @@ impl MentionCrease {
 
 impl RenderOnce for MentionCrease {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        if let Some(MentionUri::Fetch { url }) = &self.mention_uri
+            && crate::google_doc_link::document_metadata_url(url.as_str()).is_some()
+        {
+            return crate::google_doc_link::GoogleDocLink::new(
+                url.to_string(),
+                Some(self.label.to_string()),
+                self.workspace
+                    .as_ref()
+                    .and_then(|workspace| workspace.upgrade())
+                    .map(|workspace| workspace.read(cx).client().http_client()),
+            )
+            .into_any_element();
+        }
         let settings = ThemeSettings::get_global(cx);
         let font_size = settings.agent_buffer_font_size(cx);
         let buffer_font = settings.buffer_font.clone();
@@ -145,6 +158,7 @@ impl RenderOnce for MentionCrease {
                     })
                 }
             })
+            .into_any_element()
     }
 }
 

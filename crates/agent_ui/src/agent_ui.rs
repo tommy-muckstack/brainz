@@ -15,6 +15,7 @@ pub mod draft_prompt_store;
 mod entry_view_state;
 mod external_source_prompt;
 mod favorite_models;
+mod google_doc_link;
 mod inline_assistant;
 mod inline_prompt_editor;
 mod language_model_selector;

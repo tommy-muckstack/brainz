@@ -1295,14 +1295,20 @@ impl MessageEditor {
 
                         // Create the confirmation task based on the mention URI type.
                         // This properly loads file content, fetches URLs, etc.
-                        let task = self.mention_set.update(cx, |mention_set, cx| {
-                            mention_set.confirm_mention_for_uri(
-                                mention_uri.clone(),
-                                supports_images,
-                                http_client.clone(),
-                                cx,
-                            )
-                        });
+                        let task = if matches!(&mention_uri, MentionUri::Fetch { url }
+                            if crate::google_doc_link::document_metadata_url(url.as_str()).is_some())
+                        {
+                            Task::ready(Ok(Mention::Link))
+                        } else {
+                            self.mention_set.update(cx, |mention_set, cx| {
+                                mention_set.confirm_mention_for_uri(
+                                    mention_uri.clone(),
+                                    supports_images,
+                                    http_client.clone(),
+                                    cx,
+                                )
+                            })
+                        };
                         let task = cx
                             .spawn(async move |_, _| task.await.map_err(|e| e.to_string()))
                             .shared();
@@ -1325,6 +1331,13 @@ impl MessageEditor {
             }
         }
 
+        if let Some(text) = clipboard_text.as_deref()
+            && self.paste_google_doc_links(text, window, cx)
+        {
+            self.handle_pasted_context(clipboard, window, cx);
+            return;
+        }
+
         if self.handle_pasted_context(clipboard, window, cx) {
             return;
         }
@@ -1332,6 +1345,74 @@ impl MessageEditor {
         self.editor.update(cx, |editor, cx| {
             editor.paste_item(clipboard, window, cx);
         });
+    }
+
+    fn paste_google_doc_links(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if crate::google_doc_link::pasted_document_links(text).is_empty() {
+            return false;
+        }
+        let selections = self.editor.update(cx, |editor, cx| {
+            let snapshot = editor.buffer().read(cx).snapshot(cx);
+            let selections = editor
+                .selections
+                .disjoint_anchors()
+                .iter()
+                .map(|selection| {
+                    (
+                        selection.start.bias_left(&snapshot),
+                        selection.end.bias_right(&snapshot),
+                    )
+                })
+                .collect::<Vec<_>>();
+            editor.insert(text, window, cx);
+            selections
+        });
+        let snapshot = self.editor.read(cx).buffer().read(cx).snapshot(cx);
+        for (start, end) in selections {
+            let start = start.to_offset(&snapshot);
+            let end = end.to_offset(&snapshot);
+            let inserted = snapshot.text_for_range(start..end).collect::<String>();
+            for (range, url) in crate::google_doc_link::pasted_document_links(&inserted) {
+                let anchor = snapshot.anchor_before(MultiBufferOffset(start.0 + range.start));
+                let Some((anchor, _)) = snapshot.anchor_to_buffer_anchor(anchor) else {
+                    continue;
+                };
+                let uri = MentionUri::Fetch { url };
+                let Some((crease_id, ready, view)) = insert_crease_for_mention(
+                    anchor,
+                    range.len(),
+                    "Google Doc".into(),
+                    IconName::File.path().into(),
+                    uri.tooltip_text(),
+                    Some(uri.clone()),
+                    Some(self.workspace.clone()),
+                    None,
+                    self.editor.clone(),
+                    window,
+                    cx,
+                ) else {
+                    continue;
+                };
+                self.mention_set.update(cx, |mentions, cx| {
+                    // A preview must not fetch document contents into the prompt
+                    // or delay sending while its display title is loading.
+                    mentions.insert_mention(
+                        crease_id,
+                        uri,
+                        Task::ready(Ok(Mention::Link)).shared(),
+                        view,
+                        cx,
+                    );
+                });
+                drop(ready);
+            }
+        }
+        true
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
@@ -5668,6 +5749,50 @@ mod tests {
                 } if content == "content"
             )
         }));
+    }
+
+    #[gpui::test]
+    async fn test_google_doc_paste_keeps_text_and_sends_original_links(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (message_editor, editor, mut cx) =
+            setup_paste_test_message_editor(json!({"file.txt": ""}), cx).await;
+        let first = "https://docs.google.com/document/d/abc123/edit?usp=sharing#heading=h.one";
+        let second = "https://docs.google.com/document/d/xyz456/edit";
+        let text = format!("Notes: {first}\nAlso {second}\nPlease read both.");
+        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+        message_editor.update_in(&mut cx, |message_editor, window, cx| {
+            message_editor.paste(&Paste, window, cx);
+        });
+        cx.run_until_parked();
+        editor.update(&mut cx, |editor, cx| {
+            assert_eq!(editor.text(cx), text);
+            assert_eq!(fold_ranges(editor, cx).len(), 2);
+        });
+        let (content, _) = message_editor
+            .update(&mut cx, |editor, cx| editor.contents(false, cx))
+            .await
+            .unwrap();
+        let urls = content
+            .iter()
+            .filter_map(|block| match block {
+                acp_v1::ContentBlock::ResourceLink(resource) => Some(resource.uri.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(urls, vec![first, second]);
+        let surrounding_text = content
+            .iter()
+            .filter_map(|block| match block {
+                acp_v1::ContentBlock::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(surrounding_text, "Notes: \nAlso \nPlease read both.");
+        assert!(
+            !content
+                .iter()
+                .any(|block| matches!(block, acp_v1::ContentBlock::Resource(_)))
+        );
     }
 
     async fn setup_paste_test_message_editor(
