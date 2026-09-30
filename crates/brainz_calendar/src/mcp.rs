@@ -74,6 +74,8 @@ impl McpHealth {
 /// Checks one connector without touching its auth: an HTTP server counts as
 /// up when it answers at all (401/403 from an OAuth server is fine); a stdio
 /// server counts as up when its command can be found.
+/// Blocking on purpose: probes only ever run on the background executor.
+#[allow(clippy::disallowed_methods)]
 fn probe(connector: &Connector) -> Option<String> {
     if connector.transport == "HTTP" || connector.transport == "SSE" {
         let url = connector.detail.trim();
