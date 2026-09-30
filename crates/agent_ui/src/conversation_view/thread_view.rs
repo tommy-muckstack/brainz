@@ -6636,7 +6636,7 @@ impl ThreadView {
                                 .child(message_body)
                                 // Brainz: copy appears in the bubble's corner on hover.
                                 .child(
-                                    div().absolute().top_1p5().right_1p5().child({
+                                    ui::StickyTopRight::new(px(6.), {
                                         let thread = self.thread.clone();
                                         ui::CopyButton::new(("brainz-copy-bubble", entry_ix), "")
                                             .icon_size(IconSize::XSmall)

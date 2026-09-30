@@ -51,7 +51,9 @@ use parser::{
 use pulldown_cmark::{Alignment, BlockQuoteKind};
 use sum_tree::TreeMap;
 use theme::SyntaxTheme;
-use ui::{Checkbox, CopyButton, ScrollAxes, Scrollbars, Tooltip, WithScrollbar, prelude::*};
+use ui::{
+    Checkbox, CopyButton, ScrollAxes, Scrollbars, StickyTopRight, Tooltip, WithScrollbar, prelude::*,
+};
 use util::ResultExt;
 
 use crate::parser::CodeBlockKind;
@@ -2168,17 +2170,17 @@ impl MarkdownElement {
         let copy_text = markdown_to_plain_text(unquoted.trim());
         let group_name = SharedString::from(format!("markdown-quote-{}", range.start));
         let has_copy_text = !copy_text.is_empty();
-        let copy_button = div()
-            .absolute()
-            .top_0()
-            .right_0()
-            .when(!has_copy_text, |this| this.invisible())
-            .child(
+        // The button rides along the top of the visible part of a long
+        // quote, so a drafted email never needs scrolling back up to copy.
+        let copy_button = StickyTopRight::new(
+            px(0.),
+            div().when(!has_copy_text, |this| this.invisible()).child(
                 CopyButton::new(("markdown-quote-copy", range.start), copy_text)
                     .icon_size(IconSize::XSmall)
                     .tooltip_label("Copy quote")
                     .visible_on_hover(group_name.clone()),
-            );
+            ),
+        );
         let border_color = self
             .style
             .block_quote_kind_colors

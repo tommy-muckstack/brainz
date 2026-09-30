@@ -31,7 +31,9 @@ with the next seven days, read from every account macOS Calendar knows about.
 It uses a small bundled helper built from `script/brainz-calendar.swift`, the
 same EventKit approach as My Man. macOS asks for Calendar access the first
 time; the tab refreshes every five minutes and on demand. Sent messages sit on
-the right in the tab's colour; replies sit on the left. The message box says
+the right in the tab's colour; replies sit on the left. Hovering a reply or a
+quoted draft shows a copy button that rides along the top of the visible part
+of the text while you scroll, so a long email never needs scrolling back up. The message box says
 "Type message…", grows as you type, and keeps model and mode options behind the
 gear button.
 
