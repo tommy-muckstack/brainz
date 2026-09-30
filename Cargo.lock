@@ -2415,8 +2415,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "editor",
  "gpui",
  "log",
+ "markdown",
  "menu",
  "paths",
  "serde",
