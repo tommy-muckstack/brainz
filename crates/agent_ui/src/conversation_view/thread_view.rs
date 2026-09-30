@@ -3222,10 +3222,13 @@ impl ThreadView {
                     .flex_grow_0()
                     .max_w_full()
                     .bg(self.activity_bar_bg(cx))
+                    // Brainz: a rounded card floating above the composer
+                    // card, rather than a strip fused to its top edge.
+                    .mb_2()
                     .border_1()
-                    .border_b_0()
                     .border_color(cx.theme().colors().border)
-                    .rounded_t_md()
+                    .rounded_lg()
+                    .overflow_hidden()
                     .when(opaque_window, |this| {
                         this.shadow(vec![
                             gpui::BoxShadow::new(px(1.), px(-1.), gpui::black().opacity(0.12))
@@ -3749,17 +3752,6 @@ impl ThreadView {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.queue_expanded = !this.queue_expanded;
                         cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("clear_queue", "Clear All")
-                    .label_size(LabelSize::Small)
-                    .key_binding(
-                        KeyBinding::for_action(&ClearMessageQueue, cx)
-                            .map(|kb| kb.size(rems_from_px(12_f32))),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.clear_queue(cx);
                     })),
             )
             .into_any_element()
