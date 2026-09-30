@@ -603,6 +603,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         let brainz_calendar_button = cx.new(|_| brainz_calendar::CalendarButton::new());
         let brainz_todo_button = cx.new(|_| brainz_calendar::todo::TodoButton::new());
         let brainz_mcp_button = cx.new(|_| brainz_calendar::mcp::McpButton::new());
+        let brainz_themes_button = cx.new(|_| brainz_calendar::themes::ThemesButton::new());
         let brainz_launch_button = cx.new(|_| brainz_calendar::launcher::LaunchButton::new());
         let diagnostic_summary =
             cx.new(|cx| diagnostics::items::DiagnosticIndicator::new(workspace, cx));
@@ -640,6 +641,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             status_bar.add_left_item(brainz_calendar_button, window, cx);
             status_bar.add_left_item(brainz_todo_button, window, cx);
             status_bar.add_left_item(brainz_mcp_button, window, cx);
+            status_bar.add_left_item(brainz_themes_button, window, cx);
             status_bar.add_left_item(brainz_launch_button, window, cx);
             status_bar.add_left_item(lsp_button, window, cx);
             status_bar.add_left_item(diagnostic_summary, window, cx);

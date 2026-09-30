@@ -4,6 +4,8 @@
 pub mod github_sync;
 pub mod launcher;
 pub mod mcp;
+pub mod themes;
+pub mod themes_signals;
 pub mod todo;
 
 use std::{path::PathBuf, time::Duration};
@@ -29,6 +31,7 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 pub fn init(cx: &mut App) {
     mcp::init(cx);
     todo::init(cx);
+    themes::init(cx);
     github_sync::init(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenCalendar, window, cx| {
@@ -119,6 +122,8 @@ fn parse_hex(hex: &str) -> Option<Hsla> {
     Some(gpui::rgb(value).into())
 }
 
+/// Blocking on purpose: the helper only ever runs on the background executor.
+#[allow(clippy::disallowed_methods)]
 fn load_events() -> Result<(LoadState, Vec<CalendarEvent>)> {
     let helper = helper_path()?;
     let output = std::process::Command::new(&helper)

@@ -99,6 +99,8 @@ fn command(repo: &Path, program: &str) -> Command {
     cmd
 }
 
+/// Blocking on purpose: only ever called from the background executor.
+#[allow(clippy::disallowed_methods)]
 fn run(repo: &Path, program: &str, args: &[&str]) -> Result<String> {
     let output = command(repo, program)
         .args(args)
@@ -381,6 +383,11 @@ impl SyncState {
 
     pub fn status(&self) -> &SyncStatus {
         &self.status
+    }
+
+    /// The brain checkout being watched, once the project panel reported it.
+    pub fn repo(&self) -> Option<&PathBuf> {
+        self.repo.as_ref()
     }
 
     /// Changes status and, when the banner is going away, keeps it around

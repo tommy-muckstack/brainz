@@ -51,6 +51,21 @@ Today, Urgent, and Delayed sections with Done folded away, and refreshes every
 struck through in amber, so nothing vanishes; un-ticking clears the box.
 TodoBot tidies checked items into Done on its next pass.
 
+The trend-line button next to the MCP button opens a **Themes** tab: what the
+brain has been about, computed from its git history. **Run now** (or a daily
+run while Brainz is open) walks every commit, takes the added lines of `.md`
+files, and turns bold spans, wiki links, the names of people and companies
+in the repo, and capitalized phrases into weighted themes with a 12-week
+sparkline and momentum. The tab shows Rising, New, and Fading themes, Threads
+(themes spanning three or more folders, with the files that fail to link to
+each other), Open loops (⏳ and ⏰ lines per folder against a week ago), your
+Pinned themes, and the narrative Grokbot writes from its own prompt file.
+Expand a theme for its top files and co-mentioned people; click either to
+open it. Pin, Rename, Merge into…, and Hide append a line to
+`ops/themes/pins.md` and re-run the pass, so nothing is ever deleted from
+`signals.json`. Output lands in `ops/themes/` in the working tree and the
+Sync banner carries it to GitHub like any other change.
+
 The MCP button next to it opens an **MCP Connectors** tab listing the servers
 Brainz's Claude and Codex know about, with logos for the ones you use most.
 The first time Claude runs in Brainz, your terminal Claude's MCP servers are
