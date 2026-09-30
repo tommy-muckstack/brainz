@@ -83,7 +83,7 @@ impl BrainConfig {
         repo.join(self.themes_dir.trim_end_matches('/')).join(name)
     }
 
-    /// `network/rich-turing.md` for "Alan Turing".
+    /// `network/ada-lovelace.md` for "Ada Lovelace".
     pub fn person_file(&self, name: &str) -> String {
         let stem = crate::themes_signals::normalize_key(name).replace(' ', "-");
         format!("{}/{stem}.md", self.people_dir.trim_end_matches('/'))
