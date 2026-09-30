@@ -44,8 +44,9 @@ if not (themes / 'brainz.json').exists():
     shutil.copy2(repository / 'assets/themes/brainz/brainz.json', themes / 'brainz.json')
 shutil.copytree(repository / 'assets/brainz/shell', resources / 'shell', dirs_exist_ok=True)
 # Replace the inode so a running Brainz process can keep its existing executable.
+import os
 staged_binary = executables / 'brainz.next'
-shutil.copy2(repository / 'target/debug/brainz', staged_binary)
+shutil.copy2(Path(os.environ.get('BRAINZ_BINARY', str(repository / 'target/debug/brainz'))), staged_binary)
 staged_binary.replace(executables / 'brainz')
 metadata = {
     'CFBundleName': 'Brainz',
@@ -53,10 +54,10 @@ metadata = {
     'CFBundleExecutable': 'brainz',
     'CFBundleIdentifier': 'app.brainz.desktop',
     'CFBundlePackageType': 'APPL',
-    'CFBundleShortVersionString': '0.1.0',
-    'CFBundleVersion': '1',
+    'CFBundleShortVersionString': os.environ.get('BRAINZ_VERSION', '0.0.0'),
+    'CFBundleVersion': os.environ.get('BRAINZ_BUILD', '1'),
     'CFBundleIconFile': 'Brainz',
-    'LSMinimumSystemVersion': '10.15.7',
+    'LSMinimumSystemVersion': '13.0',
     'NSHighResolutionCapable': True,
     'NSPrincipalClass': 'NSApplication',
     'NSHumanReadableCopyright': 'Brainz is a personal fork of Zed, licensed under GPL-3.0-or-later.',

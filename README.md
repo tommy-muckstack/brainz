@@ -7,7 +7,15 @@ A personal desktop workspace for a Markdown notes repo (your "brain"), built fro
 Markdown reading in the center, and a terminal below, with Gellix typography and
 a charcoal-and-amber theme.
 
-Run `./script/brainz-local` on macOS to build and open `~/Applications/Brainz.app`.
+**Install:** download the signed, notarized build from
+[muckstack.com/download/brainz](https://muckstack.com/download/brainz) (or the
+DMG on the [releases page](https://github.com/tommy-muckstack/brainz/releases)),
+drag Brainz to Applications, and open it. Packaged builds check
+`brainz-latest.json` on the download host once an hour and install updates in
+place, the same mechanism Zed uses, so end users never rebuild anything.
+
+**Build from source:** run `./script/brainz-local` on macOS to build and open
+`~/Applications/Brainz.app`. Source builds never auto-update.
 The first build requires Rust 1.98.1, Xcode, and CMake. The bundled UI font is
 DM Sans (SIL Open Font License, in `assets/fonts/dm-sans/`). Gellix is a
 commercial font, so its files are excluded from Git; drop them into
@@ -81,6 +89,15 @@ split button is a plain toggle: on splits right, off joins everything back.
 `script/brainz-local` signs the app with your Apple Development identity so
 macOS remembers permission grants across rebuilds. Override it with
 `BRAINZ_SIGNING_IDENTITY`. An ad-hoc signature would prompt every build.
+
+**Cutting a release.** `script/brainz-release 0.2.0` makes a release build
+with that version baked in, bundles and signs it with the Developer ID
+certificate in the keychain, notarizes and staples the app and the DMG,
+uploads `brainz-0.2.0.dmg`, the `brainz.dmg` alias, and `brainz-latest.json`
+to the download host, and creates a GitHub release with the DMG attached.
+It reads `BLOB_READ_WRITE_TOKEN` and `BRAINZ_NOTARY_PROFILE` from the
+untracked `script/brainz-local.env`. Flags: `--skip-notarize`, `--no-upload`,
+`--no-github`.
 
 **Another machine or another brain.** Nothing about one machine is baked
 into the code. The build script takes `BRAINZ_SIGNING_IDENTITY` (falls back
