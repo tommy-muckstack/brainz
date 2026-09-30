@@ -20,7 +20,10 @@ use workspace::{
     HideStatusItem, Item, ItemHandle, OpenOptions, OpenVisible, StatusItemView, Workspace,
 };
 
-use crate::themes_signals::{self as signals, Signals, Theme};
+use crate::{
+    brain_config::BrainConfig,
+    themes_signals::{self as signals, Signals, Theme},
+};
 
 actions!(
     brainz_themes,
@@ -102,7 +105,8 @@ impl ThemesRunner {
         else {
             return;
         };
-        let stale = signals::signals_age(&repo).is_none_or(|age| age > DAILY_AGE);
+        let config = BrainConfig::load(&repo);
+        let stale = signals::signals_age(&repo, &config).is_none_or(|age| age > DAILY_AGE);
         if stale {
             self.run(repo, cx);
         }
@@ -140,6 +144,7 @@ pub struct ThemesView {
     focus_handle: FocusHandle,
     workspace: WeakEntity<Workspace>,
     repo: PathBuf,
+    config: BrainConfig,
     signals: Option<Signals>,
     error: Option<String>,
     narrative_text: Option<String>,
@@ -184,7 +189,7 @@ impl ThemesView {
             loop {
                 cx.background_executor().timer(DISK_POLL).await;
                 let changed = this.update(cx, |this, cx| {
-                    let modified = signals::themes_md_modified(&this.repo);
+                    let modified = signals::themes_md_modified(&this.repo, &this.config);
                     if modified != this.themes_md_modified {
                         this.themes_md_modified = modified;
                         this.reload(cx);
@@ -198,11 +203,13 @@ impl ThemesView {
                 }
             }
         });
+        let config = BrainConfig::load(&repo);
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             workspace,
-            themes_md_modified: signals::themes_md_modified(&repo),
+            themes_md_modified: signals::themes_md_modified(&repo, &config),
             repo,
+            config,
             signals: None,
             error: None,
             narrative_text: None,
@@ -221,11 +228,12 @@ impl ThemesView {
 
     fn reload(&mut self, cx: &mut Context<Self>) {
         let repo = self.repo.clone();
+        let config = self.config.clone();
         self._load = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let signals = signals::load_signals(&repo);
-                    let narrative = signals::load_narrative(&repo);
+                    let signals = signals::load_signals(&repo, &config);
+                    let narrative = signals::load_narrative(&repo, &config);
                     (signals, narrative)
                 })
                 .await;
@@ -264,11 +272,12 @@ impl ThemesView {
     /// Appends one line to `pins.md` and re-runs the pass.
     fn curate(&mut self, line: String, cx: &mut Context<Self>) {
         let repo = self.repo.clone();
+        let config = self.config.clone();
         self.merging = None;
         self._load = Some(cx.spawn(async move |this, cx| {
             let result = {
                 let repo = repo.clone();
-                cx.background_spawn(async move { signals::append_pin(&repo, &line) })
+                cx.background_spawn(async move { signals::append_pin(&repo, &config, &line) })
                     .await
             };
             this.update(cx, |this, cx| match result {
@@ -286,11 +295,14 @@ impl ThemesView {
         let line = format!("- pin: {}", theme.id);
         if theme.pinned {
             let repo = self.repo.clone();
+            let config = self.config.clone();
             self._load = Some(cx.spawn(async move |this, cx| {
                 let result = {
                     let repo = repo.clone();
-                    cx.background_spawn(async move { signals::remove_pin_line(&repo, &line) })
-                        .await
+                    cx.background_spawn(async move {
+                        signals::remove_pin_line(&repo, &config, &line)
+                    })
+                    .await
                 };
                 this.update(cx, |this, cx| match result {
                     Ok(()) => this.run_now(cx),
@@ -384,8 +396,8 @@ impl ThemesView {
     }
 
     fn open_person(&self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let stem = signals::normalize_key(name).replace(' ', "-");
-        self.open_relative(&format!("network/{stem}.md"), window, cx);
+        let relative = self.config.person_file(name);
+        self.open_relative(&relative, window, cx);
     }
 
     fn render_run_button(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -857,10 +869,11 @@ impl ThemesView {
             None => {
                 block = block.child(
                     div().px_2().py_1().child(
-                        Label::new(
-                            "No narrative yet. Paste ops/themes/grokbot-prompt.md into Grokbot; \
-                             its PR fills this block in themes.md.",
-                        )
+                        Label::new(format!(
+                            "No narrative yet. Whatever bot you use writes prose into the narrative \
+                             block of {}; see the prompt file next to it.",
+                            self.config.themes_file(signals::THEMES_NAME)
+                        ))
                         .size(LabelSize::Small)
                         .color(Color::Placeholder),
                     ),
@@ -950,9 +963,10 @@ impl Render for ThemesView {
                     .bg(cx.theme().colors().surface_background)
                     .child(Label::new(error.clone()))
                     .child(
-                        Label::new(
-                            "Run now computes ops/themes/signals.json from the brain's git history.",
-                        )
+                        Label::new(format!(
+                            "Run now computes {} from the brain's git history.",
+                            self.config.themes_file(signals::SIGNALS_NAME)
+                        ))
                         .size(LabelSize::Small)
                         .color(Color::Muted),
                     )

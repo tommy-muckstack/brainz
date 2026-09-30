@@ -1,6 +1,7 @@
 //! Brainz: a Calendar tab that shows the next seven days, read through the
 //! bundled `brainz-calendar` helper (EventKit, the same approach My Man uses).
 
+pub mod brain_config;
 pub mod github_sync;
 pub mod launcher;
 pub mod mcp;
