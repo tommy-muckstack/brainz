@@ -462,6 +462,11 @@ pub fn init(cx: &mut App) {
                         }
                     },
                 )
+                .register_action(|workspace, _: &crate::BrainzResetThread, window, cx| {
+                    if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                        panel.update(cx, |panel, cx| panel.reset_active_thread(window, cx));
+                    }
+                })
                 .register_action(|workspace, action: &SelectAgent, window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                         panel.update(cx, |panel, cx| {
@@ -6842,6 +6847,47 @@ impl AgentPanel {
                 None => self.activate_draft(true, AgentThreadSource::AgentPanel, window, cx),
             }
         }
+        cx.notify();
+    }
+
+    /// Replaces the active conversation with a fresh one on the same agent
+    /// connection, so the model forgets the context but nothing reconnects.
+    /// The tab keeps its position and colour; the old conversation stays in
+    /// the sidebar history.
+    pub fn reset_active_thread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(old_tab @ PanelTab::Thread(old_thread_id)) = self.active_panel_tab(cx) else {
+            return;
+        };
+        let BaseView::AgentThread { conversation_view } = &self.base_view else {
+            return;
+        };
+        let agent = conversation_view.read(cx).agent_key().clone();
+        let position = self.panel_tabs.iter().position(|tab| *tab == old_tab);
+        let color = self.tab_colors.get(&old_tab).copied();
+
+        self.selected_agent = agent;
+        self.activate_new_thread(true, AgentThreadSource::AgentPanel, window, cx);
+
+        let Some(new_tab) = self.active_panel_tab(cx) else {
+            return;
+        };
+        if new_tab == old_tab {
+            return;
+        }
+        self.forget_panel_tab(old_tab, cx);
+        self.remove_retained_thread(&old_thread_id);
+        self.panel_tabs.retain(|tab| *tab != new_tab);
+        match position {
+            Some(position) if position <= self.panel_tabs.len() => {
+                self.panel_tabs.insert(position, new_tab);
+            }
+            _ => self.panel_tabs.push(new_tab),
+        }
+        if let Some(color) = color {
+            self.tab_colors.insert(new_tab, color);
+            self.sync_thread_colors(cx);
+        }
+        self.persist_panel_tabs(cx);
         cx.notify();
     }
 

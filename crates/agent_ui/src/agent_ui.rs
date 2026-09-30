@@ -214,6 +214,9 @@ actions!(
     [
         /// Toggles the menu to create new agent threads.
         ToggleNewThreadMenu,
+        /// Brainz: starts a fresh conversation with the same agent in the
+        /// current tab, dropping the accumulated context.
+        BrainzResetThread,
         /// Toggles the options menu for agent settings and preferences.
         ToggleOptionsMenu,
         /// Toggles the profile or mode selector for switching between agent profiles.

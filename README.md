@@ -33,7 +33,12 @@ same EventKit approach as My Man. macOS asks for Calendar access the first
 time; the tab refreshes every five minutes and on demand. Sent messages sit on
 the right in the tab's colour; replies sit on the left. Hovering a reply or a
 quoted draft shows a copy button that rides along the top of the visible part
-of the text while you scroll, so a long email never needs scrolling back up. The message box says
+of the text while you scroll, so a long email never needs scrolling back up.
+Hovering one of your own messages shows a send-again button that posts the
+same text as a new message. The options drawer behind the sliders button has
+a reset button that starts a fresh conversation with the same agent in the
+same tab (position and colour kept) without reconnecting; the old
+conversation stays in the sidebar. The message box says
 "Type message…", grows as you type, and keeps model and mode options behind the
 gear button.
 

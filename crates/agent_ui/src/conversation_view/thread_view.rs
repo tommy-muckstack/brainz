@@ -2056,6 +2056,29 @@ impl ThreadView {
         .detach();
     }
 
+    /// Brainz: sends the text of an earlier message again as a new message,
+    /// without rewinding the conversation.
+    fn resend_user_message(&mut self, entry_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(text) = self
+            .entry_view_state
+            .read(cx)
+            .entry(entry_ix)
+            .and_then(|entry| entry.message_editor())
+            .map(|editor| editor.read(cx).text(cx))
+        else {
+            return;
+        };
+        if text.trim().is_empty() {
+            return;
+        }
+        self.message_editor.update(cx, |editor, cx| {
+            editor.clear(window, cx);
+            editor.insert_text(&text, window, cx);
+        });
+        cx.emit(AcpThreadViewEvent::Interacted);
+        self.send(window, cx);
+    }
+
     pub fn regenerate(
         &mut self,
         entry_ix: usize,
@@ -5725,6 +5748,22 @@ impl ThreadView {
                             .children(self.render_thinking_control(cx))
                             .children(self.render_fast_mode_control(cx))
                             .child(self.render_follow_toggle(cx))
+                            .child(
+                                IconButton::new("brainz-reset-thread", IconName::RotateCcw)
+                                    .icon_size(IconSize::Small)
+                                    .icon_color(Color::Muted)
+                                    .tooltip(Tooltip::text(
+                                        "Reset: start fresh with this agent, keeping the connection",
+                                    ))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.composer_controls_visible = false;
+                                        window.dispatch_action(
+                                            crate::BrainzResetThread.boxed_clone(),
+                                            cx,
+                                        );
+                                        cx.notify();
+                                    })),
+                            )
                             .children(self.render_token_usage(cx)),
                     ),
             )
@@ -6439,11 +6478,14 @@ impl ThreadView {
                     .child(
                         div()
                             .relative()
+                            .group("brainz-user-bubble")
                             .w_3_4()
                             .child(
                                 div()
                                     .py_3()
                                     .px_3()
+                                    // Room for the resend button on hover.
+                                    .pr_9()
                                     .rounded_lg()
                                     .rounded_br(px(0.))
                                     .bg(cx.theme().colors().editor_background)
@@ -6479,6 +6521,23 @@ impl ThreadView {
                                     .text_xs()
                                     .child(editor.clone().into_any_element())
                             )
+                            // Brainz: hovering your own message offers to
+                            // send it again as a new message.
+                            .when(!editor_focus, |this| {
+                                this.child(ui::StickyTopRight::new(
+                                    px(6.),
+                                    IconButton::new(("brainz-resend", entry_ix), IconName::Send)
+                                        .icon_size(IconSize::XSmall)
+                                        // Dark on the tinted bubble so it reads.
+                                        .icon_color(Color::Custom(editor.read(cx).bubble_text_color(cx)))
+                                        .style(ButtonStyle::Transparent)
+                                        .tooltip(Tooltip::text("Send again"))
+                                        .visible_on_hover("brainz-user-bubble")
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.resend_user_message(entry_ix, window, cx);
+                                        })),
+                                ))
+                            })
                             .when(editor_focus, |this| {
                                 let base_container = h_flex()
                                     .absolute()
