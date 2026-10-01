@@ -16,7 +16,7 @@ repository=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repository"
 
 if [[ "${1:-}" != "--no-build" ]]; then
-    "${HOME}/.cargo/bin/cargo" +1.98.1 build --locked -p zed --bin brainz --features util/debug-embed,gpui_platform/runtime_shaders
+    "${HOME}/.cargo/bin/cargo" +1.98.1 build --locked -p zed -p cli --bin brainz --bin cli --features util/debug-embed,gpui_platform/runtime_shaders
 fi
 
 application="${BRAINZ_APP_DIR:-${HOME}/Applications/Brainz.app}"
@@ -48,6 +48,10 @@ import os
 staged_binary = executables / 'brainz.next'
 shutil.copy2(Path(os.environ.get('BRAINZ_BINARY', str(repository / 'target/debug/brainz'))), staged_binary)
 staged_binary.replace(executables / 'brainz')
+# The `brainz` terminal command is a symlink to this helper (Brainz menu → Install CLI).
+staged_cli = executables / 'cli.next'
+shutil.copy2(Path(os.environ.get('BRAINZ_CLI_BINARY', str(repository / 'target/debug/cli'))), staged_cli)
+staged_cli.replace(executables / 'cli')
 metadata = {
     'CFBundleName': 'Brainz',
     'CFBundleDisplayName': 'Brainz',
@@ -62,6 +66,11 @@ metadata = {
     'NSPrincipalClass': 'NSApplication',
     'NSHumanReadableCopyright': 'Brainz is a personal fork of Zed, licensed under GPL-3.0-or-later.',
     'NSCalendarsFullAccessUsageDescription': 'Brainz shows your next seven days in the Calendar tab.',
+    # The CLI hands files to a running Brainz through these URL schemes.
+    'CFBundleURLTypes': [{
+        'CFBundleURLName': 'app.brainz.desktop',
+        'CFBundleURLSchemes': ['zed', 'zed-cli', 'brainz'],
+    }],
 }
 with (contents / 'Info.plist').open('wb') as output:
     plistlib.dump(metadata, output)

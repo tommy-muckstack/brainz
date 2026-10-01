@@ -1178,6 +1178,11 @@ const BRAINZ_TAB_COLORS: &[(&str, u32)] = &[
     ("Lilac", 0xb59ad9),
     ("Rose", 0xd98fb0),
     ("Slate", 0x9aa5b1),
+    ("Teal", 0x6fbfb4),
+    ("Tangerine", 0xe9a35c),
+    ("Indigo", 0x7c86d6),
+    ("White", 0xf3f0e8),
+    ("Black", 0x1c1b19),
 ];
 
 fn brainz_tab_color(index: usize) -> Hsla {
