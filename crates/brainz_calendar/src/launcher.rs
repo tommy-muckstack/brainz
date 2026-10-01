@@ -1,9 +1,20 @@
 //! Brainz: the rocket in the status bar. Click opens a new shell tab in the
 //! conversation panel; right-click offers Claude and Codex too.
 
-use gpui::{Action as _, App, FocusHandle, Window};
+use gpui::{Action, App, FocusHandle, Window};
 use terminal_view::terminal_panel::{OpenClaude, OpenCodex, OpenShell};
-use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
+use ui::{ContextMenu, ContextMenuEntry, PopoverMenu, Tooltip, prelude::*};
+
+/// A Launch menu row: the tool's mark, then its name.
+pub fn launch_entry(label: &'static str, icon: IconName, action: Box<dyn Action>) -> ContextMenuEntry {
+    let dispatch = action.boxed_clone();
+    ContextMenuEntry::new(label)
+        .icon(icon)
+        .icon_position(IconPosition::Start)
+        .icon_size(IconSize::Small)
+        .action(action)
+        .handler(move |window, cx| window.dispatch_action(dispatch.boxed_clone(), cx))
+}
 use workspace::{HideStatusItem, ItemHandle, StatusItemView};
 
 pub struct LaunchButton {
@@ -43,9 +54,9 @@ impl Render for LaunchButton {
                 .menu(|window, cx| {
                     Some(ContextMenu::build(window, cx, |menu, _, _| {
                         menu.header("Launch")
-                            .action("Terminal", OpenShell.boxed_clone())
-                            .action("Claude", OpenClaude.boxed_clone())
-                            .action("Codex", OpenCodex.boxed_clone())
+                            .item(launch_entry("Terminal", IconName::Terminal, OpenShell.boxed_clone()))
+                            .item(launch_entry("Claude", IconName::BrainzClaude, OpenClaude.boxed_clone()))
+                            .item(launch_entry("Codex", IconName::BrainzCodex, OpenCodex.boxed_clone()))
                     }))
                 }),
         )
