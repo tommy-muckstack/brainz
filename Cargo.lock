@@ -473,6 +473,7 @@ dependencies = [
  "async-channel 2.5.0",
  "audio",
  "base64 0.22.1",
+ "brainz_calendar",
  "buffer_diff",
  "chrono",
  "client",
@@ -2424,12 +2425,15 @@ dependencies = [
  "markdown",
  "menu",
  "paths",
+ "schemars 1.0.4",
  "serde",
  "serde_json",
  "smol",
+ "tempfile",
  "terminal_view",
  "toml 0.8.23",
  "ui",
+ "util",
  "workspace",
 ]
 

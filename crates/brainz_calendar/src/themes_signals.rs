@@ -22,7 +22,17 @@ pub const THEMES_NAME: &str = "themes.md";
 pub const PINS_NAME: &str = "pins.md";
 pub const VOCABULARY_NAME: &str = "vocabulary.md";
 
+/// The default trend window; `themes.window_weeks` in `brainz.toml` overrides it.
 pub const SERIES_WEEKS: usize = 12;
+/// Lines carrying these anywhere are open loops, not topics; the pass keeps
+/// them out of term extraction and collects them separately.
+pub const LOOP_MARKERS: &[char] = &['⏳', '⏰'];
+/// A line that *starts* with a warning is a flag, not a topic; one that
+/// mentions a warning mid-sentence (a long status callout) still counts.
+const WARNING_MARKER: char = '⚠';
+/// Momentum above this is shown as `x20+`: a ratio over a tiny prior is
+/// noise dressed as precision.
+pub const MOMENTUM_CAP: f64 = 20.0;
 /// A term needs this much weight over at least `MIN_WEEKS` distinct weeks to
 /// become a theme on its own; pinned terms skip the bar.
 const MIN_WEIGHT: u32 = 5;
@@ -76,15 +86,29 @@ const VOCABULARY_SEEDS: &[&str] = &[
     "PLG", "PLS", "MCP", "WHOOP", "ACP", "ICP", "OKR", "ARR", "NPS", "SEO", "CTA",
 ];
 
+/// Bumped when `signals.json` gains fields the tabs need; an older file is
+/// still read (missing fields default) and the tabs schedule a fresh pass.
+pub const SCHEMA: u32 = 2;
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Signals {
+    #[serde(default)]
+    pub schema: u32,
     pub generated_at: String,
     pub commit: String,
     pub commits: usize,
     pub weeks: Vec<String>,
     pub themes: Vec<Theme>,
     pub threads: Vec<Thread>,
-    pub open_loops: Vec<OpenLoops>,
+    /// Every current ⏳ and ⏰ line in the brain, oldest first.
+    #[serde(default, deserialize_with = "lenient_loops")]
+    pub open_loops: Vec<OpenLoop>,
+    /// Per-folder counts now and a week ago (the older summary table).
+    #[serde(default, alias = "open_loops_by_folder")]
+    pub open_loop_counts: Vec<OpenLoopCounts>,
+    /// `YYYY-MM` labels for `Theme::months`, from the first commit to now.
+    #[serde(default)]
+    pub months: Vec<String>,
     pub rising: Vec<String>,
     /// Themes with no history before the last two weeks.
     pub fresh: Vec<String>,
@@ -107,6 +131,9 @@ pub struct Theme {
     pub recent: u32,
     pub prior: u32,
     pub is_new: bool,
+    /// All-time weight per month, aligned with `Signals::months`.
+    #[serde(default)]
+    pub months: Vec<u32>,
     pub folders: Vec<Weighted>,
     pub files: Vec<Weighted>,
     pub people: Vec<Weighted>,
@@ -183,10 +210,68 @@ pub struct LinkCheck {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct OpenLoops {
+pub struct OpenLoopCounts {
     pub folder: String,
     pub now: u32,
     pub week_ago: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct OpenLoop {
+    pub file: String,
+    /// One-based line number at HEAD.
+    pub line: u32,
+    pub text: String,
+    /// `⏳` (waiting on someone else) or `⏰` (owed by the brain's owner).
+    pub marker: String,
+    /// `YYYY-MM-DD` the line was last written, from `git blame`.
+    pub first_seen: String,
+    pub folder: String,
+    pub counterparty: Option<String>,
+}
+
+impl OpenLoop {
+    pub fn owed_by_owner(&self) -> bool {
+        self.marker == "⏰"
+    }
+
+    pub fn age_days(&self, today: NaiveDate) -> i64 {
+        NaiveDate::parse_from_str(&self.first_seen, "%Y-%m-%d")
+            .map(|seen| (today - seen).num_days().max(0))
+            .unwrap_or(0)
+    }
+}
+
+/// Older `signals.json` files kept per-folder counts under this key; they
+/// read as "no loops yet" instead of failing the whole file.
+fn lenient_loops<'de, D>(deserializer: D) -> std::result::Result<Vec<OpenLoop>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Vec<serde_json::Value> = Vec::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|value| serde_json::from_value(value).ok())
+        .collect())
+}
+
+pub fn has_loop_marker(line: &str) -> bool {
+    if line.chars().any(|c| LOOP_MARKERS.contains(&c)) {
+        return true;
+    }
+    line.trim_start_matches(['-', '*', ' ', '>', '\t'])
+        .starts_with(WARNING_MARKER)
+}
+
+/// "2 owed by Tommy, 5 waiting, oldest 23 days" for callouts.
+pub fn open_loops_summary(loops: &[OpenLoop], owner: &str, today: NaiveDate) -> String {
+    let owed = loops.iter().filter(|l| l.owed_by_owner()).count();
+    let waiting = loops.len() - owed;
+    let oldest = loops.iter().map(|l| l.age_days(today)).max().unwrap_or(0);
+    if loops.is_empty() {
+        return "no open loops".to_owned();
+    }
+    format!("{owed} owed by {owner}, {waiting} waiting, oldest {oldest} days")
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -393,6 +478,23 @@ impl Vocabulary {
         self.category(key) == ThemeCategory::People
     }
 
+    /// The first known person named in a line, by position.
+    pub fn first_person_in(&self, line: &str) -> Option<String> {
+        let lower = normalize_key(line);
+        let mut best: Option<(usize, &str)> = None;
+        for (key, display, category) in &self.entries {
+            if *category != ThemeCategory::People {
+                continue;
+            }
+            if let Some(at) = find_word(&lower, key)
+                && best.is_none_or(|(best_at, _)| at < best_at)
+            {
+                best = Some((at, display));
+            }
+        }
+        best.map(|(_, display)| display.to_owned())
+    }
+
     pub fn category(&self, key: &str) -> ThemeCategory {
         self.entries
             .iter()
@@ -536,6 +638,13 @@ fn title_case(stem: &str) -> String {
 }
 
 fn contains_word(haystack: &str, needle: &str) -> bool {
+    find_word(haystack, needle).is_some()
+}
+
+fn find_word(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
     let mut start = 0;
     while let Some(found) = haystack[start..].find(needle) {
         let at = start + found;
@@ -551,11 +660,11 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
                 .next()
                 .is_some_and(|c| c.is_alphanumeric());
         if before_ok && after_ok {
-            return true;
+            return Some(at);
         }
         start = end;
     }
-    false
+    None
 }
 
 fn strip_token(token: &str) -> &str {
@@ -695,12 +804,46 @@ pub fn week_label(date: NaiveDate) -> String {
     format!("{}-W{:02}", week.year(), week.week())
 }
 
-/// The last `SERIES_WEEKS` ISO weeks ending with the week of `today`.
-pub fn recent_weeks(today: NaiveDate) -> Vec<String> {
-    (0..SERIES_WEEKS)
+/// The last `count` ISO weeks ending with the week of `today`.
+pub fn recent_weeks(today: NaiveDate, count: usize) -> Vec<String> {
+    (0..count)
         .rev()
         .map(|back| week_label(today - chrono::Duration::weeks(back as i64)))
         .collect()
+}
+
+pub fn month_label(date: NaiveDate) -> String {
+    date.format("%Y-%m").to_string()
+}
+
+/// Every `YYYY-MM` from `first` through `today`, inclusive.
+pub fn month_range(first: NaiveDate, today: NaiveDate) -> Vec<String> {
+    let mut months = Vec::new();
+    let (mut year, mut month) = (first.year(), first.month());
+    let end = (today.year(), today.month());
+    while (year, month) <= end {
+        months.push(format!("{year}-{month:02}"));
+        month += 1;
+        if month > 12 {
+            month = 1;
+            year += 1;
+        }
+    }
+    months
+}
+
+/// A term whose only sources are itineraries, rosters, and the like, or a
+/// single file, is not a theme.
+pub fn is_noise_source(files: &[String], noise_dirs: &[String]) -> bool {
+    if files.len() <= 1 {
+        return true;
+    }
+    let is_noise = |path: &str| {
+        let path = path.strip_suffix(".md").unwrap_or(path);
+        path.split('/')
+            .any(|part| noise_dirs.iter().any(|dir| dir.eq_ignore_ascii_case(part)))
+    };
+    files.iter().all(|file| is_noise(file))
 }
 
 /// Mean of the last two weeks over the mean of the six before, plus the raw
@@ -773,6 +916,7 @@ struct TermAgg {
     /// Votes per spelling, so "Growth Loops" wins over "GROWTH LOOPS".
     casings: HashMap<String, u32>,
     weeks: BTreeMap<String, u32>,
+    months: BTreeMap<String, u32>,
     folders: HashMap<String, u32>,
     files: HashMap<String, u32>,
     people: HashMap<String, u32>,
@@ -871,14 +1015,21 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
     let mut aggregates: HashMap<String, TermAgg> = HashMap::new();
     let mut commits = 0usize;
     let mut week = String::new();
+    let mut month = String::new();
+    let mut first_date: Option<NaiveDate> = None;
     let mut path: Option<String> = None;
     for line in log.lines() {
         if let Some(header) = line.strip_prefix('\u{1}') {
             commits += 1;
             let date = header.split(' ').nth(1).unwrap_or("");
-            week = NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                .map(week_label)
-                .unwrap_or_default();
+            let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok();
+            week = parsed.map(week_label).unwrap_or_default();
+            month = parsed.map(month_label).unwrap_or_default();
+            if let Some(parsed) = parsed
+                && first_date.is_none_or(|first| parsed < first)
+            {
+                first_date = Some(parsed);
+            }
             path = None;
             continue;
         }
@@ -895,6 +1046,10 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
             continue;
         }
         let added = &line[1..];
+        // Open loops are tracked on their own; their words are not topics.
+        if has_loop_marker(added) {
+            continue;
+        }
         let terms = extract_terms(added, &vocabulary);
         if terms.is_empty() {
             continue;
@@ -918,6 +1073,7 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
             }
             agg.total += 1;
             *agg.weeks.entry(week.clone()).or_default() += 1;
+            *agg.months.entry(month.clone()).or_default() += 1;
             *agg.folders.entry(folder.clone()).or_default() += 1;
             *agg.files.entry(file.clone()).or_default() += 1;
             for person in &people {
@@ -929,11 +1085,26 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
     }
 
     let today = Local::now().date_naive();
-    let weeks = recent_weeks(today);
+    let weeks = recent_weeks(today, config.window_weeks());
+    let months = month_range(first_date.unwrap_or(today), today);
     let mut themes: Vec<Theme> = aggregates
         .into_iter()
         .filter(|(key, agg)| {
-            pins.is_pinned(key) || (agg.total >= MIN_WEIGHT && agg.weeks.len() >= MIN_WEEKS)
+            if pins.is_pinned(key) {
+                return true;
+            }
+            if agg.total < MIN_WEIGHT || agg.weeks.len() < MIN_WEEKS {
+                return false;
+            }
+            let files: Vec<String> = agg.files.keys().cloned().collect();
+            if is_noise_source(&files, &config.themes.noise_dirs) {
+                return false;
+            }
+            // A person met once belongs in another theme's people column.
+            if agg.category == ThemeCategory::People && agg.weeks.len() < MIN_WEEKS {
+                return false;
+            }
+            true
         })
         .map(|(key, agg)| {
             let name = if agg.display.is_empty() {
@@ -950,7 +1121,12 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
                 .map(|week| agg.weeks.get(week).copied().unwrap_or(0))
                 .collect();
             let (momentum, recent, prior) = momentum(&series);
+            let month_series: Vec<u32> = months
+                .iter()
+                .map(|month| agg.months.get(month).copied().unwrap_or(0))
+                .collect();
             Theme {
+                months: month_series,
                 pinned: pins.is_pinned(&key),
                 hidden: pins.is_hidden(&key),
                 name,
@@ -974,16 +1150,20 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
     let (rising, fresh, fading) = ranked_themes(&themes, ThemeFilters::default());
 
     let threads = find_threads(repo, &themes);
-    let open_loops = open_loops(repo)?;
+    let open_loop_counts = open_loop_counts(repo)?;
+    let open_loops = collect_open_loops(repo, &config, &vocabulary, today)?;
 
     let signals = Signals {
+        schema: SCHEMA,
         generated_at: Local::now().format("%Y-%m-%d %H:%M").to_string(),
         commit: head,
         commits,
         weeks,
+        months,
         themes,
         threads,
         open_loops,
+        open_loop_counts,
         rising,
         fresh,
         fading,
@@ -1102,8 +1282,133 @@ fn file_links_to(repo: &Path, from: &str, to: &str) -> bool {
     text.contains(to) || text.contains(&format!("[[{stem}")) || text.contains(&format!("[[{to}"))
 }
 
-fn open_loops(repo: &Path) -> Result<Vec<OpenLoops>> {
-    let mut by_folder: BTreeMap<String, OpenLoops> = BTreeMap::new();
+/// `git blame` dates for every line of `file` at HEAD, by one-based line.
+fn blame_dates(repo: &Path, file: &str) -> HashMap<u32, NaiveDate> {
+    let mut dates = HashMap::new();
+    let Ok(output) = git(repo, &["blame", "--porcelain", "HEAD", "--", file]) else {
+        return dates;
+    };
+    let mut commit_dates: HashMap<String, NaiveDate> = HashMap::new();
+    let mut current: Option<(String, u32)> = None;
+    for line in output.lines() {
+        if let Some(time) = line.strip_prefix("author-time ")
+            && let Some((sha, _)) = &current
+            && let Ok(epoch) = time.trim().parse::<i64>()
+            && let Some(date) = chrono::DateTime::from_timestamp(epoch, 0)
+        {
+            commit_dates.insert(sha.clone(), date.date_naive());
+            continue;
+        }
+        if line.starts_with('\t') || line.contains(' ') && !line.chars().next().is_some_and(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        let mut parts = line.split(' ');
+        if let (Some(sha), Some(_), Some(final_line)) = (parts.next(), parts.next(), parts.next())
+            && sha.len() == 40
+            && let Ok(final_line) = final_line.parse::<u32>()
+        {
+            current = Some((sha.to_owned(), final_line));
+            if let Some(date) = commit_dates.get(sha) {
+                dates.insert(final_line, *date);
+            }
+        }
+    }
+    // Header blocks name a commit before its author-time, so fill in the
+    // lines that were seen before their commit's date arrived.
+    if let Ok(output) = git(repo, &["blame", "--porcelain", "HEAD", "--", file]) {
+        for line in output.lines() {
+            let mut parts = line.split(' ');
+            if let (Some(sha), Some(_), Some(final_line)) = (parts.next(), parts.next(), parts.next())
+                && sha.len() == 40
+                && sha.chars().all(|c| c.is_ascii_hexdigit())
+                && let Ok(final_line) = final_line.parse::<u32>()
+                && let Some(date) = commit_dates.get(sha)
+            {
+                dates.entry(final_line).or_insert(*date);
+            }
+        }
+    }
+    dates
+}
+
+/// Every ⏳ and ⏰ line in the brain at HEAD, with when it was written.
+fn collect_open_loops(
+    repo: &Path,
+    config: &BrainConfig,
+    vocabulary: &Vocabulary,
+    today: NaiveDate,
+) -> Result<Vec<OpenLoop>> {
+    let grep = git(repo, &["grep", "-n", "-e", "⏳", "-e", "⏰", "HEAD", "--", "*.md"])
+        .unwrap_or_default();
+    let mut by_file: BTreeMap<String, Vec<(u32, String)>> = BTreeMap::new();
+    for line in grep.lines() {
+        let Some(rest) = line.strip_prefix("HEAD:") else {
+            continue;
+        };
+        let Some((file, rest)) = rest.split_once(':') else {
+            continue;
+        };
+        let Some((number, text)) = rest.split_once(':') else {
+            continue;
+        };
+        let Ok(number) = number.parse::<u32>() else {
+            continue;
+        };
+        if excluded(file, config) {
+            continue;
+        }
+        let text = text.trim();
+        // Headings and table rules use the glyph as decoration, not as a loop.
+        if text.starts_with('#') || text.starts_with('|') {
+            continue;
+        }
+        by_file
+            .entry(file.to_owned())
+            .or_default()
+            .push((number, text.to_owned()));
+    }
+    let mut loops = Vec::new();
+    for (file, lines) in by_file {
+        let dates = blame_dates(repo, &file);
+        for (number, text) in lines {
+            let marker = if text.contains('⏰') { "⏰" } else { "⏳" };
+            let first_seen = dates
+                .get(&number)
+                .copied()
+                .unwrap_or(today)
+                .format("%Y-%m-%d")
+                .to_string();
+            // The marker sits in its own column, so a leading one leaves the text.
+            let clean = text
+                .trim_start_matches(['-', '*', ' ', '>', '⏳', '⏰', '\u{fe0f}'])
+                .trim()
+                .to_owned();
+            // A bare glyph (a legend or a table cell) is not a loop to chase.
+            if clean.is_empty() {
+                continue;
+            }
+            loops.push(OpenLoop {
+                counterparty: vocabulary.first_person_in(&clean),
+                folder: top_folder(&file),
+                marker: marker.to_owned(),
+                first_seen,
+                text: clean,
+                line: number,
+                file: file.clone(),
+            });
+        }
+    }
+    loops.sort_by(|a, b| {
+        a.first_seen
+            .cmp(&b.first_seen)
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.line.cmp(&b.line))
+    });
+    Ok(loops)
+}
+
+fn open_loop_counts(repo: &Path) -> Result<Vec<OpenLoopCounts>> {
+    let mut by_folder: BTreeMap<String, OpenLoopCounts> = BTreeMap::new();
     let now = git(
         repo,
         &["grep", "-c", "-e", "⏳", "-e", "⏰", "--", "*.md"],
@@ -1116,7 +1421,7 @@ fn open_loops(repo: &Path) -> Result<Vec<OpenLoops>> {
             let folder = top_folder(path);
             by_folder
                 .entry(folder.clone())
-                .or_insert_with(|| OpenLoops {
+                .or_insert_with(|| OpenLoopCounts {
                     folder,
                     ..Default::default()
                 })
@@ -1144,7 +1449,7 @@ fn open_loops(repo: &Path) -> Result<Vec<OpenLoops>> {
                 let folder = top_folder(path);
                 by_folder
                     .entry(folder.clone())
-                    .or_insert_with(|| OpenLoops {
+                    .or_insert_with(|| OpenLoopCounts {
                         folder,
                         ..Default::default()
                     })
@@ -1159,31 +1464,39 @@ pub fn momentum_label(theme: &Theme) -> String {
     if theme.is_new {
         "new".to_owned()
     } else if let Some(momentum) = theme.momentum {
-        format!("x{momentum:.1}")
+        if momentum >= MOMENTUM_CAP {
+            format!("x{MOMENTUM_CAP:.0}+")
+        } else {
+            format!("x{momentum:.1}")
+        }
     } else {
         "quiet".to_owned()
     }
 }
 
-fn render_generated(signals: &Signals) -> String {
+fn render_generated(signals: &Signals, config: &BrainConfig) -> String {
     let theme_by_id: HashMap<&str, &Theme> = signals
         .themes
         .iter()
         .map(|theme| (theme.id.as_str(), theme))
         .collect();
+    let today = NaiveDate::parse_from_str(signals.generated_at.get(..10).unwrap_or(""), "%Y-%m-%d")
+        .unwrap_or_else(|_| Local::now().date_naive());
     let mut out = String::new();
     out.push_str(&format!(
-        "> **Status {}:** signals pass ran at {} on commit `{}` over {} commits in {:.1}s; {} themes, {} threads.\n\n",
-        &signals.generated_at[..10],
-        &signals.generated_at[11..],
+        "> **Status {}:** signals pass ran at {} on commit `{}` over {} commits in {:.1}s; {} themes, {} threads. Open loops: {}.\n\n",
+        signals.generated_at.get(..10).unwrap_or(""),
+        signals.generated_at.get(11..).unwrap_or(""),
         signals.commit,
         signals.commits,
         signals.run_ms as f64 / 1000.0,
         signals.themes.iter().filter(|t| !t.hidden).count(),
         signals.threads.len(),
+        open_loops_summary(&signals.open_loops, &config.owner_label(), today),
     ));
+    let weeks_heading = format!("{} weeks", signals.weeks.len());
     let table = |ids: &[String], out: &mut String| {
-        out.push_str("| Theme | 12 weeks | Momentum | Folders |\n|---|---|---|---|\n");
+        out.push_str(&format!("| Theme | {weeks_heading} | Momentum | Folders |\n|---|---|---|---|\n"));
         for id in ids {
             let Some(theme) = theme_by_id.get(id.as_str()) else {
                 continue;
@@ -1235,12 +1548,35 @@ fn render_generated(signals: &Signals) -> String {
         }
     }
     out.push_str("\n## Open loops\n\n| Folder | Now | 7 days ago | Change |\n|---|---|---|---|\n");
-    for loops in &signals.open_loops {
+    for loops in &signals.open_loop_counts {
         let delta = loops.now as i64 - loops.week_ago as i64;
         out.push_str(&format!(
             "| {} | {} | {} | {:+} |\n",
             loops.folder, loops.now, loops.week_ago, delta
         ));
+    }
+    let owner = config.owner_label();
+    for (heading, owed) in [(format!("Owed by {owner}"), true), ("Waiting on others".to_owned(), false)] {
+        let group: Vec<&OpenLoop> = signals
+            .open_loops
+            .iter()
+            .filter(|l| l.owed_by_owner() == owed)
+            .collect();
+        out.push_str(&format!("\n{heading} ({}), oldest first:\n\n", group.len()));
+        for l in group {
+            let who = l
+                .counterparty
+                .as_deref()
+                .map(|who| format!(" .. {who}"))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "- {} days{who} .. `{}:{}` .. {}\n",
+                l.age_days(today),
+                l.file,
+                l.line,
+                l.text.replace('|', "/")
+            ));
+        }
     }
     out.push_str("\n## Pinned\n\n");
     let pinned: Vec<String> = signals
@@ -1272,7 +1608,7 @@ fn write_themes_md(repo: &Path, config: &BrainConfig, signals: &Signals) -> Resu
          narrative block is written by your narrative bot from its prompt file. Curation lives in \
          `pins.md`. See `CLAUDE.md` in this folder.\n\n{GENERATED_START}\n{}\n{GENERATED_END}\n\n\
          {NARRATIVE_START}\n{narrative}\n{NARRATIVE_END}\n",
-        render_generated(signals).trim_end()
+        render_generated(signals, config).trim_end()
     );
     std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
@@ -1603,10 +1939,135 @@ mod tests {
     fn week_labels_and_recent_window() {
         let date = NaiveDate::from_ymd_opt(2026, 9, 30).unwrap();
         assert_eq!(week_label(date), "2026-W40");
-        let weeks = recent_weeks(date);
+        let weeks = recent_weeks(date, SERIES_WEEKS);
         assert_eq!(weeks.len(), SERIES_WEEKS);
         assert_eq!(weeks.last().unwrap(), "2026-W40");
         assert_eq!(weeks.first().unwrap(), "2026-W29");
+        assert_eq!(recent_weeks(date, 4).len(), 4);
+        assert_eq!(
+            month_range(NaiveDate::from_ymd_opt(2025, 11, 15).unwrap(), date),
+            ["2025-11", "2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"]
+        );
+    }
+
+    #[test]
+    fn older_signals_files_still_load() {
+        let old = r#"{"generated_at":"2026-09-30 21:21","commit":"abc","commits":3,"weeks":[],"themes":[],"threads":[],"open_loops":[{"folder":"x","now":2,"week_ago":1}],"rising":[],"fresh":[],"fading":[],"run_ms":1}"#;
+        let signals: Signals = serde_json::from_str(old).unwrap();
+        assert_eq!(signals.schema, 0);
+        assert!(signals.open_loops.is_empty());
+        assert!(signals.months.is_empty());
+        assert!(signals.schema < SCHEMA);
+    }
+
+    #[test]
+    fn loop_lines_are_not_terms_and_summaries_count_owners() {
+        assert!(has_loop_marker("- ⏳ Toni owes a band read"));
+        assert!(has_loop_marker("⚠️ verify the invite"));
+        assert!(has_loop_marker("- ⚠️ verify the invite"));
+        assert!(!has_loop_marker("Status: onsite done; ⚠️ reminder lists only two rounds, but the plan holds."));
+        assert!(!has_loop_marker("- Toni owes a band read"));
+        let today = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
+        let loops = vec![
+            OpenLoop {
+                marker: "⏰".into(),
+                first_seen: "2026-09-08".into(),
+                ..OpenLoop::default()
+            },
+            OpenLoop {
+                marker: "⏳".into(),
+                first_seen: "2026-09-29".into(),
+                ..OpenLoop::default()
+            },
+            OpenLoop {
+                marker: "⏳".into(),
+                first_seen: "2026-10-01".into(),
+                ..OpenLoop::default()
+            },
+        ];
+        assert!(loops[0].owed_by_owner());
+        assert_eq!(loops[0].age_days(today), 23);
+        assert_eq!(
+            open_loops_summary(&loops, "Ada", today),
+            "1 owed by Ada, 2 waiting, oldest 23 days"
+        );
+        assert_eq!(open_loops_summary(&[], "Ada", today), "no open loops");
+    }
+
+    #[test]
+    fn open_loops_come_from_git_with_blame_dates() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        // Test setup only: a blocking git call is fine here.
+        #[allow(clippy::disallowed_methods)]
+        let run = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_AUTHOR_DATE", "2026-09-08T12:00:00")
+                .env("GIT_COMMITTER_DATE", "2026-09-08T12:00:00")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        std::fs::create_dir_all(repo.join("companies/acme")).unwrap();
+        std::fs::create_dir_all(repo.join("people")).unwrap();
+        std::fs::write(repo.join("people/grace-hopper.md"), "# Grace Hopper\n").unwrap();
+        std::fs::write(
+            repo.join("companies/acme/CLAUDE.md"),
+            "# Acme\n## ⏰ To-do\n- ⏳ Grace Hopper owes the band read\n- ⏰ Send the deck to Acme\n- plain line\n",
+        )
+        .unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-q", "-m", "seed"]);
+        let config = BrainConfig::default();
+        let tree: Vec<String> = git(repo, &["ls-tree", "-r", "--name-only", "HEAD"])
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let vocabulary = Vocabulary::from_tree(&tree, &[], &config);
+        let today = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
+        let loops = collect_open_loops(repo, &config, &vocabulary, today).unwrap();
+        assert_eq!(loops.len(), 2, "{loops:?}");
+        assert_eq!(loops[0].marker, "⏳");
+        assert_eq!(loops[0].line, 3);
+        assert_eq!(loops[0].text, "Grace Hopper owes the band read");
+        assert_eq!(loops[0].counterparty.as_deref(), Some("Grace Hopper"));
+        assert_eq!(loops[0].first_seen, "2026-09-08");
+        assert_eq!(loops[0].age_days(today), 23);
+        assert_eq!(loops[1].marker, "⏰");
+        assert_eq!(loops[1].folder, "companies");
+        assert_eq!(loops[1].counterparty, None);
+    }
+
+    #[test]
+    fn noise_sources_and_momentum_cap() {
+        let noise = BrainConfig::default().themes.noise_dirs;
+        assert!(is_noise_source(&["companies/acme/itinerary.md".into()], &noise));
+        assert!(is_noise_source(
+            &["companies/acme/itinerary/day1.md".into(), "companies/acme/roster.md".into()],
+            &noise
+        ));
+        assert!(!is_noise_source(
+            &["companies/acme/itinerary.md".into(), "companies/acme/CLAUDE.md".into()],
+            &noise
+        ));
+        assert!(is_noise_source(&["companies/acme/CLAUDE.md".into()], &noise));
+        let theme = Theme {
+            momentum: Some(124.5),
+            prior: 5,
+            ..Theme::default()
+        };
+        assert_eq!(momentum_label(&theme), "x20+");
+        let theme = Theme {
+            momentum: Some(3.25),
+            ..Theme::default()
+        };
+        assert_eq!(momentum_label(&theme), "x3.2");
     }
 }
 
@@ -1647,7 +2108,11 @@ mod real_brain {
         for t in &signals.threads {
             println!("THREAD {} {:?} gaps {}", t.theme, t.folders, t.links.iter().filter(|l| !l.linked).count());
         }
-        println!("LOOPS {:?}", signals.open_loops.iter().map(|l| (l.folder.as_str(), l.now, l.week_ago)).collect::<Vec<_>>());
+        println!("LOOPS {:?}", signals.open_loop_counts.iter().map(|l| (l.folder.as_str(), l.now, l.week_ago)).collect::<Vec<_>>());
+        println!("OPEN LOOPS {}", signals.open_loops.len());
+        for l in signals.open_loops.iter().take(10) {
+            println!("  {} {:>3}d {:<24} {}:{} {}", l.marker, l.age_days(Local::now().date_naive()), l.counterparty.as_deref().unwrap_or("-"), l.file, l.line, l.text.chars().take(60).collect::<String>());
+        }
         for want in ["pls", "product-led sales"] {
             if let Some(t) = signals.themes.iter().find(|t| t.id == want) {
                 println!("CHECK {want}: {:?}", t.series);

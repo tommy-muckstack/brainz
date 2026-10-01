@@ -24,6 +24,11 @@ paths.workspace = true
 toml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+schemars.workspace = true
+util.workspace = true
 terminal_view.workspace = true
 ui.workspace = true
 workspace.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

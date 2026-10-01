@@ -2,9 +2,15 @@
 //! bundled `brainz-calendar` helper (a small EventKit program).
 
 pub mod brain_config;
+pub mod brain_match;
 pub mod github_sync;
+pub mod ocr;
+pub mod open_loops;
+pub mod prep;
 pub mod launcher;
 pub mod mcp;
+pub mod memory_share;
+pub mod status_decay;
 pub mod themes;
 pub mod themes_signals;
 pub mod todo;
@@ -34,6 +40,9 @@ pub fn init(cx: &mut App) {
     todo::init(cx);
     themes::init(cx);
     github_sync::init(cx);
+    prep::init(cx);
+    open_loops::init(cx);
+    status_decay::init(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenCalendar, window, cx| {
             CalendarView::open(workspace, window, cx);
@@ -72,28 +81,31 @@ struct HelperEvent {
     attendee_names: Vec<String>,
     #[serde(default)]
     organizer: Option<String>,
+    #[serde(default)]
+    attendee_emails: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
-struct CalendarEvent {
-    id: String,
-    title: SharedString,
-    start: DateTime<Local>,
-    end: DateTime<Local>,
-    all_day: bool,
-    calendar: SharedString,
+pub struct CalendarEvent {
+    pub id: String,
+    pub title: SharedString,
+    pub start: DateTime<Local>,
+    pub end: DateTime<Local>,
+    pub all_day: bool,
+    pub calendar: SharedString,
     #[allow(dead_code)]
-    attendees: u32,
-    location: Option<SharedString>,
-    color: Option<Hsla>,
-    url: Option<String>,
-    notes: Option<String>,
-    attendee_names: Vec<String>,
-    organizer: Option<String>,
+    pub attendees: u32,
+    pub location: Option<SharedString>,
+    pub color: Option<Hsla>,
+    pub url: Option<String>,
+    pub notes: Option<String>,
+    pub attendee_names: Vec<String>,
+    pub organizer: Option<String>,
+    pub attendee_emails: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum LoadState {
+pub enum LoadState {
     Loading,
     Ready,
     NoAccess(String),
@@ -125,7 +137,7 @@ fn parse_hex(hex: &str) -> Option<Hsla> {
 
 /// Blocking on purpose: the helper only ever runs on the background executor.
 #[allow(clippy::disallowed_methods)]
-fn load_events() -> Result<(LoadState, Vec<CalendarEvent>)> {
+pub fn load_events() -> Result<(LoadState, Vec<CalendarEvent>)> {
     let helper = helper_path()?;
     let output = std::process::Command::new(&helper)
         .arg(DAYS.to_string())
@@ -186,6 +198,7 @@ fn load_events() -> Result<(LoadState, Vec<CalendarEvent>)> {
                 notes: event.notes,
                 attendee_names: event.attendee_names,
                 organizer: event.organizer,
+                attendee_emails: event.attendee_emails,
             })
         })
         .collect();
