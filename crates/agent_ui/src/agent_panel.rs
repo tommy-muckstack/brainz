@@ -1190,6 +1190,12 @@ fn brainz_tab_color(index: usize) -> Hsla {
     gpui::rgb(rgb).into()
 }
 
+/// A tab colour too dark to read as text on the dark chrome (Black, say)
+/// keeps its swatch but lets the title fall back to the normal text colour.
+fn brainz_tab_color_is_dark(color: Hsla) -> bool {
+    color.l < 0.3
+}
+
 /// Short names for the agents Brainz ships with; other agents keep their
 /// registry display name.
 fn brainz_agent_short_name(agent_id: &AgentId) -> Option<SharedString> {
@@ -7175,6 +7181,17 @@ impl AgentPanel {
             };
 
             let swatch_icon: AnyElement = match color {
+                // A near-black swatch needs an outline to show against the strip.
+                Some(color) if brainz_tab_color_is_dark(color) => div()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(cx.theme().colors().text_muted.opacity(0.6))
+                    .child(
+                        Icon::new(IconName::Swatch)
+                            .size(IconSize::Small)
+                            .color(Color::Custom(color)),
+                    )
+                    .into_any_element(),
                 Some(color) => Icon::new(IconName::Swatch)
                     .size(IconSize::Small)
                     .color(Color::Custom(color))
@@ -7218,9 +7235,10 @@ impl AgentPanel {
                 None => Label::new(title)
                     .size(LabelSize::Small)
                     .truncate()
-                    .when_some(color.filter(|_| selected), |label, color| {
-                        label.color(Color::Custom(color))
-                    })
+                    .when_some(
+                        color.filter(|color| selected && !brainz_tab_color_is_dark(*color)),
+                        |label, color| label.color(Color::Custom(color)),
+                    )
                     .into_any_element(),
             };
             let swatch_size = IconSize::Small.square(window, cx).max(px(22.));
