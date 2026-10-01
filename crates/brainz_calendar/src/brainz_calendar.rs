@@ -9,6 +9,7 @@ pub mod open_loops;
 pub mod prep;
 pub mod launcher;
 pub mod mcp;
+pub mod memory_share;
 pub mod status_decay;
 pub mod themes;
 pub mod themes_signals;
