@@ -8039,6 +8039,54 @@ impl ThreadView {
 
         let panel_bg = cx.theme().colors().panel_background;
 
+        // Brainz: while the agent is still thinking in this block, the bulb
+        // glows amber and breathes; once the thought is done it goes quiet.
+        let is_live = {
+            let thread = self.thread.read(cx);
+            thread.status() != ThreadStatus::Idle && entry_ix + 1 == thread.entries().len()
+        };
+        let accent = cx.theme().colors().text_accent;
+        let bulb: AnyElement = if is_live {
+            div()
+                .relative()
+                .flex_none()
+                .child(
+                    div()
+                        .absolute()
+                        .inset(px(-3.))
+                        .rounded_full()
+                        .bg(accent.opacity(0.35))
+                        .with_animation(
+                            ("brainz-thinking-glow", entry_ix),
+                            Animation::new(Duration::from_millis(1400))
+                                .repeat()
+                                .with_easing(pulsating_between(0.0, 1.0)),
+                            |glow, delta| glow.opacity(delta),
+                        ),
+                )
+                .child(
+                    div()
+                        .child(
+                            Icon::new(IconName::ToolThink)
+                                .size(IconSize::Small)
+                                .color(Color::Accent),
+                        )
+                        .with_animation(
+                            ("brainz-thinking-pulse", entry_ix),
+                            Animation::new(Duration::from_millis(1400))
+                                .repeat()
+                                .with_easing(pulsating_between(0.45, 1.0)),
+                            |icon, delta| icon.opacity(delta),
+                        ),
+                )
+                .into_any_element()
+        } else {
+            Icon::new(IconName::ToolThink)
+                .size(IconSize::Small)
+                .color(Color::Muted)
+                .into_any_element()
+        };
+
         v_flex()
             .id(("thinking-block", chunk_ix))
             .gap_1()
@@ -8055,11 +8103,7 @@ impl ThreadView {
                             .h(window.line_height() - px(2.))
                             .gap_1p5()
                             .overflow_hidden()
-                            .child(
-                                Icon::new(IconName::ToolThink)
-                                    .size(IconSize::Small)
-                                    .color(Color::Muted),
-                            )
+                            .child(bulb)
                             .child(
                                 div()
                                     .text_size(self.tool_name_font_size())
