@@ -3,6 +3,7 @@
 
 use std::{
     path::{Path, PathBuf},
+    rc::Rc,
     sync::Arc,
 };
 
@@ -65,7 +66,7 @@ impl FolderPicker {
             folders: folders.into_iter().map(Arc::from).collect(),
             matches: Vec::new(),
             selected_index: 0,
-            on_pick: Arc::new(on_pick),
+            on_pick: Rc::new(on_pick),
         };
         let picker = cx.new(|cx| Picker::uniform_list(delegate, window, cx));
         Self { picker }
@@ -95,7 +96,7 @@ pub struct FolderPickerDelegate {
     folders: Vec<Arc<str>>,
     matches: Vec<StringMatch>,
     selected_index: usize,
-    on_pick: Arc<dyn Fn(String, &mut Window, &mut App) + 'static>,
+    on_pick: Rc<dyn Fn(String, &mut Window, &mut App) + 'static>,
 }
 
 impl PickerDelegate for FolderPickerDelegate {
