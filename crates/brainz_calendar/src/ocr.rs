@@ -84,11 +84,12 @@ pub fn recognize_text(image: &Path) -> Result<String> {
 
 fn header_value<'a>(line: &'a str, header: &str) -> Option<&'a str> {
     let trimmed = line.trim();
-    if trimmed.len() < header.len() + 1 {
-        return None;
-    }
-    let (head, rest) = trimmed.split_at(header.len());
-    (head.eq_ignore_ascii_case(header) && rest.starts_with(':')).then(|| rest[1..].trim())
+    // `get` rather than `split_at`: OCR lines often start with a curly quote
+    // or a bullet, and slicing inside one of those would panic.
+    let head = trimmed.get(..header.len())?;
+    let rest = trimmed.get(header.len()..)?;
+    let value = rest.strip_prefix(':')?;
+    head.eq_ignore_ascii_case(header).then(|| value.trim())
 }
 
 fn looks_like_person(line: &str) -> bool {
@@ -316,6 +317,13 @@ mod tests {
         );
         assert_eq!(facts.sender_email.as_deref(), Some("hank@acme.com"));
         assert_eq!(facts.sender_name.as_deref(), Some("Hank Scorpio"));
+    }
+
+    #[test]
+    fn lines_starting_with_multibyte_characters_do_not_panic() {
+        let facts = parse_email("“Quoted” opener\n— dash line\n• bullet\n… and more\nFrom: Ada Lovelace <ada@acme.com>");
+        assert_eq!(facts.sender_email.as_deref(), Some("ada@acme.com"));
+        assert_eq!(header_value("“To: x", "to"), None);
     }
 
     #[test]

@@ -221,6 +221,8 @@ pub struct MessageEditor {
     brainz_ocr: HashMap<CreaseId, Shared<Task<Result<Arc<OcrOutcome>, String>>>>,
     /// Brainz: which chip under the thumbnails is selected.
     brainz_attachment_choice: AttachmentChoice,
+    /// Brainz: the text the last chip put in the box, replaced by the next.
+    brainz_prefilled_text: Option<String>,
     _brainz_prefill: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
     _parse_slash_command_task: Task<()>,
@@ -646,6 +648,7 @@ impl MessageEditor {
             bubble_color: None,
             brainz_ocr: HashMap::default(),
             brainz_attachment_choice: AttachmentChoice::JustAttach,
+            brainz_prefilled_text: None,
             _brainz_prefill: None,
             _subscriptions: subscriptions,
             _parse_slash_command_task: Task::ready(()),
@@ -969,6 +972,7 @@ impl MessageEditor {
 
     pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.brainz_ocr.clear();
+        self.brainz_prefilled_text = None;
         self.brainz_attachment_choice = AttachmentChoice::JustAttach;
         self.editor.update(cx, |editor, cx| {
             editor.clear(window, cx);
@@ -2204,6 +2208,7 @@ impl MessageEditor {
     /// Brainz: removes one attached image from the composer.
     fn remove_image_preview(&mut self, crease_id: CreaseId, cx: &mut Context<Self>) {
         self.pending_image_previews.remove(&crease_id);
+        self.brainz_ocr.remove(&crease_id);
         self.mention_set.update(cx, |mention_set, cx| {
             mention_set.remove_image_mention(crease_id, cx);
         });
@@ -2297,9 +2302,9 @@ impl MessageEditor {
                     image_extension(image.format())
                 ));
                 std::fs::write(&path, &image.bytes).map_err(|error| error.to_string())?;
-                let text = brainz_calendar::ocr::recognize_text(&path)
-                    .map_err(|error| format!("{error:#}"))?;
+                let recognized = brainz_calendar::ocr::recognize_text(&path);
                 std::fs::remove_file(&path).ok();
+                let text = recognized.map_err(|error| format!("{error:#}"))?;
                 let facts = brainz_calendar::ocr::parse_email(&text);
                 Ok(Arc::new(OcrOutcome { text, facts }))
             })
@@ -2312,6 +2317,25 @@ impl MessageEditor {
             this.update(cx, |_, cx| cx.notify()).ok();
         })
         .detach();
+    }
+
+    /// Brainz: puts a chip's text in the box, replacing whatever the previous
+    /// chip put there so switching chips never stacks prompts.
+    fn brainz_replace_prefill(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(previous) = self.brainz_prefilled_text.take() {
+            self.editor.update(cx, |editor, cx| {
+                let current = editor.text(cx);
+                if let Some(start) = current.find(&previous) {
+                    let range = MultiBufferOffset(start)..MultiBufferOffset(start + previous.len());
+                    editor.edit([(range, "")], cx);
+                }
+            });
+        }
+        self.insert_text(&text, window, cx);
+        self.brainz_prefilled_text = Some(text);
+        self.editor.update(cx, |editor, cx| {
+            editor.focus_handle(cx).focus(window, cx);
+        });
     }
 
     /// Brainz: Log correspondence and Draft reply. Waits for OCR, matches
@@ -2358,10 +2382,7 @@ impl MessageEditor {
                 })
                 .await;
             this.update_in(cx, |this, window, cx| {
-                this.insert_text(&text, window, cx);
-                this.editor.update(cx, |editor, cx| {
-                    editor.focus_handle(cx).focus(window, cx);
-                });
+                this.brainz_replace_prefill(text, window, cx);
             })
             .ok();
         }));
@@ -2454,12 +2475,7 @@ impl MessageEditor {
                 .await
             };
             this.update_in(cx, |this, window, cx| match result {
-                Ok(text) => {
-                    this.insert_text(&text, window, cx);
-                    this.editor.update(cx, |editor, cx| {
-                        editor.focus_handle(cx).focus(window, cx);
-                    });
-                }
+                Ok(text) => this.brainz_replace_prefill(text, window, cx),
                 Err(error) => log::error!("brainz file in folder: {error}"),
             })
             .ok();

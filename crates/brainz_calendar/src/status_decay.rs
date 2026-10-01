@@ -64,21 +64,22 @@ pub fn status_date(text: &str, today: NaiveDate) -> Option<NaiveDate> {
     first_date(&quote, today)
 }
 
-/// The first date-looking token in `text`.
+/// The first date-looking token in `text`. A full date (`2026-09-22`,
+/// `9/22/2026`) anywhere wins over a bare `9/22`, since `1/2` and `3/4` are
+/// as often fractions as dates.
 pub fn first_date(text: &str, today: NaiveDate) -> Option<NaiveDate> {
-    for token in text.split(|c: char| c.is_whitespace() || matches!(c, '*' | ':' | ',' | ';' | '(' | ')' | '[' | ']' | '`' | '\u{201c}' | '\u{201d}')) {
-        let token = token.trim_matches(|c: char| !(c.is_ascii_digit()));
-        if token.is_empty() {
-            continue;
-        }
-        if let Some(date) = parse_date_token(token, today) {
-            return Some(date);
-        }
-    }
-    None
+    let tokens: Vec<&str> = text
+        .split(|c: char| c.is_whitespace() || matches!(c, '*' | ':' | ',' | ';' | '(' | ')' | '[' | ']' | '`' | '\u{201c}' | '\u{201d}'))
+        .map(|token| token.trim_matches(|c: char| !(c.is_ascii_digit())))
+        .filter(|token| !token.is_empty())
+        .collect();
+    tokens
+        .iter()
+        .find_map(|token| parse_date_token(token, today, false))
+        .or_else(|| tokens.iter().find_map(|token| parse_date_token(token, today, true)))
 }
 
-fn parse_date_token(token: &str, today: NaiveDate) -> Option<NaiveDate> {
+fn parse_date_token(token: &str, today: NaiveDate, allow_month_day: bool) -> Option<NaiveDate> {
     if let Ok(date) = NaiveDate::parse_from_str(token, "%Y-%m-%d") {
         return Some(date);
     }
@@ -89,7 +90,7 @@ fn parse_date_token(token: &str, today: NaiveDate) -> Option<NaiveDate> {
             let year = if year < 100 { 2000 + year } else { year };
             NaiveDate::from_ymd_opt(year, month.parse().ok()?, day.parse().ok()?)
         }
-        [month, day] => {
+        [month, day] if allow_month_day => {
             let month: u32 = month.parse().ok()?;
             let day: u32 = day.parse().ok()?;
             let this_year = NaiveDate::from_ymd_opt(today.year(), month, day)?;
@@ -304,6 +305,10 @@ mod tests {
         assert_eq!(
             status_date("> ✅ First call done (2026-06-05) .. went well.\n", today),
             Some(day(2026, 6, 5))
+        );
+        assert_eq!(
+            status_date("> **Status:** 1/2 the team is out; onsite was 2026-09-28 and 3/4 of the loop is done.\n", today),
+            Some(day(2026, 9, 28))
         );
         assert_eq!(status_date("# No quote\n\nJust text 2026-09-30.\n", today), None);
         assert_eq!(status_date("> Hi Team,\n> no dates here\n", today), None);
