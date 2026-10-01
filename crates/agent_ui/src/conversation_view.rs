@@ -1705,7 +1705,7 @@ impl ConversationView {
                 self.load_subagent_session(subagent_session_id.clone(), session_id, window, cx)
             }
             AcpThreadEvent::ToolAuthorizationRequested(_) => {
-                self.notification_allow_session = Some(session_id.clone());
+                self.notification_allow_session = Some(session_id);
                 self.notification_requires_response = true;
                 self.notify_with_sound("Waiting for tool confirmation", IconName::Info, window, cx);
                 self.notification_allow_session = None;
