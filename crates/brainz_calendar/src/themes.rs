@@ -40,6 +40,10 @@ const DAILY_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const PICKER_LIMIT: usize = 30;
 
 fn trend_line(series: &[u32]) -> impl IntoElement {
+    trend_line_sized(series, px(112.))
+}
+
+fn trend_line_sized(series: &[u32], width: gpui::Pixels) -> impl IntoElement {
     let series = series.to_vec();
     canvas(
         |_, _, _| {},
@@ -71,7 +75,7 @@ fn trend_line(series: &[u32]) -> impl IntoElement {
             }
         },
     )
-    .w(px(112.))
+    .w(width)
     .h(px(24.))
     .flex_shrink_0()
 }
@@ -800,6 +804,28 @@ impl ThemesView {
 
         if expanded {
             let mut details = v_flex().pl_8().pb_2().gap_1();
+            if theme.months.len() >= 2 {
+                let months = self
+                    .signals
+                    .as_ref()
+                    .map(|signals| signals.months.clone())
+                    .unwrap_or_default();
+                let span = match (months.first(), months.last()) {
+                    (Some(first), Some(last)) => format!("All time, by month ({first} to {last})"),
+                    _ => "All time, by month".to_owned(),
+                };
+                details = details.child(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(trend_line_sized(&theme.months, px(240.)))
+                        .child(
+                            Label::new(span)
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        ),
+                );
+            }
             let mut files = h_flex().flex_wrap().gap_1().child(
                 Label::new("Files")
                     .size(LabelSize::XSmall)

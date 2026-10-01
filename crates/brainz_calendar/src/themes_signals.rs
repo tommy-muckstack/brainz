@@ -27,6 +27,9 @@ pub const SERIES_WEEKS: usize = 12;
 /// Lines carrying these are open loops, not topics; the pass keeps them out
 /// of term extraction and collects the ⏳ and ⏰ ones separately.
 pub const LOOP_MARKERS: &[char] = &['⏳', '⏰', '⚠'];
+/// Momentum above this is shown as `x20+`: a ratio over a tiny prior is
+/// noise dressed as precision.
+pub const MOMENTUM_CAP: f64 = 20.0;
 /// A term needs this much weight over at least `MIN_WEEKS` distinct weeks to
 /// become a theme on its own; pinned terms skip the bar.
 const MIN_WEIGHT: u32 = 5;
@@ -100,6 +103,9 @@ pub struct Signals {
     /// Per-folder counts now and a week ago (the older summary table).
     #[serde(default, alias = "open_loops_by_folder")]
     pub open_loop_counts: Vec<OpenLoopCounts>,
+    /// `YYYY-MM` labels for `Theme::months`, from the first commit to now.
+    #[serde(default)]
+    pub months: Vec<String>,
     pub rising: Vec<String>,
     /// Themes with no history before the last two weeks.
     pub fresh: Vec<String>,
@@ -122,6 +128,9 @@ pub struct Theme {
     pub recent: u32,
     pub prior: u32,
     pub is_new: bool,
+    /// All-time weight per month, aligned with `Signals::months`.
+    #[serde(default)]
+    pub months: Vec<u32>,
     pub folders: Vec<Weighted>,
     pub files: Vec<Weighted>,
     pub people: Vec<Weighted>,
@@ -796,6 +805,39 @@ pub fn recent_weeks(today: NaiveDate, count: usize) -> Vec<String> {
         .collect()
 }
 
+pub fn month_label(date: NaiveDate) -> String {
+    date.format("%Y-%m").to_string()
+}
+
+/// Every `YYYY-MM` from `first` through `today`, inclusive.
+pub fn month_range(first: NaiveDate, today: NaiveDate) -> Vec<String> {
+    let mut months = Vec::new();
+    let (mut year, mut month) = (first.year(), first.month());
+    let end = (today.year(), today.month());
+    while (year, month) <= end {
+        months.push(format!("{year}-{month:02}"));
+        month += 1;
+        if month > 12 {
+            month = 1;
+            year += 1;
+        }
+    }
+    months
+}
+
+/// A term whose only sources are itineraries, rosters, and the like, or a
+/// single file, is not a theme.
+pub fn is_noise_source(files: &[String], noise_dirs: &[String]) -> bool {
+    if files.len() <= 1 {
+        return true;
+    }
+    let is_noise = |path: &str| {
+        let path = path.strip_suffix(".md").unwrap_or(path);
+        path.split('/')
+            .any(|part| noise_dirs.iter().any(|dir| dir.eq_ignore_ascii_case(part)))
+    };
+    files.iter().all(|file| is_noise(file))
+}
 
 /// Mean of the last two weeks over the mean of the six before, plus the raw
 /// sums so callers can apply support floors. `None` when the prior six
@@ -867,6 +909,7 @@ struct TermAgg {
     /// Votes per spelling, so "Growth Loops" wins over "GROWTH LOOPS".
     casings: HashMap<String, u32>,
     weeks: BTreeMap<String, u32>,
+    months: BTreeMap<String, u32>,
     folders: HashMap<String, u32>,
     files: HashMap<String, u32>,
     people: HashMap<String, u32>,
@@ -965,14 +1008,21 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
     let mut aggregates: HashMap<String, TermAgg> = HashMap::new();
     let mut commits = 0usize;
     let mut week = String::new();
+    let mut month = String::new();
+    let mut first_date: Option<NaiveDate> = None;
     let mut path: Option<String> = None;
     for line in log.lines() {
         if let Some(header) = line.strip_prefix('\u{1}') {
             commits += 1;
             let date = header.split(' ').nth(1).unwrap_or("");
-            week = NaiveDate::parse_from_str(date, "%Y-%m-%d")
-                .map(week_label)
-                .unwrap_or_default();
+            let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok();
+            week = parsed.map(week_label).unwrap_or_default();
+            month = parsed.map(month_label).unwrap_or_default();
+            if let Some(parsed) = parsed
+                && first_date.is_none_or(|first| parsed < first)
+            {
+                first_date = Some(parsed);
+            }
             path = None;
             continue;
         }
@@ -1016,6 +1066,7 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
             }
             agg.total += 1;
             *agg.weeks.entry(week.clone()).or_default() += 1;
+            *agg.months.entry(month.clone()).or_default() += 1;
             *agg.folders.entry(folder.clone()).or_default() += 1;
             *agg.files.entry(file.clone()).or_default() += 1;
             for person in &people {
@@ -1028,10 +1079,25 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
 
     let today = Local::now().date_naive();
     let weeks = recent_weeks(today, config.window_weeks());
+    let months = month_range(first_date.unwrap_or(today), today);
     let mut themes: Vec<Theme> = aggregates
         .into_iter()
         .filter(|(key, agg)| {
-            pins.is_pinned(key) || (agg.total >= MIN_WEIGHT && agg.weeks.len() >= MIN_WEEKS)
+            if pins.is_pinned(key) {
+                return true;
+            }
+            if agg.total < MIN_WEIGHT || agg.weeks.len() < MIN_WEEKS {
+                return false;
+            }
+            let files: Vec<String> = agg.files.keys().cloned().collect();
+            if is_noise_source(&files, &config.themes.noise_dirs) {
+                return false;
+            }
+            // A person met once belongs in another theme's people column.
+            if agg.category == ThemeCategory::People && agg.weeks.len() < MIN_WEEKS {
+                return false;
+            }
+            true
         })
         .map(|(key, agg)| {
             let name = if agg.display.is_empty() {
@@ -1048,7 +1114,12 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
                 .map(|week| agg.weeks.get(week).copied().unwrap_or(0))
                 .collect();
             let (momentum, recent, prior) = momentum(&series);
+            let month_series: Vec<u32> = months
+                .iter()
+                .map(|month| agg.months.get(month).copied().unwrap_or(0))
+                .collect();
             Theme {
+                months: month_series,
                 pinned: pins.is_pinned(&key),
                 hidden: pins.is_hidden(&key),
                 name,
@@ -1081,6 +1152,7 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
         commit: head,
         commits,
         weeks,
+        months,
         themes,
         threads,
         open_loops,
@@ -1385,7 +1457,11 @@ pub fn momentum_label(theme: &Theme) -> String {
     if theme.is_new {
         "new".to_owned()
     } else if let Some(momentum) = theme.momentum {
-        format!("x{momentum:.1}")
+        if momentum >= MOMENTUM_CAP {
+            format!("x{MOMENTUM_CAP:.0}+")
+        } else {
+            format!("x{momentum:.1}")
+        }
     } else {
         "quiet".to_owned()
     }
@@ -1860,6 +1936,11 @@ mod tests {
         assert_eq!(weeks.len(), SERIES_WEEKS);
         assert_eq!(weeks.last().unwrap(), "2026-W40");
         assert_eq!(weeks.first().unwrap(), "2026-W29");
+        assert_eq!(recent_weeks(date, 4).len(), 4);
+        assert_eq!(
+            month_range(NaiveDate::from_ymd_opt(2025, 11, 15).unwrap(), date),
+            ["2025-11", "2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"]
+        );
     }
 
     #[test]
@@ -1952,6 +2033,32 @@ mod tests {
         assert_eq!(loops[1].marker, "⏰");
         assert_eq!(loops[1].folder, "companies");
         assert_eq!(loops[1].counterparty, None);
+    }
+
+    #[test]
+    fn noise_sources_and_momentum_cap() {
+        let noise = BrainConfig::default().themes.noise_dirs;
+        assert!(is_noise_source(&["companies/acme/itinerary.md".into()], &noise));
+        assert!(is_noise_source(
+            &["companies/acme/itinerary/day1.md".into(), "companies/acme/roster.md".into()],
+            &noise
+        ));
+        assert!(!is_noise_source(
+            &["companies/acme/itinerary.md".into(), "companies/acme/CLAUDE.md".into()],
+            &noise
+        ));
+        assert!(is_noise_source(&["companies/acme/CLAUDE.md".into()], &noise));
+        let theme = Theme {
+            momentum: Some(124.5),
+            prior: 5,
+            ..Theme::default()
+        };
+        assert_eq!(momentum_label(&theme), "x20+");
+        let theme = Theme {
+            momentum: Some(3.25),
+            ..Theme::default()
+        };
+        assert_eq!(momentum_label(&theme), "x3.2");
     }
 }
 
