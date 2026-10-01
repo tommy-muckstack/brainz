@@ -75,13 +75,14 @@ echo "==> Release build (this takes a while)..."
 export DEVELOPER_DIR="$CLT_DEV"
 export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
 BRAINZ_VERSION="$VERSION" ZED_BUILD_ID="$BUILD_NUMBER" \
-    cargo +1.98.1 build --locked --release -p zed --bin brainz \
+    cargo +1.98.1 build --locked --release -p zed -p cli --bin brainz --bin cli \
     --features util/debug-embed,gpui_platform/runtime_shaders
 
 echo "==> Bundling $APP_NAME.app..."
 rm -rf "$DIST"
 mkdir -p "$DIST"
 BRAINZ_NO_OPEN=1 BRAINZ_APP_DIR="$APP_DIR" BRAINZ_BINARY="$repository/target/release/brainz" \
+    BRAINZ_CLI_BINARY="$repository/target/release/cli" \
     BRAINZ_VERSION="$VERSION" BRAINZ_BUILD="$BUILD_NUMBER" BRAINZ_SIGNING_IDENTITY="" \
     script/brainz-local --no-build
 
@@ -91,6 +92,8 @@ codesign --force --timestamp --options runtime --sign "$DEV_ID_IDENTITY" \
     "$APP_DIR/Contents/MacOS/brainz-calendar"
 codesign --force --timestamp --options runtime --sign "$DEV_ID_IDENTITY" \
     "$APP_DIR/Contents/MacOS/brainz-ocr"
+codesign --force --timestamp --options runtime --sign "$DEV_ID_IDENTITY" \
+    "$APP_DIR/Contents/MacOS/cli"
 codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" \
     --sign "$DEV_ID_IDENTITY" "$APP_DIR/Contents/MacOS/brainz"
 codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" \
