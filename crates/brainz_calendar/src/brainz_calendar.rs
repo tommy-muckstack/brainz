@@ -9,6 +9,7 @@ pub mod open_loops;
 pub mod prep;
 pub mod launcher;
 pub mod mcp;
+pub mod status_decay;
 pub mod themes;
 pub mod themes_signals;
 pub mod todo;
@@ -40,6 +41,7 @@ pub fn init(cx: &mut App) {
     github_sync::init(cx);
     prep::init(cx);
     open_loops::init(cx);
+    status_decay::init(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenCalendar, window, cx| {
             CalendarView::open(workspace, window, cx);
