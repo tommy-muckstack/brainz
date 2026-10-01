@@ -362,6 +362,11 @@ impl ThemesView {
             this.update(cx, |this, cx| {
                 match result {
                     Ok(signals) => {
+                        // A file from an older Brainz lacks the newer fields;
+                        // refresh it once rather than show stale shapes.
+                        if signals.schema < signals::SCHEMA {
+                            this.run_now(cx);
+                        }
                         this.signals = Some(signals);
                         this.error = None;
                     }
@@ -1002,6 +1007,38 @@ impl Render for ThemesView {
             );
         }
         if let Some(signals) = self.signals.clone() {
+            let today = chrono::Local::now().date_naive();
+            let loops = signals::open_loops_summary(
+                &signals.open_loops,
+                &self.config.owner_label(),
+                today,
+            );
+            body.push(
+                h_flex()
+                    .px_1()
+                    .pt_1()
+                    .gap_2()
+                    .child(
+                        Label::new(format!(
+                            "{} weeks · {} themes · open loops: {loops}",
+                            signals.weeks.len(),
+                            signals.themes.iter().filter(|theme| !theme.hidden).count(),
+                        ))
+                        .size(LabelSize::XSmall)
+                        .color(Color::Muted),
+                    )
+                    .child(
+                        Button::new("brainz-themes-open-loops", "Open loops")
+                            .label_size(LabelSize::XSmall)
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(
+                                    Box::new(crate::open_loops::OpenOpenLoops),
+                                    cx,
+                                );
+                            }),
+                    )
+                    .into_any_element(),
+            );
             let pinned: Vec<String> = signals
                 .themes
                 .iter()
