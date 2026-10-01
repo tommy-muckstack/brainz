@@ -4470,6 +4470,7 @@ impl ThreadView {
                                     .min_w_0()
                                     .flex_wrap()
                                     .gap_1()
+                                    .child(self.render_chat_font_size_buttons(cx))
                                     .child(self.render_send_button(cx)),
                             ),
                     ),
@@ -5418,6 +5419,45 @@ impl ThreadView {
                 y: px(-2.0),
             })
             .anchor(gpui::Anchor::BottomLeft)
+    }
+
+    /// Brainz: grows or shrinks the chat text (messages and replies) by one
+    /// pixel and saves it, so the size survives a restart.
+    fn brainz_adjust_chat_font_size(&mut self, delta: gpui::Pixels, cx: &mut Context<Self>) {
+        let fs = self.thread.read(cx).project().read(cx).fs().clone();
+        update_settings_file(fs, cx, move |settings, cx| {
+            let theme = theme_settings::ThemeSettings::get_global(cx);
+            let ui_size = theme_settings::clamp_font_size(theme.agent_ui_font_size(cx) + delta);
+            let buffer_size =
+                theme_settings::clamp_font_size(theme.agent_buffer_font_size(cx) + delta);
+            settings.theme.agent_ui_font_size = Some(f32::from(ui_size).into());
+            settings.theme.agent_buffer_font_size = Some(f32::from(buffer_size).into());
+        });
+    }
+
+    /// Brainz: the minus and plus next to Send.
+    fn render_chat_font_size_buttons(&self, cx: &mut Context<Self>) -> AnyElement {
+        h_flex()
+            .gap_0p5()
+            .child(
+                IconButton::new("brainz-chat-font-smaller", IconName::Dash)
+                    .icon_size(IconSize::Small)
+                    .icon_color(Color::Muted)
+                    .tooltip(Tooltip::text("Smaller chat text"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.brainz_adjust_chat_font_size(px(-1.0), cx);
+                    })),
+            )
+            .child(
+                IconButton::new("brainz-chat-font-larger", IconName::Plus)
+                    .icon_size(IconSize::Small)
+                    .icon_color(Color::Muted)
+                    .tooltip(Tooltip::text("Larger chat text"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.brainz_adjust_chat_font_size(px(1.0), cx);
+                    })),
+            )
+            .into_any_element()
     }
 
     fn render_send_button(&self, cx: &mut Context<Self>) -> AnyElement {
