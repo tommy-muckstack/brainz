@@ -6466,6 +6466,26 @@ impl ThreadView {
 
         let primary = match &entry {
             AgentThreadEntry::UserMessage(message) => {
+                // Brainz: Claude Code inserts this marker as a user turn when a
+                // permission request goes unanswered. It is a system note, not
+                // something the user typed, so show it as one.
+                let marker_text = message.content.to_markdown(cx);
+                if marker_text.trim().starts_with("[Request interrupted by user") {
+                    return v_flex()
+                        .id(("brainz-interrupted", entry_ix))
+                        .w_full()
+                        .items_center()
+                        .py_2()
+                        .child(
+                            Label::new(
+                                "A permission request went unanswered, so the agent stopped. \
+                                 Send the message again to continue.",
+                            )
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                        )
+                        .into_any_element();
+                }
                 let Some(editor) = self
                     .entry_view_state
                     .read(cx)
