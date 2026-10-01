@@ -375,6 +375,8 @@ fn logo_for(name: &str) -> Option<&'static str> {
         Some("icons/brainz/logos/atlassian.png")
     } else if lower.contains("glean") {
         Some("icons/brainz/logos/glean.png")
+    } else if lower.contains("asana") {
+        Some("icons/brainz/logos/asana.png")
     } else {
         None
     }
