@@ -122,17 +122,13 @@ opens a Claude conversation with the message box pre-filled with the
 `granola-to-brain` skill path, the folder, the prep file, and today's
 transcripts from `~/MyManBrain/meetings/`. The agent writes the notes.
 
-**Log this screenshot.** With an image attached, a chip row appears under the
-thumbnails. **Log correspondence** runs the bundled Vision OCR helper
-(`script/brainz-ocr.swift`), extracts the sender's name and email domain,
-matches them to a folder, and pre-fills "Log this email in that folder's
-correspondence log, verbatim with a read" with the recognized text attached so
-the agent is not reading pixels. **Draft reply** appears when the text reads as
-an email and asks for a reply in your voice from the correspondence log, with
-numbers only from the brain. **File in folder…** opens a fuzzy picker over the
-brain's folders, copies the screenshot there as `YYYY-MM-DD-screenshot-N.png`,
-and asks for a one-line description next to the file reference. **Just attach**
-is the default and sends the image as before.
+**Screenshots are read for you.** Every image you attach is run through the
+bundled Vision OCR helper (`script/brainz-ocr.swift`) on your Mac as soon as it
+lands in the strip, and the recognized text travels with the image as an
+attached resource when you send, with a note when it reads as an email and who
+it is from. The agent works from the words, not the pixels, and your brain's own
+rules decide what to do with them (log the correspondence, answer the question,
+file the receipt). Nothing to click.
 
 **Status decay.** Every folder under the match and vocabulary folders whose
 `CLAUDE.md` opens with a dated callout (`> **Status 2026-09-22:**`, or the

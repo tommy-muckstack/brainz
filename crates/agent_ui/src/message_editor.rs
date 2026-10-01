@@ -219,13 +219,8 @@ pub struct MessageEditor {
     bubble_color: Option<gpui::Hsla>,
     /// Brainz: OCR of each attached image, started as soon as it decodes.
     brainz_ocr: HashMap<CreaseId, Shared<Task<Result<Arc<OcrOutcome>, String>>>>,
-    /// Brainz: which chip under the thumbnails is selected.
-    brainz_attachment_choice: AttachmentChoice,
-    /// Brainz: the text the last chip put in the box, replaced by the next.
-    brainz_prefilled_text: Option<String>,
     /// Brainz: Quick Look renderings of attached documents, by crease.
     brainz_file_thumbnails: HashMap<CreaseId, Shared<Task<Result<Arc<Image>, String>>>>,
-    _brainz_prefill: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
     _parse_slash_command_task: Task<()>,
 }
@@ -234,16 +229,6 @@ pub struct MessageEditor {
 pub enum InputAttempt {
     Text(Arc<str>),
     Paste(ClipboardItem),
-}
-
-/// Brainz: what the composer does with an attached screenshot besides
-/// sending it along.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AttachmentChoice {
-    JustAttach,
-    LogCorrespondence,
-    DraftReply,
-    FileInFolder,
 }
 
 /// Brainz: text read from one attached image plus what it looks like.
@@ -649,10 +634,7 @@ impl MessageEditor {
             image_preview_scroll: gpui::ScrollHandle::new(),
             bubble_color: None,
             brainz_ocr: HashMap::default(),
-            brainz_attachment_choice: AttachmentChoice::JustAttach,
-            brainz_prefilled_text: None,
             brainz_file_thumbnails: HashMap::default(),
-            _brainz_prefill: None,
             _subscriptions: subscriptions,
             _parse_slash_command_task: Task::ready(()),
         }
@@ -931,14 +913,56 @@ impl MessageEditor {
         let editor = self.editor.clone();
         let supports_embedded_context =
             self.session_capabilities.read().supports_embedded_context();
+        // Brainz: text already read from each attached screenshot rides
+        // along as an embedded resource, so the agent works from words, not
+        // pixels, and can log or answer without being told to.
+        let ocr_tasks: Vec<(CreaseId, Shared<Task<Result<Arc<OcrOutcome>, String>>>)> = {
+            let mut tasks: Vec<_> = self
+                .brainz_ocr
+                .iter()
+                .map(|(crease_id, task)| (*crease_id, task.clone()))
+                .collect();
+            tasks.sort_by_key(|(crease_id, _)| *crease_id);
+            tasks
+        };
 
         cx.spawn(async move |_, cx| {
             let mut contents = contents.await?;
+            let mut ocr_blocks = Vec::new();
+            for (index, (_, task)) in ocr_tasks.into_iter().enumerate() {
+                if let Ok(outcome) = task.await
+                    && !outcome.text.trim().is_empty()
+                {
+                    let mut text = format!(
+                        "Text read from attached screenshot {}:\n{}",
+                        index + 1,
+                        outcome.text.trim()
+                    );
+                    if outcome.facts.is_email {
+                        text.push_str("\n\n(This screenshot reads as an email");
+                        if let Some(sender) = &outcome.facts.sender_name {
+                            text.push_str(&format!(" from {sender}"));
+                        }
+                        if let Some(email) = &outcome.facts.sender_email {
+                            text.push_str(&format!(" <{email}>"));
+                        }
+                        text.push_str(".)");
+                    }
+                    ocr_blocks.push(acp_v1::ContentBlock::Resource(acp_v1::EmbeddedResource::new(
+                        acp_v1::EmbeddedResourceResource::TextResourceContents(
+                            acp_v1::TextResourceContents::new(
+                                text,
+                                format!("brainz-ocr://screenshot-{}", index + 1),
+                            ),
+                        ),
+                    )));
+                }
+            }
             Ok(editor.update(cx, |editor, cx| {
                 let crease_snapshot = editor.display_map.read(cx).crease_snapshot();
                 let buffer_snapshot = editor.buffer().read(cx).snapshot(cx);
                 let text = editor.text(cx);
-                build_chunks_from_creases(
+                let (mut blocks, buffers) = build_chunks_from_creases(
                     &text,
                     &crease_snapshot,
                     &buffer_snapshot,
@@ -948,7 +972,11 @@ impl MessageEditor {
                             .remove(crease_id)
                             .map(|(uri, mention)| (uri, Some(mention)))
                     },
-                )
+                );
+                if !blocks.is_empty() {
+                    blocks.extend(ocr_blocks);
+                }
+                (blocks, buffers)
             }))
         })
     }
@@ -975,9 +1003,7 @@ impl MessageEditor {
 
     pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.brainz_ocr.clear();
-        self.brainz_prefilled_text = None;
         self.brainz_file_thumbnails.clear();
-        self.brainz_attachment_choice = AttachmentChoice::JustAttach;
         self.editor.update(cx, |editor, cx| {
             editor.clear(window, cx);
         });
@@ -2267,29 +2293,6 @@ impl MessageEditor {
         .detach_and_log_err(cx);
     }
 
-    /// Brainz: every attached image that has finished decoding, in order.
-    fn brainz_decoded_images(&self, cx: &App) -> Vec<(CreaseId, Arc<Image>)> {
-        self.mention_set
-            .read(cx)
-            .image_previews(cx)
-            .into_iter()
-            .filter_map(|(crease_id, task)| {
-                task.peek()
-                    .and_then(|result| result.clone().ok())
-                    .map(|image| (crease_id, image))
-            })
-            .collect()
-    }
-
-    fn brainz_repo_root(&self, cx: &App) -> Option<std::path::PathBuf> {
-        self.workspace
-            .upgrade()?
-            .read(cx)
-            .root_paths(cx)
-            .first()
-            .map(|path| path.to_path_buf())
-    }
-
     /// Brainz: runs the OCR helper over a decoded image once, in the
     /// background, so the chips know whether it is an email.
     fn brainz_ensure_ocr(&mut self, crease_id: CreaseId, image: Arc<Image>, cx: &mut Context<Self>) {
@@ -2321,169 +2324,6 @@ impl MessageEditor {
             this.update(cx, |_, cx| cx.notify()).ok();
         })
         .detach();
-    }
-
-    /// Brainz: puts a chip's text in the box, replacing whatever the previous
-    /// chip put there so switching chips never stacks prompts.
-    fn brainz_replace_prefill(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(previous) = self.brainz_prefilled_text.take() {
-            self.editor.update(cx, |editor, cx| {
-                let current = editor.text(cx);
-                if let Some(start) = current.find(&previous) {
-                    let range = MultiBufferOffset(start)..MultiBufferOffset(start + previous.len());
-                    editor.edit([(range, "")], cx);
-                }
-            });
-        }
-        self.insert_text(&text, window, cx);
-        self.brainz_prefilled_text = Some(text);
-        self.editor.update(cx, |editor, cx| {
-            editor.focus_handle(cx).focus(window, cx);
-        });
-    }
-
-    /// Brainz: Log correspondence and Draft reply. Waits for OCR, matches
-    /// the sender against the brain, and drops the message into the box.
-    fn brainz_prefill(&mut self, choice: AttachmentChoice, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(repo) = self.brainz_repo_root(cx) else {
-            return;
-        };
-        self.brainz_attachment_choice = choice;
-        cx.notify();
-        let tasks: Vec<_> = self
-            .brainz_decoded_images(cx)
-            .into_iter()
-            .filter_map(|(crease_id, _)| self.brainz_ocr.get(&crease_id).cloned())
-            .collect();
-        self._brainz_prefill = Some(cx.spawn_in(window, async move |this, cx| {
-            let mut outcomes = Vec::new();
-            for task in tasks {
-                if let Ok(outcome) = task.await {
-                    outcomes.push(outcome);
-                }
-            }
-            let text = cx
-                .background_spawn(async move {
-                    let config = brainz_calendar::brain_config::BrainConfig::load(&repo);
-                    let index = brainz_calendar::brain_match::BrainIndex::load(&repo, &config);
-                    let found = outcomes.iter().find_map(|outcome| {
-                        index.match_sender(
-                            outcome.facts.sender_name.as_deref(),
-                            outcome.facts.sender_email.as_deref(),
-                        )
-                    });
-                    let ocr_text = outcomes
-                        .iter()
-                        .map(|outcome| outcome.text.trim())
-                        .filter(|text| !text.is_empty())
-                        .collect::<Vec<_>>()
-                        .join("\n\n---\n\n");
-                    let prompts = brainz_calendar::ocr::Prompts { config: &config };
-                    match choice {
-                        AttachmentChoice::DraftReply => prompts.draft_reply(found.as_ref(), &ocr_text),
-                        _ => prompts.log_correspondence(found.as_ref(), &ocr_text),
-                    }
-                })
-                .await;
-            this.update_in(cx, |this, window, cx| {
-                this.brainz_replace_prefill(text, window, cx);
-            })
-            .ok();
-        }));
-    }
-
-    /// Brainz: File in folder…. Lists the brain's folders, lets the user
-    /// pick one, copies the screenshots there with dated names, and
-    /// pre-fills the one-line description request.
-    fn brainz_file_in_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(repo) = self.brainz_repo_root(cx) else {
-            return;
-        };
-        let Some(workspace) = self.workspace.upgrade() else {
-            return;
-        };
-        self.brainz_attachment_choice = AttachmentChoice::FileInFolder;
-        cx.notify();
-        let editor = cx.entity().downgrade();
-        self._brainz_prefill = Some(cx.spawn_in(window, async move |_, cx| {
-            let folders = {
-                let repo = repo.clone();
-                cx.background_spawn(async move { crate::brainz_folder_picker::list_folders(&repo) })
-                    .await
-            };
-            workspace
-                .update_in(cx, |workspace, window, cx| {
-                    workspace.toggle_modal(window, cx, |window, cx| {
-                        let repo = repo.clone();
-                        let editor = editor.clone();
-                        crate::brainz_folder_picker::FolderPicker::new(
-                            folders,
-                            Box::new(move |folder, window, cx| {
-                                editor
-                                    .update(cx, |editor, cx| {
-                                        editor.brainz_copy_images_to(&repo, &folder, window, cx);
-                                    })
-                                    .ok();
-                            }),
-                            window,
-                            cx,
-                        )
-                    });
-                })
-                .ok();
-        }));
-    }
-
-    fn brainz_copy_images_to(
-        &mut self,
-        repo: &std::path::Path,
-        folder: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let images: Vec<Arc<Image>> = self
-            .brainz_decoded_images(cx)
-            .into_iter()
-            .map(|(_, image)| image)
-            .collect();
-        if images.is_empty() {
-            return;
-        }
-        let repo = repo.to_path_buf();
-        let folder = folder.to_owned();
-        self._brainz_prefill = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = {
-                let repo = repo.clone();
-                let folder = folder.clone();
-                cx.background_spawn(async move {
-                    let directory = repo.join(&folder);
-                    let today = chrono::Local::now().date_naive();
-                    let mut names = Vec::new();
-                    let mut ordinal = 1usize;
-                    for image in images {
-                        let extension = image_extension(image.format());
-                        let mut name = brainz_calendar::ocr::dated_file_name(today, ordinal, extension);
-                        while directory.join(&name).exists() {
-                            ordinal += 1;
-                            name = brainz_calendar::ocr::dated_file_name(today, ordinal, extension);
-                        }
-                        std::fs::write(directory.join(&name), &image.bytes)
-                            .map_err(|error| format!("saving {name}: {error}"))?;
-                        names.push(name);
-                        ordinal += 1;
-                    }
-                    let config = brainz_calendar::brain_config::BrainConfig::load(&repo);
-                    let prompts = brainz_calendar::ocr::Prompts { config: &config };
-                    Ok::<String, String>(prompts.file_in_folder(&folder, &names))
-                })
-                .await
-            };
-            this.update_in(cx, |this, window, cx| match result {
-                Ok(text) => this.brainz_replace_prefill(text, window, cx),
-                Err(error) => log::error!("brainz file in folder: {error}"),
-            })
-            .ok();
-        }));
     }
 
     /// Brainz: asks Quick Look for a rendering of an attached document once,
@@ -2600,76 +2440,6 @@ impl MessageEditor {
             .into_any_element()
     }
 
-    /// Brainz: the chip row under the thumbnails.
-    fn render_attachment_chips(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let choice = self.brainz_attachment_choice;
-        let any_email = self
-            .brainz_ocr
-            .values()
-            .any(|task| task.peek().is_some_and(|result| result.as_ref().is_ok_and(|outcome| outcome.facts.is_email)));
-        let chip = |id: &'static str, label: &'static str, active: bool, tooltip: &'static str| {
-            Button::new(id, label)
-                .label_size(LabelSize::XSmall)
-                .style(if active { ButtonStyle::Filled } else { ButtonStyle::Outlined })
-                .toggle_state(active)
-                .tooltip(Tooltip::text(tooltip))
-        };
-        h_flex()
-            .id("brainz-attachment-chips")
-            .debug_selector(|| "BRAINZ_ATTACHMENT_CHIPS".into())
-            .w_full()
-            .flex_wrap()
-            .gap_1()
-            .pb_2()
-            .child(
-                chip(
-                    "brainz-chip-log",
-                    "Log correspondence",
-                    choice == AttachmentChoice::LogCorrespondence,
-                    "Read the screenshot, match the sender to a folder, and ask the agent to log it verbatim with a read",
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.brainz_prefill(AttachmentChoice::LogCorrespondence, window, cx);
-                })),
-            )
-            .when(any_email, |this| {
-                this.child(
-                    chip(
-                        "brainz-chip-draft",
-                        "Draft reply",
-                        choice == AttachmentChoice::DraftReply,
-                        "Ask the agent to draft a reply in your voice from the correspondence log",
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.brainz_prefill(AttachmentChoice::DraftReply, window, cx);
-                    })),
-                )
-            })
-            .child(
-                chip(
-                    "brainz-chip-file",
-                    "File in folder…",
-                    choice == AttachmentChoice::FileInFolder,
-                    "Copy the screenshot into a folder of the brain and ask for a one-line description",
-                )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.brainz_file_in_folder(window, cx);
-                })),
-            )
-            .child(
-                chip(
-                    "brainz-chip-attach",
-                    "Just attach",
-                    choice == AttachmentChoice::JustAttach,
-                    "Send the screenshot with your message as usual",
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.brainz_attachment_choice = AttachmentChoice::JustAttach;
-                    cx.notify();
-                })),
-            )
-    }
-
     /// Brainz: the row of thumbnails above the text input. Each attached
     /// screenshot shows up here before it is sent.
     fn render_image_previews(
@@ -2703,7 +2473,6 @@ impl MessageEditor {
                     .into_any_element(),
             );
         }
-        let has_images = !previews.is_empty();
         for (ix, (crease_id, task)) in previews.into_iter().enumerate() {
             let image = task.peek().and_then(|result| result.clone().ok());
             if let Some(image) = &image {
@@ -2805,7 +2574,6 @@ impl MessageEditor {
                         cx,
                     ),
             )
-            .when(has_images, |this| this.child(self.render_attachment_chips(cx))),
         )
     }
 }
