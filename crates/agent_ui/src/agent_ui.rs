@@ -4,7 +4,6 @@ mod agent_diff;
 mod agent_model_selector;
 mod agent_panel;
 mod agent_registry_ui;
-mod brainz_folder_picker;
 mod buffer_codegen;
 mod completion_provider;
 mod config_options;
