@@ -598,6 +598,11 @@ pub struct ThreadView {
     pub list_state: ListState,
     pub session_capabilities: SharedSessionCapabilities,
     pub expanded_tool_call_raw_inputs: HashSet<acp_v1::ToolCallId>,
+    /// Brainz: MCP connectors whose reconnect card was dismissed this thread.
+    brainz_mcp_dismissed: HashSet<String>,
+    /// Brainz: the connector whose sign-in is running from the card.
+    brainz_mcp_reconnecting: Option<String>,
+    _brainz_mcp_task: Option<Task<()>>,
     collapsed_sandbox_authorization_details: HashSet<acp_v1::ToolCallId>,
     collapsed_sandbox_network_details: HashSet<acp_v1::ToolCallId>,
     /// Sandbox escalation prompts whose "surprising Unicode" warning the user
@@ -1033,6 +1038,9 @@ impl ThreadView {
             last_token_limit_telemetry: None,
             thread_feedback: Default::default(),
             expanded_tool_call_raw_inputs: HashSet::default(),
+            brainz_mcp_dismissed: HashSet::default(),
+            brainz_mcp_reconnecting: None,
+            _brainz_mcp_task: None,
             collapsed_sandbox_authorization_details: HashSet::default(),
             collapsed_sandbox_network_details: HashSet::default(),
             acknowledged_confusable_warnings: HashSet::default(),
@@ -11935,6 +11943,181 @@ impl ThreadView {
             .dismiss_action(self.dismiss_error_button(cx))
     }
 
+    /// Brainz: the connector the newest reply or failed tool call says has
+    /// lost its sign-in, matched against the agent's configured servers.
+    fn brainz_mcp_needing_reconnect(&self, cx: &App) -> Option<String> {
+        if !self.agent_id.0.ends_with("-acp") {
+            return None;
+        }
+        let servers = brainz_calendar::mcp::claude_server_names();
+        let find_server = |text: &str| -> Option<String> {
+            let lower = text.to_lowercase();
+            servers
+                .iter()
+                .find(|server| lower.contains(&server.to_lowercase()))
+                .cloned()
+        };
+        let auth_words = ["reconnect", "re-auth", "reauth", "sign in again", "needs to be re", "authentication", "unauthorized", "401", "expired"];
+        let mentions_auth = |text: &str| {
+            let lower = text.to_lowercase();
+            auth_words.iter().any(|word| lower.contains(word))
+        };
+        let thread = self.thread.read(cx);
+        let entries = thread.entries();
+        for entry in entries.iter().rev().take(12) {
+            match entry {
+                AgentThreadEntry::ToolCall(call) if call.status() == ToolCallStatus::Failed => {
+                    let name = call
+                        .tool_name
+                        .as_deref()
+                        .or(call.name.as_deref())
+                        .unwrap_or_default();
+                    let Some(rest) = name.strip_prefix("mcp__") else {
+                        continue;
+                    };
+                    let segment = rest.split("__").next().unwrap_or(rest);
+                    let output = call
+                        .raw_output
+                        .as_ref()
+                        .map(|value| value.to_string())
+                        .unwrap_or_default();
+                    if mentions_auth(&output) {
+                        let server = servers
+                            .iter()
+                            .find(|server| {
+                                let normalize = |text: &str| {
+                                    text.chars()
+                                        .filter(|c| c.is_ascii_alphanumeric())
+                                        .collect::<String>()
+                                        .to_lowercase()
+                                };
+                                normalize(server) == normalize(segment)
+                            })
+                            .cloned()
+                            .unwrap_or_else(|| segment.to_owned());
+                        return Some(server);
+                    }
+                }
+                AgentThreadEntry::AssistantMessage(message) => {
+                    let text = message.to_markdown(cx);
+                    if mentions_auth(&text)
+                        && let Some(server) = find_server(&text)
+                    {
+                        return Some(server);
+                    }
+                }
+                AgentThreadEntry::UserMessage(_) => break,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn brainz_reconnect_mcp(&mut self, server: String, window: &mut Window, cx: &mut Context<Self>) {
+        let client = if self.agent_id.0.starts_with("codex") {
+            brainz_calendar::mcp::McpClient::Codex
+        } else {
+            brainz_calendar::mcp::McpClient::Claude
+        };
+        self.brainz_mcp_reconnecting = Some(server.clone());
+        cx.notify();
+        let task = brainz_calendar::mcp::spawn_mcp_login(
+            self.workspace.clone(),
+            client,
+            server.clone(),
+            window,
+            cx,
+        );
+        let workspace = self.workspace.clone();
+        self._brainz_mcp_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            workspace
+                .update_in(cx, |workspace, window, cx| {
+                    workspace.focus_panel::<crate::AgentPanel>(window, cx);
+                    let message = match &result {
+                        Ok(()) => format!("{server} reconnected. Send your message again and it will go through."),
+                        Err(error) => format!("Could not reconnect {server}: {error:#}"),
+                    };
+                    let id = workspace::notifications::NotificationId::unique::<ThreadView>();
+                    workspace.show_notification(id.clone(), cx, |cx| {
+                        cx.new(|cx| {
+                            workspace::notifications::simple_message_notification::MessageNotification::new(
+                                message, cx,
+                            )
+                        })
+                    });
+                    cx.spawn(async move |workspace, cx| {
+                        cx.background_executor().timer(Duration::from_secs(8)).await;
+                        workspace
+                            .update(cx, |workspace, cx| workspace.dismiss_notification(&id, cx))
+                            .ok();
+                    })
+                    .detach();
+                })
+                .ok();
+            this.update(cx, |this, cx| {
+                if result.is_ok()
+                    && let Some(server) = this.brainz_mcp_reconnecting.take()
+                {
+                    this.brainz_mcp_dismissed.insert(server);
+                } else {
+                    this.brainz_mcp_reconnecting = None;
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Brainz: a card offering to sign in again when a connector has lost
+    /// its authorization, instead of leaving the agent's "needs to be
+    /// reconnected" sentence as the only clue.
+    fn render_mcp_reconnect_card(&mut self, cx: &mut Context<Self>) -> Option<Callout> {
+        let server = self.brainz_mcp_needing_reconnect(cx)?;
+        if self.brainz_mcp_dismissed.contains(&server) {
+            return None;
+        }
+        let agent = brainz_short_agent_name(&self.agent_display_name);
+        let reconnecting = self.brainz_mcp_reconnecting.as_deref() == Some(server.as_str());
+        let action: AnyElement = if reconnecting {
+            h_flex()
+                .h(px(24.))
+                .px_2()
+                .items_center()
+                .child(ui::bouncing_dots("brainz-mcp-card-dots", cx.theme().colors().text_accent))
+                .into_any_element()
+        } else {
+            let server_for_click = server.clone();
+            Button::new("brainz-mcp-reconnect", format!("Reconnect {server}"))
+                .style(ButtonStyle::Filled)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.brainz_reconnect_mcp(server_for_click.clone(), window, cx);
+                }))
+                .into_any_element()
+        };
+        let server_for_dismiss = server.clone();
+        Some(
+            Callout::new()
+                .severity(Severity::Info)
+                .icon(IconName::BrainzMcp)
+                .title(format!("{server} needs to be reconnected"))
+                .description(format!(
+                    "{agent}'s sign-in to {server} has lapsed. Reconnect opens a short sign-in \
+                     in this panel and finishes in your browser; afterwards, send your message again."
+                ))
+                .actions_slot(action)
+                .dismiss_action(
+                    IconButton::new("brainz-mcp-dismiss", IconName::Close)
+                        .icon_size(IconSize::Small)
+                        .tooltip(Tooltip::text("Dismiss"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.brainz_mcp_dismissed.insert(server_for_dismiss.clone());
+                            cx.notify();
+                        })),
+                ),
+        )
+    }
+
     fn render_authentication_required_error(
         &self,
         error: SharedString,
@@ -13306,6 +13489,7 @@ impl Render for ThreadView {
             .children(self.render_skill_loading_issues(cx))
             .children(self.render_thread_retry_status_callout(cx))
             .children(self.render_thread_error(window, cx))
+            .children(self.render_mcp_reconnect_card(cx))
             .when_some(
                 match has_messages {
                     true => None,

@@ -156,7 +156,12 @@ The first time Claude runs in Brainz, your terminal Claude's MCP servers are
 copied into Brainz's own config so both have the same connectors. Every minute
 Brainz probes each connector (HTTP servers must answer, even with 401; stdio
 commands must exist). Any that are down turn the MCP button red, and their row
-in the tab gets a red dot with the reason. The tab bar's
+in the tab gets a red dot with the reason. An amber dot means Claude's sign-in to
+that connector has lapsed (read from Claude's own auth cache); **Reconnect** on the
+row, or "Reconnect in Claude / Codex" under the row's menu, runs the CLI's `mcp login`
+in the terminal panel and brings your panel back when it finishes. When an agent
+reply or a failed connector tool call says a connector needs reconnecting, the same
+card appears in the conversation with a one-click Reconnect. The tab bar's
 split button is a plain toggle: on splits right, off joins everything back.
 
 **Brainz → Install CLI** links `/usr/local/bin/brainz` to the bundled `cli` helper
