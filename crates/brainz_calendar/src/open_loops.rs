@@ -227,7 +227,7 @@ impl OpenLoopsView {
         if loops.is_empty() {
             block = block.child(
                 div().px_2().py_1().child(
-                    Label::new("Nothing open")
+                    Label::new("Nothing open here")
                         .size(LabelSize::Small)
                         .color(Color::Placeholder),
                 ),
@@ -243,9 +243,13 @@ impl OpenLoopsView {
             let who = open_loop
                 .counterparty
                 .clone()
-                .unwrap_or_else(|| "—".to_owned());
-            let folder = open_loop.folder.clone();
+                .unwrap_or_else(|| if open_loop.owed_by_owner() { "you".to_owned() } else { "someone".to_owned() });
+            let folder = signals::file_label(&open_loop.file);
             let location = format!("{}:{}", open_loop.file, open_loop.line);
+            let text = markdown::markdown_to_plain_text(&open_loop.text)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             let row_loop = open_loop.clone();
             let done_loop = open_loop.clone();
             block = block.child(
@@ -282,7 +286,7 @@ impl OpenLoopsView {
                         ),
                     )
                     .child(
-                        div().w(px(120.)).flex_none().overflow_hidden().child(
+                        div().w(px(200.)).flex_none().overflow_hidden().child(
                             Label::new(folder)
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted)
@@ -298,7 +302,7 @@ impl OpenLoopsView {
                     )
                     .child(
                         div().flex_1().min_w_0().child(
-                            Label::new(open_loop.text.clone())
+                            Label::new(text)
                                 .size(LabelSize::Small)
                                 .truncate(),
                         ),
@@ -393,7 +397,15 @@ impl Render for OpenLoopsView {
                     .into_any_element()
             });
 
-        let mut body: Vec<AnyElement> = Vec::new();
+        let mut body: Vec<AnyElement> = vec![
+            Label::new(format!(
+                "Unfinished items your notes mark with ⏰ (something {owner} owes) or ⏳ (waiting on someone else), \
+                 oldest first. Click a row to open the note at that line; strike it there when it is done."
+            ))
+            .size(LabelSize::Small)
+            .color(Color::Muted)
+            .into_any_element(),
+        ];
         if let Some(error) = &self.error {
             body.push(
                 v_flex()
@@ -426,7 +438,7 @@ impl Render for OpenLoopsView {
                 .filter(|l| !l.owed_by_owner())
                 .cloned()
                 .collect();
-            body.push(self.render_group(format!("⏰ {owner} owes"), &owed, 0, today, cx));
+            body.push(self.render_group(format!("⏰ Owed by {owner}"), &owed, 0, today, cx));
             body.push(self.render_group("⏳ Waiting on someone else".to_owned(), &waiting, 10_000, today, cx));
         }
 
