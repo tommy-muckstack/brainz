@@ -1236,10 +1236,6 @@ async fn install_release_macos(
         .file_name()
         .with_context(|| format!("invalid running app path {running_app_path:?}"))?;
 
-    let mount_path = temp_dir.path().join("Zed");
-    let mut mounted_app_path: OsString = mount_path.join(running_app_filename).into();
-
-    mounted_app_path.push("/");
     let mut cmd = new_command("hdiutil");
     cmd.args(["attach", "-nobrowse"])
         .arg(&downloaded_dmg)
@@ -1255,6 +1251,18 @@ async fn install_release_macos(
         "failed to mount: {:?}",
         String::from_utf8_lossy(&output.stderr)
     );
+
+    // Brainz: the volume is named after the release ("Brainz 0.1.5"), not
+    // "Zed", so find the mounted folder that actually holds the app.
+    let mount_path = find_mounted_volume(temp_dir.path(), Path::new(running_app_filename))
+        .with_context(|| {
+            format!(
+                "mounted image has no {running_app_filename:?}: {}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        })?;
+    let mut mounted_app_path: OsString = mount_path.join(running_app_filename).into();
+    mounted_app_path.push("/");
 
     let unmounter = MacOsUnmounter {
         mount_path: mount_path.clone(),
@@ -1280,6 +1288,19 @@ async fn install_release_macos(
     );
 
     Ok(None)
+}
+
+/// The directory under `mount_root` that contains `app_name`, whatever the
+/// disk image called its volume.
+fn find_mounted_volume(mount_root: &Path, app_name: &Path) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = std::fs::read_dir(mount_root)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && path.join(app_name).is_dir())
+        .collect();
+    candidates.sort();
+    candidates.into_iter().next()
 }
 
 /// Removes stale installer dirs from the system temp dir. Older Zed versions
@@ -1390,6 +1411,22 @@ pub async fn finalize_auto_update_on_quit() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mounted_volume_is_found_by_the_app_it_holds() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("Brainz 0.1.5/Brainz.app/Contents")).unwrap();
+        std::fs::create_dir_all(root.path().join("Other/Nothing.app")).unwrap();
+        std::fs::write(root.path().join("Brainz 0.1.5/Applications"), "").unwrap();
+        assert_eq!(
+            super::find_mounted_volume(root.path(), std::path::Path::new("Brainz.app")),
+            Some(root.path().join("Brainz 0.1.5"))
+        );
+        assert_eq!(
+            super::find_mounted_volume(root.path(), std::path::Path::new("Zed.app")),
+            None
+        );
+    }
+
     use client::Client;
     use clock::FakeSystemClock;
     use futures::channel::oneshot;
