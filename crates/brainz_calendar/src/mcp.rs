@@ -5,11 +5,188 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 
 
+use anyhow::{Context as _, Result, anyhow};
 use gpui::{
-    App, Entity, EventEmitter, FocusHandle, Focusable, Global, Subscription, Task, Window, actions,
+    App, Entity, EventEmitter, FocusHandle, Focusable, Global, Subscription, Task, WeakEntity,
+    Window, actions,
 };
-use ui::{Tooltip, prelude::*};
-use workspace::{HideStatusItem, Item, ItemHandle, StatusItemView, Workspace};
+use terminal_view::terminal_panel::TerminalPanel;
+use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
+use workspace::{HideStatusItem, Item, ItemHandle, StatusItemView, Workspace, dock::DockPosition};
+
+/// Which CLI owns a connector's sign-in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum McpClient {
+    Claude,
+    Codex,
+}
+
+impl McpClient {
+    pub fn name(self) -> &'static str {
+        match self {
+            McpClient::Claude => "Claude",
+            McpClient::Codex => "Codex",
+        }
+    }
+
+    /// The CLI the ACP adapter installed, falling back to whatever is on PATH.
+    fn binary(self) -> String {
+        let registry = paths::data_dir().join("external_agents/registry/npx");
+        let bundled = match self {
+            McpClient::Claude => registry.join(
+                "claude-acp/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude",
+            ),
+            McpClient::Codex => registry.join(
+                "codex-acp/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+            ),
+        };
+        if bundled.is_file() {
+            bundled.to_string_lossy().into_owned()
+        } else {
+            match self {
+                McpClient::Claude => "claude".to_owned(),
+                McpClient::Codex => "codex".to_owned(),
+            }
+        }
+    }
+
+    fn env(self) -> collections::HashMap<String, String> {
+        let (variable, dir) = match self {
+            McpClient::Claude => ("CLAUDE_CONFIG_DIR", "claude"),
+            McpClient::Codex => ("CODEX_HOME", "codex"),
+        };
+        let mut env = collections::HashMap::default();
+        env.insert(
+            variable.to_owned(),
+            paths::config_dir().join(dir).to_string_lossy().into_owned(),
+        );
+        env
+    }
+}
+
+fn claude_auth_cache_path() -> PathBuf {
+    paths::config_dir().join("claude").join("mcp-needs-auth-cache.json")
+}
+
+/// Claude Code records the servers whose sign-in has lapsed in a small
+/// cache file; Brainz reads it to show "sign-in needed" without probing.
+pub fn needs_sign_in(client: McpClient, server: &str) -> bool {
+    if client != McpClient::Claude {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(claude_auth_cache_path()) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    value
+        .as_object()
+        .is_some_and(|map| map.keys().any(|key| key.eq_ignore_ascii_case(server)))
+}
+
+fn clear_sign_in_needed(server: &str) {
+    let path = claude_auth_cache_path();
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
+    if let Some(map) = value.as_object_mut() {
+        map.retain(|key, _| !key.eq_ignore_ascii_case(server));
+        if let Ok(text) = serde_json::to_string(&value) {
+            std::fs::write(&path, text).ok();
+        }
+    }
+}
+
+/// The configured Claude connector names, for matching a name an agent
+/// mentions ("granola") back to the real server key.
+pub fn claude_server_names() -> Vec<String> {
+    read_claude_servers().keys().cloned().collect()
+}
+
+/// Runs `claude mcp login <server>` (or the Codex equivalent) in the
+/// terminal panel, which is shown while the browser sign-in happens and
+/// swapped back for whatever panel was up when it finishes.
+pub fn spawn_mcp_login(
+    workspace: WeakEntity<Workspace>,
+    client: McpClient,
+    server: String,
+    window: &mut Window,
+    cx: &mut App,
+) -> Task<Result<()>> {
+    let Some(workspace_entity) = workspace.upgrade() else {
+        return Task::ready(Err(anyhow!("workspace closed")));
+    };
+    let Some(terminal_panel) = workspace_entity.read(cx).panel::<TerminalPanel>(cx) else {
+        return Task::ready(Err(anyhow!("Terminal panel is unavailable")));
+    };
+    let previous_panel = workspace_entity
+        .read(cx)
+        .dock_at_position(DockPosition::Bottom)
+        .read(cx)
+        .active_panel_index();
+    let label = format!("Reconnect {server} ({})", client.name());
+    let spawn = task::SpawnInTerminal {
+        id: task::TaskId(format!("brainz-mcp-login-{}-{server}", client.name())),
+        full_label: label.clone(),
+        label: label.clone(),
+        command: None,
+        args: Vec::new(),
+        command_label: label,
+        env: client.env(),
+        use_new_terminal: true,
+        allow_concurrent_runs: true,
+        hide: task::HideStrategy::Always,
+        shell: task::Shell::WithArguments {
+            program: client.binary(),
+            args: vec!["mcp".to_owned(), "login".to_owned(), server.clone()],
+            title_override: None,
+        },
+        ..Default::default()
+    };
+    window.spawn(cx, async move |cx| {
+        let terminal = terminal_panel
+            .update_in(cx, |terminal_panel, window, cx| {
+                terminal_panel.spawn_task(&spawn, window, cx)
+            })?
+            .await?;
+        workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_panel::<TerminalPanel>(window, cx);
+            })
+            .ok();
+        let exit = terminal
+            .read_with(cx, |terminal, cx| terminal.wait_for_completed_task(cx))?
+            .await;
+        let result = match exit {
+            Some(status) if status.success() => {
+                if client == McpClient::Claude {
+                    clear_sign_in_needed(&server);
+                }
+                Ok(())
+            }
+            Some(status) => Err(anyhow!(
+                "`{} mcp login {server}` exited with {:?}",
+                client.name().to_lowercase(),
+                status.code()
+            )),
+            None => Err(anyhow!("the sign-in command ended without an exit status")),
+        };
+        workspace
+            .update_in(cx, |workspace, window, cx| {
+                if let Some(index) = previous_panel {
+                    workspace
+                        .dock_at_position(DockPosition::Bottom)
+                        .update(cx, |dock, cx| dock.activate_panel(index, window, cx));
+                }
+            })
+            .ok();
+        result.with_context(|| format!("reconnecting {server}"))
+    })
+}
 
 const HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -194,6 +371,10 @@ fn logo_for(name: &str) -> Option<&'static str> {
         Some("icons/brainz/logos/figma.png")
     } else if lower.contains("vapi") {
         Some("icons/brainz/logos/vapi.png")
+    } else if lower.contains("atlassian") || lower.contains("jira") || lower.contains("confluence") {
+        Some("icons/brainz/logos/atlassian.png")
+    } else if lower.contains("glean") {
+        Some("icons/brainz/logos/glean.png")
     } else {
         None
     }
@@ -449,7 +630,11 @@ fn connect_codex(name: &str, config: toml::Value) -> anyhow::Result<()> {
 
 pub struct McpView {
     focus_handle: FocusHandle,
+    workspace: WeakEntity<Workspace>,
     connectors: Vec<Connector>,
+    /// Connectors with a sign-in running right now.
+    reconnecting: std::collections::HashSet<String>,
+    _reconnect: Option<Task<()>>,
     loading: bool,
     error: Option<String>,
     _load: Option<Task<()>>,
@@ -469,17 +654,21 @@ impl McpView {
             workspace.activate_item(&existing, true, true, window, cx);
             existing.update(cx, |view, cx| view.refresh(cx));
         } else {
-            let view = cx.new(|cx| McpView::new(cx));
+            let weak = cx.entity().downgrade();
+            let view = cx.new(|cx| McpView::new(weak, cx));
             workspace.add_item_to_active_pane(Box::new(view), None, true, window, cx);
         }
     }
 
-    fn new(cx: &mut Context<Self>) -> Self {
+    fn new(workspace: WeakEntity<Workspace>, cx: &mut Context<Self>) -> Self {
         let health_subscription =
             health(cx).map(|health| cx.observe(&health, |_, _, cx| cx.notify()));
         let mut this = Self {
             focus_handle: cx.focus_handle(),
+            workspace,
             connectors: Vec::new(),
+            reconnecting: std::collections::HashSet::new(),
+            _reconnect: None,
             loading: true,
             error: None,
             _load: None,
@@ -591,6 +780,65 @@ impl McpView {
             })
     }
 
+    fn reconnect(&mut self, client: McpClient, server: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.reconnecting.contains(&server) {
+            return;
+        }
+        self.reconnecting.insert(server.clone());
+        cx.notify();
+        let task = spawn_mcp_login(self.workspace.clone(), client, server.clone(), window, cx);
+        self._reconnect = Some(cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.reconnecting.remove(&server);
+                if let Err(error) = result {
+                    this.error = Some(format!("{error:#}"));
+                }
+                this.refresh(cx);
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn render_connector_menu(&self, ix: usize, connector: &Connector, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.weak_entity();
+        let name = connector.name.clone();
+        let has_claude = connector.claude.is_some();
+        let has_codex = connector.codex.is_some();
+        PopoverMenu::new(("brainz-mcp-menu", ix))
+            .trigger(
+                IconButton::new(("brainz-mcp-more", ix), IconName::Ellipsis)
+                    .icon_size(IconSize::Small)
+                    .icon_color(Color::Muted)
+                    .tooltip(Tooltip::text("Reconnect or sign in again")),
+            )
+            .anchor(gpui::Anchor::TopRight)
+            .menu(move |window, cx| {
+                let view = view.clone();
+                let name = name.clone();
+                Some(ContextMenu::build(window, cx, move |mut menu, _, _| {
+                    menu = menu.header("Sign in again");
+                    for (client, present) in [(McpClient::Claude, has_claude), (McpClient::Codex, has_codex)] {
+                        if !present {
+                            continue;
+                        }
+                        let view = view.clone();
+                        let name = name.clone();
+                        menu = menu.entry(
+                            format!("Reconnect in {}", client.name()),
+                            None,
+                            move |window, cx| {
+                                view.update(cx, |view, cx| view.reconnect(client, name.clone(), window, cx))
+                                    .ok();
+                            },
+                        );
+                    }
+                    menu
+                }))
+            })
+    }
+
     fn render_connector(
         &self,
         ix: usize,
@@ -608,12 +856,18 @@ impl McpView {
                 .into_any_element(),
         };
         let status = health(cx).and_then(|health| health.read(cx).status_of(&connector.name).cloned());
+        let sign_in_needed = connector.claude.is_some() && needs_sign_in(McpClient::Claude, &connector.name);
+        let reconnecting = self.reconnecting.contains(&connector.name);
         let (dot_color, status_text): (gpui::Hsla, SharedString) = match &status {
             Some(Some(reason)) => (
                 cx.theme().status().error,
                 format!("Down: {reason}").into(),
             ),
-            Some(None) => (cx.theme().status().success, "Reachable".into()),
+            _ if sign_in_needed => (
+                cx.theme().colors().text_accent,
+                format!("Claude needs to sign in to {} again", connector.name).into(),
+            ),
+            Some(None) => (cx.theme().status().success, "Reachable and signed in".into()),
             None => (cx.theme().colors().icon_muted, "Checking…".into()),
         };
         h_flex()
@@ -686,6 +940,29 @@ impl McpView {
                 h_flex()
                     .flex_none()
                     .gap_1p5()
+                    .when(sign_in_needed && !reconnecting, |this| {
+                        let name = connector.name.clone();
+                        this.child(
+                            Button::new(("brainz-mcp-reconnect", ix), "Reconnect")
+                                .style(ButtonStyle::Filled)
+                                .label_size(LabelSize::Small)
+                                .tooltip(Tooltip::text(format!(
+                                    "Sign in to {} again; a terminal opens with the link",
+                                    connector.name
+                                )))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.reconnect(McpClient::Claude, name.clone(), window, cx);
+                                })),
+                        )
+                    })
+                    .when(reconnecting, |this| {
+                        this.child(
+                            h_flex().h(px(24.)).px_2().items_center().child(ui::bouncing_dots(
+                                format!("brainz-mcp-reconnecting-{ix}"),
+                                cx.theme().colors().text_accent,
+                            )),
+                        )
+                    })
                     .child(self.render_client_badge(
                         ix,
                         Client::Claude,
@@ -697,7 +974,8 @@ impl McpView {
                         Client::Codex,
                         connector.codex.is_some(),
                         cx,
-                    )),
+                    ))
+                    .child(self.render_connector_menu(ix, connector, cx)),
             )
     }
 }
@@ -775,7 +1053,7 @@ impl Render for McpView {
                 rows.push(Label::new(error.clone()).color(Color::Error).into_any_element());
             }
             rows.push(
-                Label::new("Click a Claude or Codex badge to add that connector to it.")
+                Label::new("Click a Claude or Codex badge to add that connector to it. An amber dot means Claude's sign-in to that connector has lapsed; Reconnect opens the sign-in.")
                     .size(LabelSize::Small)
                     .color(Color::Muted)
                     .into_any_element(),
