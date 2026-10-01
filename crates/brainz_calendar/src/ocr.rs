@@ -202,12 +202,21 @@ pub fn parse_email(text: &str) -> EmailFacts {
     facts
 }
 
-/// The messages the chips pre-fill.
+/// The messages the chips pre-fill. `owner` is the brain owner's name for
+/// the Draft reply voice ("Tommy's reply"), or "my" when unknown.
 pub struct Prompts<'a> {
     pub config: &'a BrainConfig,
 }
 
 impl Prompts<'_> {
+    fn owner_possessive(&self) -> String {
+        if self.config.stop_words.is_empty() {
+            "my".to_owned()
+        } else {
+            format!("{}'s", self.config.owner_label())
+        }
+    }
+
     pub fn log_correspondence(&self, found: Option<&Match>, ocr_text: &str) -> String {
         let mut text = match found {
             Some(found) => format!(
@@ -218,6 +227,18 @@ impl Prompts<'_> {
                 "Log this email in the right folder's correspondence log, verbatim with a read, and update that folder's status callout. Find the folder that matches the sender and say which one you chose. {HOUSE_RULES}"
             ),
         };
+        append_ocr(&mut text, ocr_text);
+        text
+    }
+
+    pub fn draft_reply(&self, found: Option<&Match>, ocr_text: &str) -> String {
+        let folder = found
+            .map(|found| format!("`{}`'s correspondence log", found.folder))
+            .unwrap_or_else(|| "the matching folder's correspondence log (find it from the sender and say which)".to_owned());
+        let owner = self.owner_possessive();
+        let mut text = format!(
+            "Draft {owner} reply to this. First open {folder} and read the last two outbound messages in this thread for voice and prior positions. Pull numbers only from the brain, never approximate. No em dashes. Give the draft and one or two notes on what it does and doesn't say."
+        );
         append_ocr(&mut text, ocr_text);
         text
     }
@@ -325,6 +346,11 @@ mod tests {
         let text = prompts.log_correspondence(None, "");
         assert!(text.contains("say which one you chose"));
         assert!(text.contains("No text could be read"));
+        let text = prompts.draft_reply(Some(&found), "x");
+        assert!(text.starts_with("Draft Ada's reply to this. First open `companies/acme`'s correspondence log"));
+        let generic = BrainConfig::default();
+        let prompts = Prompts { config: &generic };
+        assert!(prompts.draft_reply(None, "x").starts_with("Draft my reply"));
         assert_eq!(
             prompts.file_in_folder("companies/acme", &["2026-10-01-screenshot-1.png".into()]),
             format!("Describe this in one line in `companies/acme/CLAUDE.md` next to the file reference `companies/acme/2026-10-01-screenshot-1.png`. {HOUSE_RULES}")
