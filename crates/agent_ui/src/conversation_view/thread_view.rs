@@ -12158,10 +12158,12 @@ impl ThreadView {
                     let server_view = this.server_view.clone();
 
                     this.clear_thread_error(cx);
+                    // Brainz: the message that bounced is sent again on its own
+                    // once sign-in succeeds, instead of landing back in the box.
                     if let Some(message) = this.in_flight_prompt.take() {
-                        this.message_editor.update(cx, |editor, cx| {
-                            editor.set_message(message, window, cx);
-                        });
+                        server_view
+                            .update(cx, |view, _| view.prompt_after_auth = Some(message))
+                            .ok();
                     }
                     let connection = this.thread.read(cx).connection().clone();
                     window.defer(cx, |window, cx| {

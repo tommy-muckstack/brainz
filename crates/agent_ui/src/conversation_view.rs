@@ -650,6 +650,9 @@ pub struct ConversationView {
     notification_allow_session: Option<acp_v1::SessionId>,
     notification_requires_response: bool,
     auth_task: Option<Task<()>>,
+    /// Brainz: the message that hit "sign in required"; sent on its own once
+    /// the thread is rebuilt after a successful sign-in.
+    pub(crate) prompt_after_auth: Option<Vec<acp_v1::ContentBlock>>,
     loading_status: Option<SharedString>,
     /// When settings change, use this to see if the theme has changed (which
     /// causes mermaid diagrams to re-render).
@@ -933,6 +936,7 @@ impl ConversationView {
             notification_allow_session: None,
             notification_requires_response: false,
             auth_task: None,
+            prompt_after_auth: None,
             loading_status: None,
             last_theme_id: Some(cx.theme().id.clone()),
             draft_prompt_persist_task: None,
@@ -1061,7 +1065,12 @@ impl ConversationView {
             work_dirs,
             title,
             self.project.clone(),
-            None,
+            self.prompt_after_auth
+                .take()
+                .map(|blocks| AgentInitialContent::ContentBlock {
+                    blocks,
+                    auto_submit: true,
+                }),
             AgentThreadSource::AgentPanel,
             window,
             cx,
@@ -3338,7 +3347,13 @@ impl ConversationView {
     pub(crate) fn reauthenticate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_request_elicitations(cx);
         if let Some(active) = self.root_thread_view() {
-            active.update(cx, |active, cx| active.clear_thread_error(cx));
+            let prompt = active.update(cx, |active, cx| {
+                active.clear_thread_error(cx);
+                active.in_flight_prompt.take()
+            });
+            if prompt.is_some() {
+                self.prompt_after_auth = prompt;
+            }
         }
         let this = cx.weak_entity();
         let Some(connection) = self.as_connected().map(|c| c.connection.clone()) else {
