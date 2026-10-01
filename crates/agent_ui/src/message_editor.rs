@@ -1415,7 +1415,9 @@ impl MessageEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if crate::google_doc_link::pasted_document_links(text).is_empty() {
+        if crate::google_doc_link::pasted_document_links(text).is_empty()
+            && crate::google_doc_link::pasted_local_files(text).is_empty()
+        {
             return false;
         }
         let selections = self.editor.update(cx, |editor, cx| {
@@ -1439,16 +1441,35 @@ impl MessageEditor {
             let start = start.to_offset(&snapshot);
             let end = end.to_offset(&snapshot);
             let inserted = snapshot.text_for_range(start..end).collect::<String>();
-            for (range, url) in crate::google_doc_link::pasted_document_links(&inserted) {
+            // Brainz: shared-note links and pasted paths to files on this Mac
+            // both become pills; the agent still gets the original text.
+            let mut pills: Vec<(Range<usize>, MentionUri, SharedString)> =
+                crate::google_doc_link::pasted_document_links(&inserted)
+                    .into_iter()
+                    .map(|(range, url)| {
+                        let label = crate::google_doc_link::link_kind(url.as_str())
+                            .map(|kind| kind.fallback_title())
+                            .unwrap_or("Link");
+                        (range, MentionUri::Fetch { url }, SharedString::from(label))
+                    })
+                    .collect();
+            for (range, path) in crate::google_doc_link::pasted_local_files(&inserted) {
+                let label = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                pills.push((range, MentionUri::File { abs_path: path }, label.into()));
+            }
+            pills.sort_by_key(|(range, _, _)| range.start);
+            for (range, uri, label) in pills {
                 let anchor = snapshot.anchor_before(MultiBufferOffset(start.0 + range.start));
                 let Some((anchor, _)) = snapshot.anchor_to_buffer_anchor(anchor) else {
                     continue;
                 };
-                let uri = MentionUri::Fetch { url };
                 let Some((crease_id, ready, view)) = insert_crease_for_mention(
                     anchor,
                     range.len(),
-                    "Google Doc".into(),
+                    label,
                     IconName::File.path().into(),
                     uri.tooltip_text(),
                     Some(uri.clone()),

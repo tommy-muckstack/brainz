@@ -10,12 +10,102 @@ use ui::{Tooltip, prelude::*};
 use url::Url;
 use util::ResultExt;
 
-const FALLBACK_TITLE: &str = "Google Doc";
 const MAX_CACHED_LINKS: usize = 128;
+
+/// Brainz: the kinds of shared-note links that become title pills.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LinkKind {
+    GoogleDoc,
+    Granola,
+    WisprFlow,
+}
+
+impl LinkKind {
+    pub(crate) fn fallback_title(self) -> &'static str {
+        match self {
+            LinkKind::GoogleDoc => "Google Doc",
+            LinkKind::Granola => "Granola notes",
+            LinkKind::WisprFlow => "Wispr Flow notes",
+        }
+    }
+
+    /// A logo for the pill when Brainz has one; otherwise the file glyph.
+    pub(crate) fn logo(self) -> Option<&'static str> {
+        match self {
+            LinkKind::Granola => Some("icons/brainz/logos/granola.png"),
+            LinkKind::GoogleDoc | LinkKind::WisprFlow => None,
+        }
+    }
+
+    /// Page titles that only name the service, not the note.
+    fn is_generic_title(self, title: &str) -> bool {
+        let lower = title.trim().to_lowercase();
+        match self {
+            LinkKind::GoogleDoc => lower == "google docs",
+            LinkKind::Granola => lower == "granola" || lower == "granola notes",
+            LinkKind::WisprFlow => lower.starts_with("wispr flow"),
+        }
+    }
+}
+
+/// Recognizes a shared-note link and the URL whose HTML carries its title.
+pub(crate) fn known_link(url: &str) -> Option<(LinkKind, String)> {
+    if let Some(metadata_url) = google_doc_metadata_url(url) {
+        return Some((LinkKind::GoogleDoc, metadata_url));
+    }
+    let parsed = Url::parse(url).ok()?;
+    if !matches!(parsed.scheme(), "https" | "http") || !parsed.username().is_empty() {
+        return None;
+    }
+    let segments: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
+    match (parsed.host_str()?, segments.as_slice()) {
+        ("notes.granola.ai", ["t", id, ..]) if !id.is_empty() => {
+            Some((LinkKind::Granola, format!("https://notes.granola.ai/t/{id}")))
+        }
+        ("notes.wisprflow.ai", ["shared", id, ..]) if !id.is_empty() => Some((
+            LinkKind::WisprFlow,
+            format!("https://notes.wisprflow.ai/shared/{id}"),
+        )),
+        _ => None,
+    }
+}
+
+pub(crate) fn link_kind(url: &str) -> Option<LinkKind> {
+    known_link(url).map(|(kind, _)| kind)
+}
+
+/// Absolute paths to files that exist on this Mac, pasted as text.
+pub(crate) fn pasted_local_files(text: &str) -> Vec<(Range<usize>, std::path::PathBuf)> {
+    let home = util::paths::home_dir();
+    let mut files = Vec::new();
+    let mut offset = 0;
+    for token in text.split_inclusive(char::is_whitespace) {
+        let trimmed = token.trim_end();
+        let core = trimmed.trim_end_matches([',', ';', ')', ']', '>', '"', '\'']);
+        if core.starts_with('/') || core.starts_with("~/") {
+            let path = if let Some(rest) = core.strip_prefix("~/") {
+                home.join(rest)
+            } else {
+                std::path::PathBuf::from(core)
+            };
+            if path.is_file() {
+                files.push((offset..offset + core.len(), path));
+            }
+        }
+        offset += token.len();
+    }
+    files
+}
 const MAX_TITLE_RESPONSE_BYTES: u64 = 512 * 1024;
 const TITLE_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// The URL to fetch for a recognized link's title, if the link is one Brainz
+/// turns into a pill.
 pub(crate) fn document_metadata_url(url: &str) -> Option<String> {
+    known_link(url).map(|(_, metadata_url)| metadata_url)
+}
+
+fn google_doc_metadata_url(url: &str) -> Option<String> {
     let url = Url::parse(url).ok()?;
     if !matches!(url.scheme(), "https" | "http")
         || url.host_str() != Some("docs.google.com")
@@ -67,13 +157,13 @@ pub(crate) fn pasted_document_links(text: &str) -> Vec<(Range<usize>, Url)> {
     finder
         .links(text)
         .filter_map(|link| {
-            document_metadata_url(link.as_str())?;
+            known_link(link.as_str())?;
             Some((link.start()..link.end(), Url::parse(link.as_str()).ok()?))
         })
         .collect()
 }
 
-fn document_title(html: &[u8]) -> Option<String> {
+fn document_title(html: &[u8], kind: LinkKind) -> Option<String> {
     let dom = parse_document(RcDom::default(), Default::default())
         .from_utf8()
         .read_from(&mut &html[..])
@@ -82,9 +172,30 @@ fn document_title(html: &[u8]) -> Option<String> {
     // handles, so `dom` has to outlive the walk; the clone is deliberate.
     #[allow(clippy::redundant_clone)]
     let mut nodes = vec![dom.document.clone()];
+    let mut og_title: Option<String> = None;
+    let mut page_title: Option<String> = None;
     while let Some(node) = nodes.pop() {
+        if let NodeData::Element { name, attrs, .. } = &node.data
+            && name.local.as_ref() == "meta"
+        {
+            let attrs = attrs.borrow();
+            let is_og_title = attrs.iter().any(|attribute| {
+                attribute.name.local.as_ref() == "property" && &*attribute.value == "og:title"
+            });
+            if is_og_title
+                && let Some(content) = attrs
+                    .iter()
+                    .find(|attribute| attribute.name.local.as_ref() == "content")
+            {
+                let content = content.value.split_whitespace().collect::<Vec<_>>().join(" ");
+                if !content.is_empty() && og_title.is_none() {
+                    og_title = Some(content);
+                }
+            }
+        }
         if let NodeData::Element { name, .. } = &node.data
             && name.local.as_ref() == "title"
+            && page_title.is_none()
         {
             let mut title = String::new();
             let mut children = node
@@ -101,18 +212,25 @@ fn document_title(html: &[u8]) -> Option<String> {
                 children.extend(child.children.borrow().iter().rev().cloned());
             }
             let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
-            // Login and access-error pages are not document metadata.
-            let title = title.strip_suffix(" - Google Docs")?.trim();
-            return (!title.is_empty()).then(|| title.chars().take(200).collect());
+            page_title = Some(title);
         }
         nodes.extend(node.children.borrow().iter().rev().cloned());
     }
-    None
+    let title = match kind {
+        // Login and access-error pages are not document metadata.
+        LinkKind::GoogleDoc => page_title?.strip_suffix(" - Google Docs")?.trim().to_owned(),
+        LinkKind::Granola | LinkKind::WisprFlow => og_title.or(page_title)?.trim().to_owned(),
+    };
+    if title.is_empty() || kind.is_generic_title(&title) {
+        return None;
+    }
+    Some(title.chars().take(200).collect())
 }
 
 async fn fetch_title(
     client: Arc<HttpClientWithUrl>,
     metadata_url: String,
+    kind: LinkKind,
 ) -> Result<Option<String>> {
     let mut response = client.get(&metadata_url, Default::default(), true).await?;
     if !response.status().is_success() {
@@ -124,7 +242,7 @@ async fn fetch_title(
         .take(MAX_TITLE_RESPONSE_BYTES)
         .read_to_end(&mut html)
         .await?;
-    Ok(document_title(&html))
+    Ok(document_title(&html, kind))
 }
 
 #[derive(Default)]
@@ -174,7 +292,7 @@ impl RenderOnce for GoogleDocLink {
             cache.0.push_back(entry);
             if let Some(title) = title_hint(self.title, &self.url) {
                 view.update(cx, |view, cx| {
-                    if view.title == FALLBACK_TITLE {
+                    if view.title == view.kind.fallback_title() {
                         view.title = title;
                         cx.notify();
                     }
@@ -199,6 +317,7 @@ impl RenderOnce for GoogleDocLink {
 
 struct DocumentLink {
     url: String,
+    kind: LinkKind,
     title: SharedString,
     _title_task: Task<()>,
 }
@@ -210,13 +329,16 @@ impl DocumentLink {
         client: Option<Arc<HttpClientWithUrl>>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let metadata_url = document_metadata_url(&url);
+        let (kind, metadata_url) = match known_link(&url) {
+            Some((kind, metadata_url)) => (kind, Some(metadata_url)),
+            None => (LinkKind::GoogleDoc, None),
+        };
         let title_task = cx.spawn(async move |this, cx| {
             let (Some(metadata_url), Some(client)) = (metadata_url, client) else {
                 return;
             };
             let request = cx
-                .background_spawn(fetch_title(client, metadata_url))
+                .background_spawn(fetch_title(client, metadata_url, kind))
                 .fuse();
             let timeout = cx.background_executor().timer(TITLE_TIMEOUT).fuse();
             futures::pin_mut!(request, timeout);
@@ -233,12 +355,13 @@ impl DocumentLink {
                     .log_err();
                 }
                 Ok(None) => {}
-                Err(error) => log::debug!("Could not load Google Doc title: {error}"),
+                Err(error) => log::debug!("Could not load link title: {error}"),
             }
         });
         Self {
-            title: title_hint(title, &url).unwrap_or_else(|| FALLBACK_TITLE.into()),
+            title: title_hint(title, &url).unwrap_or_else(|| kind.fallback_title().into()),
             url,
+            kind,
             _title_task: title_task,
         }
     }
@@ -247,18 +370,37 @@ impl DocumentLink {
 impl Render for DocumentLink {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let url = self.url.clone();
-        let button = Button::new(("google-doc-link", cx.entity_id()), self.title.clone())
+        let glyph: AnyElement = match self.kind.logo() {
+            Some(logo) => gpui::img(logo.to_owned())
+                .size_3()
+                .flex_none()
+                .object_fit(gpui::ObjectFit::Contain)
+                .into_any_element(),
+            None => Icon::new(IconName::File)
+                .size(IconSize::XSmall)
+                .into_any_element(),
+        };
+        let button = ui::ButtonLike::new(("google-doc-link", cx.entity_id()))
             .style(ButtonStyle::Subtle)
             .size(ButtonSize::Compact)
-            .label_size(LabelSize::Small)
-            .start_icon(Icon::new(IconName::File).size(IconSize::XSmall))
-            .end_icon(Icon::new(IconName::ArrowUpRight).size(IconSize::XSmall))
-            .truncate(true)
             .tooltip(Tooltip::text(format!("{}\n{}", self.title, self.url)))
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
                 cx.open_url(&url);
-            });
+            })
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .min_w_0()
+                    .child(glyph)
+                    .child(Label::new(self.title.clone()).size(LabelSize::Small).truncate())
+                    .child(
+                        Icon::new(IconName::ArrowUpRight)
+                            .size(IconSize::XSmall)
+                            .color(Color::Muted),
+                    ),
+            );
         h_flex().max_w(rems(24.)).child(
             div()
                 .id(("google-doc-pill", cx.entity_id()))
@@ -342,12 +484,34 @@ mod tests {
 
     #[test]
     fn parses_doc_titles_without_showing_login_or_error_titles() {
-        assert_eq!(document_title(b"<html><head><title> Notes &amp; plans &#8212; Q4 - Google Docs </title></head></html>"), Some("Notes & plans — Q4".into()));
+        assert_eq!(document_title(b"<html><head><title> Notes &amp; plans &#8212; Q4 - Google Docs </title></head></html>", LinkKind::GoogleDoc), Some("Notes & plans — Q4".into()));
         assert_eq!(
-            document_title(b"<title>Sign in - Google Accounts</title>"),
+            document_title(b"<title>Sign in - Google Accounts</title>", LinkKind::GoogleDoc),
             None
         );
-        assert_eq!(document_title(b"<title>Google Docs</title>"), None);
-        assert_eq!(document_title(b"<title>Page not found</title>"), None);
+        assert_eq!(document_title(b"<title>Google Docs</title>", LinkKind::GoogleDoc), None);
+        assert_eq!(document_title(b"<title>Page not found</title>", LinkKind::GoogleDoc), None);
+        assert_eq!(
+            document_title(b"<html><head><meta property=\"og:title\" content=\"Jared / Tommy\"><title>Granola</title></head></html>", LinkKind::Granola),
+            Some("Jared / Tommy".into())
+        );
+        assert_eq!(document_title(b"<title>Wispr Flow Notes</title>", LinkKind::WisprFlow), None);
+        assert_eq!(
+            known_link("https://notes.granola.ai/t/41d2c049-4c77-4ba7-91ad-8063050a5b0c-008umkv4?x=1").map(|(kind, _)| kind),
+            Some(LinkKind::Granola)
+        );
+        assert_eq!(
+            known_link("https://notes.wisprflow.ai/shared/dtqgS0lVdSOtHSMb4RpESXEC37oWHcL9d1s4NA3gQTU").map(|(kind, _)| kind),
+            Some(LinkKind::WisprFlow)
+        );
+        assert_eq!(known_link("https://example.com/t/abc"), None);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("2026-10-01-C387B67A.md");
+        std::fs::write(&file, "notes").unwrap();
+        let text = format!("MyMan: {} and /definitely/missing.md", file.display());
+        let found = pasted_local_files(&text);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1, file);
+        assert_eq!(&text[found[0].0.clone()], file.to_string_lossy().as_ref());
     }
 }
