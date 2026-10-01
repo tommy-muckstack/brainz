@@ -345,7 +345,7 @@ impl Render for BufferSearchBar {
                             .then_some(ActionButtonState::Disabled),
                         "Select Next Match",
                         &SelectNextMatch,
-                        query_focus.clone(),
+                        query_focus,
                     ))
                     .when(!narrow_mode, |this| {
                         this.child(div().ml_2().min_w(rems_from_px(40_f32)).child(
