@@ -218,6 +218,24 @@ impl MentionSet {
         self.remove_mention(&crease_id, cx);
     }
 
+    /// Brainz: attached files (not images) with their crease entities, in
+    /// insertion order, for the document thumbnails above the text.
+    pub fn file_mentions(&self) -> Vec<(CreaseId, PathBuf, Entity<LoadingContext>)> {
+        let mut files: Vec<(CreaseId, PathBuf, Entity<LoadingContext>)> = self
+            .mentions
+            .iter()
+            .filter_map(|(crease_id, (uri, _))| match uri {
+                MentionUri::File { abs_path } => {
+                    let entity = self.crease_entities.get(crease_id)?.clone();
+                    Some((*crease_id, abs_path.clone(), entity))
+                }
+                _ => None,
+            })
+            .collect();
+        files.sort_by_key(|(crease_id, _, _)| *crease_id);
+        files
+    }
+
     pub fn creases(&self) -> HashSet<CreaseId> {
         self.mentions.keys().cloned().collect()
     }
@@ -1400,6 +1418,7 @@ fn render_mention_fold_button(
             editor,
             loading: Some(loading),
             image: image_task.clone(),
+            thumbnail: None,
         }
     });
     let loading_clone = loading.clone();
@@ -1419,13 +1438,29 @@ pub struct LoadingContext {
     editor: WeakEntity<Editor>,
     loading: Option<Task<()>>,
     image: Option<Shared<Task<Result<Arc<Image>, String>>>>,
+    /// Brainz: a Quick Look rendering of an attached document, once the
+    /// composer has one; the inline chip then steps aside for it.
+    thumbnail: Option<Arc<Image>>,
+}
+
+impl LoadingContext {
+    pub fn set_thumbnail(&mut self, image: Arc<Image>, cx: &mut Context<Self>) {
+        if self.thumbnail.is_none() {
+            self.thumbnail = Some(image);
+            cx.notify();
+        }
+    }
+
+    pub fn thumbnail(&self) -> Option<&Arc<Image>> {
+        self.thumbnail.as_ref()
+    }
 }
 
 impl Render for LoadingContext {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Brainz: pasted images are shown as thumbnails above the text, so the
-        // inline "Image" chip is just noise.
-        if self.image.is_some() {
+        // Brainz: pasted images and thumbnailed documents are shown above the
+        // text, so the inline chip is just noise.
+        if self.image.is_some() || self.thumbnail.is_some() {
             return div().into_any_element();
         }
         let is_in_text_selection = self
