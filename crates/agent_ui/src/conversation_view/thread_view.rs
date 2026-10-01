@@ -4404,7 +4404,10 @@ impl ThreadView {
                     .rounded(px(22.))
                     .border_1()
                     .border_color(if has_draft {
-                        cx.theme().colors().text_accent
+                        // Brainz: the draft outline takes the tab's colour so the
+                        // box and the bubbles it will produce match.
+                        self.brainz_tab_color(cx)
+                            .unwrap_or_else(|| cx.theme().colors().text_accent)
                     } else {
                         cx.theme().colors().border
                     })
@@ -5458,6 +5461,12 @@ impl ThreadView {
                     })),
             )
             .into_any_element()
+    }
+
+    /// Brainz: the colour this thread's tab was given, if any.
+    fn brainz_tab_color(&self, cx: &App) -> Option<gpui::Hsla> {
+        cx.try_global::<BrainzThreadColors>()
+            .and_then(|colors| colors.0.get(&self.root_thread_id).copied())
     }
 
     fn render_send_button(&self, cx: &mut Context<Self>) -> AnyElement {

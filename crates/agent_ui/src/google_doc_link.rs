@@ -78,7 +78,9 @@ fn document_title(html: &[u8]) -> Option<String> {
         .from_utf8()
         .read_from(&mut &html[..])
         .log_err()?;
-    // RcDom clears descendants when the root is dropped, even with cloned handles.
+    // RcDom clears descendants when the root is dropped, even with cloned
+    // handles, so `dom` has to outlive the walk; the clone is deliberate.
+    #[allow(clippy::redundant_clone)]
     let mut nodes = vec![dom.document.clone()];
     while let Some(node) = nodes.pop() {
         if let NodeData::Element { name, .. } = &node.data
