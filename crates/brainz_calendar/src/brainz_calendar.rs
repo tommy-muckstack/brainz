@@ -19,7 +19,10 @@ use std::{path::PathBuf, time::Duration};
 
 use anyhow::{Context as _, Result, anyhow};
 use chrono::{DateTime, Local, Timelike};
-use gpui::{App, EventEmitter, FocusHandle, Focusable, Hsla, Task, Window, actions};
+use gpui::{
+    Animation, AnimationExt, App, EventEmitter, FocusHandle, Focusable, Hsla, Task, Window,
+    actions, ease_out_quint,
+};
 use serde::Deserialize;
 use ui::{Tooltip, prelude::*};
 use workspace::{HideStatusItem, Item, ItemHandle, StatusItemView, Workspace};
@@ -34,6 +37,10 @@ actions!(
 
 const DAYS: i64 = 7;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// The detail pane slides in and out over this long.
+const DETAIL_SLIDE_MS: u64 = 260;
+const DETAIL_WIDTH: f32 = 300.;
+const DETAIL_GAP: f32 = 12.;
 
 pub fn init(cx: &mut App) {
     mcp::init(cx);
@@ -212,6 +219,9 @@ pub struct CalendarView {
     refreshed_at: Option<DateTime<Local>>,
     /// Brainz: the event shown in the detail pane, by id.
     selected_event: Option<String>,
+    /// The event whose pane is sliding closed, kept until the slide ends.
+    leaving_event: Option<CalendarEvent>,
+    _leave: Option<Task<()>>,
     _load: Option<Task<()>>,
     _refresh_loop: Task<()>,
 }
@@ -243,6 +253,8 @@ impl CalendarView {
             events: Vec::new(),
             refreshed_at: None,
             selected_event: None,
+            leaving_event: None,
+            _leave: None,
             _load: None,
             _refresh_loop: refresh_loop,
         };
@@ -349,12 +361,11 @@ impl CalendarView {
             .cursor_pointer()
             .tooltip(Tooltip::text(tooltip))
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.selected_event = if this.selected_event.as_deref() == Some(&event_id) {
-                    None
+                if this.selected_event.as_deref() == Some(&event_id) {
+                    this.select_event(None, cx);
                 } else {
-                    Some(event_id.clone())
-                };
-                cx.notify();
+                    this.select_event(Some(event_id.clone()), cx);
+                }
             }))
             .child(
                 Label::new(Self::time_label(event))
@@ -374,10 +385,83 @@ impl CalendarView {
             )
     }
 
-    /// Brainz: the right-hand detail pane for the selected event.
+    /// Opens, switches, or closes the detail pane. Closing keeps the old
+    /// event around long enough to slide out.
+    fn select_event(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+        if id.is_none()
+            && let Some(current) = self
+                .selected_event
+                .as_deref()
+                .and_then(|id| self.events.iter().find(|event| event.id == id))
+        {
+            self.leaving_event = Some(current.clone());
+            self._leave = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(DETAIL_SLIDE_MS + 40))
+                    .await;
+                this.update(cx, |this, cx| {
+                    this.leaving_event = None;
+                    cx.notify();
+                })
+                .ok();
+            }));
+        } else if id.is_some() {
+            self.leaving_event = None;
+            self._leave = None;
+        }
+        self.selected_event = id;
+        cx.notify();
+    }
+
+    /// Brainz: the right-hand detail pane for the selected event, sliding in
+    /// from the right; while closing it slides back out.
     fn render_detail(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let id = self.selected_event.as_deref()?;
-        let event = self.events.iter().find(|event| event.id == id)?;
+        let leaving = self.selected_event.is_none();
+        let event = if leaving {
+            self.leaving_event.as_ref()?
+        } else {
+            let id = self.selected_event.as_deref()?;
+            self.events.iter().find(|event| event.id == id)?
+        };
+        let card = self.render_detail_card(event, cx);
+        let full = px(DETAIL_WIDTH + DETAIL_GAP);
+        // The outer box animates its width so the week grid glides over
+        // instead of jumping; the card inside keeps its real width and
+        // fades, so text never reflows mid-slide.
+        let animated = if leaving {
+            div()
+                .flex_none()
+                .h_full()
+                .overflow_hidden()
+                .child(card)
+                .with_animation(
+                    gpui::ElementId::Name(format!("brainz-calendar-detail-out-{}", event.id).into()),
+                    Animation::new(Duration::from_millis(DETAIL_SLIDE_MS))
+                        .with_easing(ease_out_quint()),
+                    move |wrapper, delta| {
+                        let remaining = 1.0 - delta;
+                        wrapper.w(full * remaining).opacity(remaining)
+                    },
+                )
+                .into_any_element()
+        } else {
+            div()
+                .flex_none()
+                .h_full()
+                .overflow_hidden()
+                .child(card)
+                .with_animation(
+                    gpui::ElementId::Name(format!("brainz-calendar-detail-in-{}", event.id).into()),
+                    Animation::new(Duration::from_millis(DETAIL_SLIDE_MS))
+                        .with_easing(ease_out_quint()),
+                    move |wrapper, delta| wrapper.w(full * delta).opacity(delta),
+                )
+                .into_any_element()
+        };
+        Some(animated)
+    }
+
+    fn render_detail_card(&self, event: &CalendarEvent, cx: &mut Context<Self>) -> gpui::AnyElement {
         let accent = event
             .color
             .unwrap_or_else(|| cx.theme().colors().icon_accent);
@@ -440,13 +524,12 @@ impl CalendarView {
                     .on_click(move |_, _, cx| cx.open_url(&url)),
             );
         }
-        Some(
-            v_flex()
+        v_flex()
                 .id("brainz-calendar-detail")
                 .flex_none()
-                .w(px(300.))
+                .w(px(DETAIL_WIDTH))
                 .h_full()
-                .ml_3()
+                .ml(px(DETAIL_GAP))
                 .p_3()
                 .gap_3()
                 .rounded_lg()
@@ -471,14 +554,12 @@ impl CalendarView {
                                 .icon_size(IconSize::XSmall)
                                 .tooltip(Tooltip::text("Close"))
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.selected_event = None;
-                                    cx.notify();
+                                    this.select_event(None, cx);
                                 })),
                         ),
                 )
                 .child(body)
-                .into_any_element(),
-        )
+                .into_any_element()
     }
 
     /// Seven columns, one per day, like a week view without the hour grid.
