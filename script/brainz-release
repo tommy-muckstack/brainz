@@ -12,6 +12,8 @@ set -euo pipefail
 #
 # Per-machine values come from script/brainz-local.env (untracked):
 #   BRAINZ_NOTARY_PROFILE   notarytool keychain profile (default: mumbls-notary)
+#   APPLE_ID / APPLE_APP_PASSWORD / APPLE_TEAM_ID
+#                           used instead of the keychain profile when both are set
 #   BLOB_READ_WRITE_TOKEN   Vercel Blob token for the muckstack download store
 #   BRAINZ_BLOB_HOST        public blob host (default below)
 #
@@ -100,11 +102,20 @@ codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" \
     --sign "$DEV_ID_IDENTITY" "$APP_DIR"
 codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 
+# The keychain profile has vanished mid-release more than once, so when
+# APPLE_ID and APPLE_APP_PASSWORD are set in script/brainz-local.env they are
+# used directly instead (the same shape My Man's build script uses).
 notarize() {
     local path="$1" attempt
     for attempt in 1 2 3; do
-        DEVELOPER_DIR="$XCODE_DEV" xcrun notarytool submit "$path" \
-            --keychain-profile "$NOTARY_PROFILE" --no-s3-acceleration --wait && return 0
+        if [[ -n "${APPLE_ID:-}" && -n "${APPLE_APP_PASSWORD:-}" ]]; then
+            DEVELOPER_DIR="$XCODE_DEV" xcrun notarytool submit "$path" \
+                --apple-id "$APPLE_ID" --team-id "${APPLE_TEAM_ID:-K8NAZ76CBQ}" \
+                --password "$APPLE_APP_PASSWORD" --no-s3-acceleration --wait && return 0
+        else
+            DEVELOPER_DIR="$XCODE_DEV" xcrun notarytool submit "$path" \
+                --keychain-profile "$NOTARY_PROFILE" --no-s3-acceleration --wait && return 0
+        fi
         echo "==> notarization attempt $attempt failed; retrying in 20s..." >&2
         sleep 20
     done
