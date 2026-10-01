@@ -223,6 +223,8 @@ pub struct MessageEditor {
     brainz_attachment_choice: AttachmentChoice,
     /// Brainz: the text the last chip put in the box, replaced by the next.
     brainz_prefilled_text: Option<String>,
+    /// Brainz: Quick Look renderings of attached documents, by crease.
+    brainz_file_thumbnails: HashMap<CreaseId, Shared<Task<Result<Arc<Image>, String>>>>,
     _brainz_prefill: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
     _parse_slash_command_task: Task<()>,
@@ -649,6 +651,7 @@ impl MessageEditor {
             brainz_ocr: HashMap::default(),
             brainz_attachment_choice: AttachmentChoice::JustAttach,
             brainz_prefilled_text: None,
+            brainz_file_thumbnails: HashMap::default(),
             _brainz_prefill: None,
             _subscriptions: subscriptions,
             _parse_slash_command_task: Task::ready(()),
@@ -973,6 +976,7 @@ impl MessageEditor {
     pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.brainz_ocr.clear();
         self.brainz_prefilled_text = None;
+        self.brainz_file_thumbnails.clear();
         self.brainz_attachment_choice = AttachmentChoice::JustAttach;
         self.editor.update(cx, |editor, cx| {
             editor.clear(window, cx);
@@ -2482,6 +2486,122 @@ impl MessageEditor {
         }));
     }
 
+    /// Brainz: asks Quick Look for a rendering of an attached document once,
+    /// then hands it to the crease so the inline chip disappears.
+    fn brainz_ensure_file_thumbnail(
+        &mut self,
+        crease_id: CreaseId,
+        path: PathBuf,
+        crease: Entity<crate::mention_set::LoadingContext>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.brainz_file_thumbnails.contains_key(&crease_id) || !is_thumbnail_document(&path) {
+            return;
+        }
+        let task = cx
+            .background_spawn(async move { quick_look_thumbnail(&path) })
+            .shared();
+        self.brainz_file_thumbnails.insert(crease_id, task.clone());
+        cx.spawn(async move |this, cx| {
+            match task.await {
+                Ok(image) => {
+                    crease
+                        .update(cx, |crease, cx| crease.set_thumbnail(image, cx))
+                        .ok();
+                }
+                Err(error) => log::warn!("brainz thumbnail: {error}"),
+            }
+            this.update(cx, |_, cx| cx.notify()).ok();
+        })
+        .detach();
+    }
+
+    /// Brainz: a document tile in the strip: the Quick Look rendering with
+    /// the file name under it, click to open, hover for a remove button.
+    fn render_file_thumbnail(
+        &self,
+        ix: usize,
+        crease_id: CreaseId,
+        path: &std::path::Path,
+        image: Arc<Image>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let open_path = path.to_path_buf();
+        let workspace = self.workspace.clone();
+        v_flex()
+            .id(("brainz-file-thumbnail", ix))
+            .debug_selector(move || format!("BRAINZ_FILE_THUMBNAIL_{ix}"))
+            .group("brainz-file-thumbnail")
+            .relative()
+            .flex_none()
+            .w(px(140.))
+            .gap_1()
+            .cursor_pointer()
+            .tooltip(Tooltip::text(path.to_string_lossy().into_owned()))
+            .on_click(move |_, window, cx| {
+                let path = open_path.clone();
+                workspace
+                    .update(cx, |workspace, cx| {
+                        workspace
+                            .open_abs_path(
+                                path,
+                                workspace::OpenOptions {
+                                    visible: Some(workspace::OpenVisible::None),
+                                    ..Default::default()
+                                },
+                                window,
+                                cx,
+                            )
+                            .detach_and_log_err(cx);
+                    })
+                    .ok();
+            })
+            .child(
+                div()
+                    .w(px(140.))
+                    .h(px(80.))
+                    .overflow_hidden()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().colors().border)
+                    .bg(gpui::white())
+                    .child(
+                        gpui::img(image)
+                            .w(px(140.))
+                            .h(px(80.))
+                            .object_fit(gpui::ObjectFit::Contain),
+                    ),
+            )
+            .child(
+                Label::new(name)
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted)
+                    .truncate(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top_0p5()
+                    .right_0p5()
+                    .visible_on_hover("brainz-file-thumbnail")
+                    .child(
+                        IconButton::new(("brainz-file-remove", ix), IconName::Close)
+                            .icon_size(IconSize::XSmall)
+                            .style(ButtonStyle::Filled)
+                            .tooltip(Tooltip::text("Remove file"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.remove_image_preview(crease_id, cx);
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
     /// Brainz: the chip row under the thumbnails.
     fn render_attachment_chips(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let choice = self.brainz_attachment_choice;
@@ -2560,11 +2680,32 @@ impl MessageEditor {
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
         let previews = self.mention_set.read(cx).image_previews(cx);
-        if previews.is_empty() {
+        let files = self.mention_set.read(cx).file_mentions();
+        for (crease_id, path, crease) in &files {
+            self.brainz_ensure_file_thumbnail(*crease_id, path.clone(), crease.clone(), cx);
+        }
+        let file_tiles: Vec<(CreaseId, PathBuf, Arc<Image>)> = files
+            .into_iter()
+            .filter_map(|(crease_id, path, crease)| {
+                crease
+                    .read(cx)
+                    .thumbnail()
+                    .cloned()
+                    .map(|image| (crease_id, path, image))
+            })
+            .collect();
+        if previews.is_empty() && file_tiles.is_empty() {
             return None;
         }
 
-        let mut thumbnails = Vec::with_capacity(previews.len());
+        let mut thumbnails = Vec::with_capacity(previews.len() + file_tiles.len());
+        for (ix, (crease_id, path, image)) in file_tiles.into_iter().enumerate() {
+            thumbnails.push(
+                self.render_file_thumbnail(10_000 + ix, crease_id, &path, image, cx)
+                    .into_any_element(),
+            );
+        }
+        let has_images = !previews.is_empty();
         for (ix, (crease_id, task)) in previews.into_iter().enumerate() {
             let image = task.peek().and_then(|result| result.clone().ok());
             if let Some(image) = &image {
@@ -2665,9 +2806,58 @@ impl MessageEditor {
                         cx,
                     ),
             )
-            .child(self.render_attachment_chips(cx)),
+            .when(has_images, |this| this.child(self.render_attachment_chips(cx))),
         )
     }
+}
+
+/// Brainz: documents Quick Look renders well enough to stand in for a chip.
+fn is_thumbnail_document(path: &std::path::Path) -> bool {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    matches!(
+        extension.as_str(),
+        "pdf" | "doc" | "docx" | "ppt" | "pptx" | "key" | "pages" | "numbers" | "xls" | "xlsx"
+    )
+}
+
+/// Brainz: a 512px Quick Look thumbnail as a PNG image. Blocking on purpose:
+/// only ever called from the background executor.
+#[allow(clippy::disallowed_methods)]
+fn quick_look_thumbnail(path: &std::path::Path) -> Result<Arc<Image>, String> {
+    let directory = paths::data_dir()
+        .join("thumbnails")
+        .join(format!("{:x}", path.to_string_lossy().bytes().fold(0u64, |hash, byte| {
+            hash.wrapping_mul(31).wrapping_add(u64::from(byte))
+        })));
+    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let output = std::process::Command::new("/usr/bin/qlmanage")
+        .arg("-t")
+        .arg("-s")
+        .arg("512")
+        .arg("-o")
+        .arg(&directory)
+        .arg(path)
+        .output()
+        .map_err(|error| format!("running qlmanage: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "qlmanage exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .ok_or_else(|| "file has no name".to_owned())?;
+    let png = directory.join(format!("{name}.png"));
+    let bytes = std::fs::read(&png).map_err(|error| format!("reading {}: {error}", png.display()))?;
+    std::fs::remove_file(&png).ok();
+    Ok(Arc::new(Image::from_bytes(ImageFormat::Png, bytes)))
 }
 
 /// Brainz: file extension for a decoded image's format.
