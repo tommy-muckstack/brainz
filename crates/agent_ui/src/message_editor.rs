@@ -36,7 +36,7 @@ use project::{
 };
 use rope::Point;
 use settings::Settings;
-use std::{cmp::min, fmt::Write, ops::Range, rc::Rc, sync::Arc};
+use std::{cmp::min, fmt::Write, ops::Range, path::PathBuf, rc::Rc, sync::Arc};
 use text::LineEnding;
 use theme_settings::ThemeSettings;
 use collections::{HashMap, HashSet};
@@ -2505,9 +2505,7 @@ impl MessageEditor {
         cx.spawn(async move |this, cx| {
             match task.await {
                 Ok(image) => {
-                    crease
-                        .update(cx, |crease, cx| crease.set_thumbnail(image, cx))
-                        .ok();
+                    crease.update(cx, |crease, cx| crease.set_thumbnail(image, cx));
                 }
                 Err(error) => log::warn!("brainz thumbnail: {error}"),
             }
@@ -2782,7 +2780,8 @@ impl MessageEditor {
                                         this.remove_image_preview(crease_id, cx);
                                     })),
                             ),
-                    ),
+                    )
+                    .into_any_element(),
             );
         }
 
