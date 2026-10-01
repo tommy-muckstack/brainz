@@ -35,6 +35,7 @@ actions!(
 );
 
 const DISK_POLL: Duration = Duration::from_secs(10);
+const MAX_RELOAD_ATTEMPTS: u32 = 2;
 const DAILY_CHECK: Duration = Duration::from_secs(30 * 60);
 const DAILY_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const PICKER_LIMIT: usize = 30;
@@ -253,6 +254,8 @@ pub struct ThemesView {
     signals: Option<Signals>,
     filters: ThemeFilters,
     error: Option<String>,
+    /// Passes re-run after a failed load before the error is shown.
+    reload_attempts: u32,
     themes_md_modified: Option<SystemTime>,
     expanded: HashSet<String>,
     renaming: Option<(String, Entity<Editor>)>,
@@ -326,6 +329,7 @@ impl ThemesView {
             signals: None,
             filters: load_filters(),
             error: None,
+            reload_attempts: 0,
             expanded: HashSet::new(),
             renaming: None,
             merging: None,
@@ -373,10 +377,23 @@ impl ThemesView {
                         }
                         this.signals = Some(signals);
                         this.error = None;
+                        this.reload_attempts = 0;
                     }
                     Err(error) => {
+                        // A file another Brainz wrote, or a half-written one,
+                        // is cured by re-running the pass; only a repeat
+                        // failure is worth showing.
                         if this.signals.is_none() {
-                            this.error = Some(format!("{error:#}"));
+                            if this.reload_attempts < MAX_RELOAD_ATTEMPTS {
+                                this.reload_attempts += 1;
+                                log::warn!(
+                                    "signals reload failed (attempt {}): {error:#}",
+                                    this.reload_attempts
+                                );
+                                this.run_now(cx);
+                            } else {
+                                this.error = Some(format!("{error:#}"));
+                            }
                         }
                     }
                 }
