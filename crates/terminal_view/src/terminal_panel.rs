@@ -157,13 +157,25 @@ impl TerminalPanel {
                             .menu(move |window, cx| {
                                 let focus_handle = focus_handle.clone();
                                 let menu = ContextMenu::build(window, cx, |menu, _, _| {
+                                    let row = |label: &'static str, icon: IconName, action: Box<dyn gpui::Action>| {
+                                        let dispatch = action.boxed_clone();
+                                        ui::ContextMenuEntry::new(label)
+                                            .icon(icon)
+                                            .icon_position(IconPosition::Start)
+                                            .icon_size(IconSize::Small)
+                                            .action(action)
+                                            .handler(move |window, cx| {
+                                                window.dispatch_action(dispatch.boxed_clone(), cx)
+                                            })
+                                    };
                                     menu.context(focus_handle.clone())
-                                        .action(
+                                        .item(row(
                                             "Shell",
+                                            IconName::Terminal,
                                             workspace::NewTerminal::default().boxed_clone(),
-                                        )
-                                        .action("Claude", OpenClaude.boxed_clone())
-                                        .action("Codex", OpenCodex.boxed_clone())
+                                        ))
+                                        .item(row("Claude", IconName::BrainzClaude, OpenClaude.boxed_clone()))
+                                        .item(row("Codex", IconName::BrainzCodex, OpenCodex.boxed_clone()))
                                 });
 
                                 Some(menu)
