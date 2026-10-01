@@ -27,6 +27,7 @@ actions!(
 );
 
 const DISK_POLL: Duration = Duration::from_secs(10);
+const MAX_RELOAD_ATTEMPTS: u32 = 2;
 
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _| {
@@ -44,6 +45,8 @@ pub struct OpenLoopsView {
     config: BrainConfig,
     signals: Option<Signals>,
     error: Option<String>,
+    /// Passes re-run after a failed load before the error is shown.
+    reload_attempts: u32,
     signals_modified: Option<std::time::SystemTime>,
     _disk_poll: Task<()>,
     _load: Option<Task<()>>,
@@ -90,6 +93,7 @@ impl OpenLoopsView {
             config,
             signals: None,
             error: None,
+            reload_attempts: 0,
             _disk_poll: disk_poll,
             _load: None,
         };
@@ -122,10 +126,23 @@ impl OpenLoopsView {
                         }
                         this.signals = Some(signals);
                         this.error = None;
+                        this.reload_attempts = 0;
                     }
                     Err(error) => {
+                        // A file another Brainz wrote, or a half-written one,
+                        // is cured by re-running the pass; only a repeat
+                        // failure is worth showing.
                         if this.signals.is_none() {
-                            this.error = Some(format!("{error:#}"));
+                            if this.reload_attempts < MAX_RELOAD_ATTEMPTS {
+                                this.reload_attempts += 1;
+                                log::warn!(
+                                    "signals reload failed (attempt {}): {error:#}",
+                                    this.reload_attempts
+                                );
+                                this.run_now(cx);
+                            } else {
+                                this.error = Some(format!("{error:#}"));
+                            }
                         }
                     }
                 }
