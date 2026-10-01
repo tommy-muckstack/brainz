@@ -122,6 +122,11 @@ impl UpdateButton {
         Self::new(IconName::Check, "Up to Date").disabled(true)
     }
 
+    /// Brainz: "Up to Date · 0.1.8", so the check also tells you what you have.
+    pub fn up_to_date_with_version(version: impl Into<SharedString>) -> Self {
+        Self::new(IconName::Check, format!("Up to Date · {}", version.into())).disabled(true)
+    }
+
     pub fn updated(version: impl Into<SharedString>) -> Self {
         Self::new(IconName::Download, "Restart to Update")
             .tooltip(version)
