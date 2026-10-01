@@ -94,6 +94,60 @@ the themes folder's `pins.md` and re-run the pass, so nothing is ever
 deleted from `signals.json`. Output lands in the themes folder of the working tree and the
 Sync banner carries it to GitHub like any other change.
 
+The hourglass button next to Themes opens an **Open loops** tab: every current
+`⏳` and `⏰` line in the brain, grouped by owner (`⏰` is owed by you, `⏳` is
+waiting on someone else), oldest first, with the counterparty when a known
+person is named on the line and the age from `git blame`. Click a row or
+**Mark done** to open the file at that line; Brainz never edits the line, you
+strike it. Lines carrying those glyphs (or `⚠️`) are kept out of theme
+extraction, and the Themes status callout carries the "N owed, M waiting,
+oldest" summary. The same signals pass drops terms whose only sources are
+itinerary, roster, logistics, or prompt folders (`themes.noise_dirs`) or a
+single file, caps momentum at `x20+`, and, when a theme is expanded, shows an
+all-time line bucketed by month under the windowed one (`themes.window_weeks`,
+default 12).
+
+**Calendar-aware prep and capture.** Ten minutes before an event whose full
+attendee names, attendee email domains, or title match a company, client, or
+project folder (the children of `calendar.match_dirs`, matched against the
+folder's own notes and the people files), an amber banner above the file tree
+says "Lisa Simpson, 3:00pm." with **Open prep** (opens the day's
+`*-prep.md` from the matching dated subfolder and any Google Doc it links),
+**Open folder**, and **Dismiss**. A first name alone never matches, and two
+folders tied on the same evidence match nothing. Five minutes after the event
+ends the banner flips to "Call with Lisa ended. Log it?"; **Log this call**
+opens a Claude conversation with the message box pre-filled with the
+`granola-to-brain` skill path, the folder, the prep file, and today's
+transcripts from `~/MyManBrain/meetings/`. The agent writes the notes.
+
+**Log this screenshot.** With an image attached, a chip row appears under the
+thumbnails. **Log correspondence** runs the bundled Vision OCR helper
+(`script/brainz-ocr.swift`), extracts the sender's name and email domain,
+matches them to a folder, and pre-fills "Log this email in that folder's
+correspondence log, verbatim with a read" with the recognized text attached so
+the agent is not reading pixels. **Draft reply** appears when the text reads as
+an email and asks for a reply in your voice from the correspondence log, with
+numbers only from the brain. **File in folder…** opens a fuzzy picker over the
+brain's folders, copies the screenshot there as `YYYY-MM-DD-screenshot-N.png`,
+and asks for a one-line description next to the file reference. **Just attach**
+is the default and sends the image as before.
+
+**Status decay.** Every folder under the match and vocabulary folders whose
+`CLAUDE.md` opens with a dated callout (`> **Status 2026-09-22:**`, or the
+older `> ## … 9/22` heading style) is compared with its newest sibling file or
+dated subfolder. When a sibling is newer, the folder name turns amber in the
+tree with a "Status 9/22, newest note 9/30." tooltip. Re-checked every five
+minutes and shortly after any file change; fixing the callout date clears it.
+
+**Shared Claude memory.** On the first launch for a brain, the memory folders
+Claude Code keeps per project under `~/.claude` and under Brainz's own
+`~/.config/brainz/claude` are merged into the brain at `.claude/memory/`
+(newest file wins on a name collision, `MEMORY.md` entries unioned, the
+originals kept beside them as `memory.pre-share-<stamp>`), and both locations
+become symlinks to it, so a memory written in Brainz is there in a terminal
+`claude` session and vice versa. Credentials never move. If the layout is not
+one of the expected shapes, nothing changes and a notification says why.
+
 The MCP button next to it opens an **MCP Connectors** tab listing the servers
 Brainz's Claude and Codex know about, with logos for the ones you use most.
 The first time Claude runs in Brainz, your terminal Claude's MCP servers are
@@ -125,7 +179,13 @@ default `~/brain`), both of which can live in an untracked
 config lives under `~/.config/brainz/`. The brain's layout comes from an
 optional `brainz.toml` at the brain's root, every key optional: `todo` (the
 To-Do file), `themes_dir`, `people_dir`, `places_dir`, `vocabulary_folders`,
-`exclude_prefixes`, `dated_exclude_dirs`, and `sync`. A brain with no
+`exclude_prefixes`, `dated_exclude_dirs`, `stop_words`, `sync`, a `[calendar]`
+table (`prep_lead_minutes`, `log_delay_minutes`, `match_dirs`), and a
+`[themes]` table (`noise_dirs`, `window_weeks`). The defaults and what each
+key changes are listed at the top of `crates/brainz_calendar/src/brain_config.rs`;
+a brain can keep its own copy of that reference next to its `brainz.toml`
+(this one keeps it in its Brainz project folder,
+`muckstack/projects/brainz/CLAUDE.md`, under Portability). A brain with no
 `origin` remote, or with `sync = false`, never shows the Sync banner. The
 Themes narrative is written by whatever bot you point at the prompt file in
 `themes_dir`; Brainz only renders the block. MCP connectors come from that

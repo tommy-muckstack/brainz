@@ -86,6 +86,14 @@ if [[ ! -x "$repository/target/brainz-calendar" || "script/brainz-calendar.swift
 fi
 cp "$repository/target/brainz-calendar" "$application/Contents/MacOS/brainz-calendar"
 
+# OCR helper (Vision). Reads a pasted screenshot for the composer's
+# Log correspondence and Draft reply chips.
+if [[ ! -x "$repository/target/brainz-ocr" || "script/brainz-ocr.swift" -nt "$repository/target/brainz-ocr" ]]; then
+    swiftc -O -module-cache-path "$repository/target/brainz-swift-cache" \
+        -o "$repository/target/brainz-ocr" script/brainz-ocr.swift
+fi
+cp "$repository/target/brainz-ocr" "$application/Contents/MacOS/brainz-ocr"
+
 swift -module-cache-path "$repository/target/brainz-swift-cache" \
     script/brainz-icon.swift "$repository" "$repository/target/Brainz.iconset"
 iconutil -c icns "$repository/target/Brainz.iconset" \

@@ -145,6 +145,8 @@ pub struct ProjectPanel {
     hover_scroll_task: Option<Task<()>>,
     /// Brainz: re-render when the GitHub sync state changes.
     _brainz_sync_subscription: Option<Subscription>,
+    _brainz_prep_subscription: Option<Subscription>,
+    _brainz_decay_subscription: Option<Subscription>,
     rendered_entries_len: usize,
     folded_directory_drag_target: Option<FoldedDirectoryDragTarget>,
     drag_target_entry: Option<DragTarget>,
@@ -790,6 +792,8 @@ impl ProjectPanel {
                     | project::Event::WorktreeAdded(_)
                     | project::Event::WorktreeOrderChanged => {
                         this.update_visible_entries(None, false, false, window, cx);
+                        // Brainz: a saved callout should clear its tint promptly.
+                        brainz_calendar::status_decay::request_refresh(cx);
                         cx.notify();
                     }
                     project::Event::ExpandedAllForEntry(worktree_id, entry_id) => {
@@ -884,6 +888,8 @@ impl ProjectPanel {
                 project: project.clone(),
                 hover_scroll_task: None,
                 _brainz_sync_subscription: None,
+                _brainz_prep_subscription: None,
+                _brainz_decay_subscription: None,
                 fs: workspace.app_state().fs.clone(),
                 focus_handle,
                 rendered_entries_len: 0,
@@ -5957,7 +5963,22 @@ impl ProjectPanel {
             }
         }
 
-        let filename_text_color = details.filename_text_color;
+        // Brainz: a folder whose status callout is older than its newest
+        // note is tinted amber, with the two dates in a tooltip.
+        let brainz_decay = if kind.is_dir() && !is_sticky {
+            self.project
+                .read(cx)
+                .worktree_for_id(details.worktree_id, cx)
+                .map(|worktree| worktree.read(cx).absolutize(&details.path))
+                .and_then(|folder| brainz_calendar::status_decay::lookup(&folder, cx))
+        } else {
+            None
+        };
+        let filename_text_color = if brainz_decay.is_some() {
+            Color::Custom(cx.theme().colors().text_accent)
+        } else {
+            details.filename_text_color
+        };
         let diagnostic_severity = details.diagnostic_severity;
         let diagnostic_mark = details.diagnostic_mark;
         let reserves_chevron_slot = details.reserves_chevron_slot;
@@ -6618,12 +6639,19 @@ impl ProjectPanel {
                                 }
 
                                 None => this.child(
-                                    Label::new(file_name)
-                                        .single_line()
-                                        .color(filename_text_color)
-                                        .when(
-                                            settings.bold_folder_labels && kind.is_dir(),
-                                            |this| this.weight(FontWeight::SEMIBOLD),
+                                    div()
+                                        .id("brainz-entry-label")
+                                        .when_some(brainz_decay.clone(), |this, decay| {
+                                            this.tooltip(Tooltip::text(decay.tooltip()))
+                                        })
+                                        .child(
+                                            Label::new(file_name)
+                                                .single_line()
+                                                .color(filename_text_color)
+                                                .when(
+                                                    settings.bold_folder_labels && kind.is_dir(),
+                                                    |this| this.weight(FontWeight::SEMIBOLD),
+                                                ),
                                         )
                                         .into_any_element(),
                                 ),
@@ -7318,6 +7346,26 @@ impl Render for ProjectPanel {
                 Some(cx.observe(&state, |_, _, cx| cx.notify()));
         }
         let brainz_banner = brainz_calendar::github_sync::render_banner(&self.workspace, cx);
+        if self._brainz_prep_subscription.is_none()
+            && let Some(state) = brainz_calendar::prep::state(cx)
+        {
+            self._brainz_prep_subscription =
+                Some(cx.observe(&state, |_, _, cx| cx.notify()));
+        }
+        let brainz_prep_banner = brainz_calendar::prep::render_banner(&self.workspace, cx);
+        if self._brainz_decay_subscription.is_none()
+            && let Some(state) = brainz_calendar::status_decay::state(cx)
+        {
+            self._brainz_decay_subscription =
+                Some(cx.observe(&state, |_, _, cx| cx.notify()));
+        }
+        if let Some(root) = self
+            .workspace
+            .upgrade()
+            .and_then(|workspace| workspace.read(cx).root_paths(cx).first().cloned())
+        {
+            brainz_calendar::status_decay::watch(root.to_path_buf(), cx);
+        }
 
         let has_worktree = !self.state.visible_entries.is_empty();
         let project = self.project.read(cx);
@@ -7424,6 +7472,7 @@ impl Render for ProjectPanel {
             v_flex()
                 .size_full()
                 .children(brainz_banner)
+                .children(brainz_prep_banner)
                 .child(
             h_flex()
                 .id("project-panel")
