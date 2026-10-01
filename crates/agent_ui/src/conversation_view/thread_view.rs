@@ -2066,24 +2066,32 @@ impl ThreadView {
     /// Brainz: sends the text of an earlier message again as a new message,
     /// without rewinding the conversation.
     fn resend_user_message(&mut self, entry_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(text) = self
+        let entry_editor = self
             .entry_view_state
             .read(cx)
             .entry(entry_ix)
-            .and_then(|entry| entry.message_editor())
-            .map(|editor| editor.read(cx).text(cx))
-        else {
+            .and_then(|entry| entry.message_editor().cloned());
+        let Some(entry_editor) = entry_editor else {
             return;
         };
-        if text.trim().is_empty() {
+        if entry_editor.read(cx).is_empty(cx) {
             return;
         }
-        self.message_editor.update(cx, |editor, cx| {
-            editor.clear(window, cx);
-            editor.insert_text(&text, window, cx);
-        });
+        // Resend the original content blocks, images included, rather than
+        // the message text: the text form of an image is a bare mention link.
+        let contents = entry_editor.update(cx, |editor, cx| editor.contents(false, cx));
         cx.emit(AcpThreadViewEvent::Interacted);
-        self.send(window, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let (blocks, _) = contents.await?;
+            this.update_in(cx, |this, window, cx| {
+                this.message_editor.update(cx, |editor, cx| {
+                    editor.clear(window, cx);
+                    editor.set_message(blocks, window, cx);
+                });
+                this.send(window, cx);
+            })
+        })
+        .detach_and_log_err(cx);
     }
 
     pub fn regenerate(
