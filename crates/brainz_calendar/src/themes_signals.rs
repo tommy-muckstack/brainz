@@ -24,9 +24,12 @@ pub const VOCABULARY_NAME: &str = "vocabulary.md";
 
 /// The default trend window; `themes.window_weeks` in `brainz.toml` overrides it.
 pub const SERIES_WEEKS: usize = 12;
-/// Lines carrying these are open loops, not topics; the pass keeps them out
-/// of term extraction and collects the ⏳ and ⏰ ones separately.
-pub const LOOP_MARKERS: &[char] = &['⏳', '⏰', '⚠'];
+/// Lines carrying these anywhere are open loops, not topics; the pass keeps
+/// them out of term extraction and collects them separately.
+pub const LOOP_MARKERS: &[char] = &['⏳', '⏰'];
+/// A line that *starts* with a warning is a flag, not a topic; one that
+/// mentions a warning mid-sentence (a long status callout) still counts.
+const WARNING_MARKER: char = '⚠';
 /// Momentum above this is shown as `x20+`: a ratio over a tiny prior is
 /// noise dressed as precision.
 pub const MOMENTUM_CAP: f64 = 20.0;
@@ -253,7 +256,11 @@ where
 }
 
 pub fn has_loop_marker(line: &str) -> bool {
-    line.chars().any(|c| LOOP_MARKERS.contains(&c))
+    if line.chars().any(|c| LOOP_MARKERS.contains(&c)) {
+        return true;
+    }
+    line.trim_start_matches(['-', '*', ' ', '>', '\t'])
+        .starts_with(WARNING_MARKER)
 }
 
 /// "2 owed by Tommy, 5 waiting, oldest 23 days" for callouts.
@@ -1957,6 +1964,8 @@ mod tests {
     fn loop_lines_are_not_terms_and_summaries_count_owners() {
         assert!(has_loop_marker("- ⏳ Toni owes a band read"));
         assert!(has_loop_marker("⚠️ verify the invite"));
+        assert!(has_loop_marker("- ⚠️ verify the invite"));
+        assert!(!has_loop_marker("Status: onsite done; ⚠️ reminder lists only two rounds, but the plan holds."));
         assert!(!has_loop_marker("- Toni owes a band read"));
         let today = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
         let loops = vec![
