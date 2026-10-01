@@ -33,7 +33,8 @@ The bottom panel's **Launch** button (rocket) opens a Shell or a native Claude o
 Codex conversation in the current project. Everything you open becomes a tab in the
 strip under the toolbar, shells and conversations side by side. Click a tab to
 switch, use its close button to drop it, and click its icon (or right-click the tab) to give it a color
-(a filled rounded square replaces the tab icon and the provider icon in thread lists).
+(a filled rounded square replaces the tab icon and the provider icon in thread lists; twelve
+colors from Amber to Black, and message bubbles pick dark or light text to match).
 Tabs and colors are remembered between launches. Conversations and the message
 box use Gellix with natural spacing. Shell content uses Lilex for a fixed
 character grid. The message box starts one line tall, including in a new chat,
@@ -156,6 +157,11 @@ Brainz probes each connector (HTTP servers must answer, even with 401; stdio
 commands must exist). Any that are down turn the MCP button red, and their row
 in the tab gets a red dot with the reason. The tab bar's
 split button is a plain toggle: on splits right, off joins everything back.
+
+**Brainz → Install CLI** links `/usr/local/bin/brainz` to the bundled `cli` helper
+(it asks for an administrator password once), so `brainz some/folder` or
+`brainz note.md` from a terminal opens in the running Brainz. The helper reaches
+the app through the `zed-cli://` URL scheme the bundle registers.
 
 `script/brainz-local` signs the app with your Apple Development identity so
 macOS remembers permission grants across rebuilds. Override it with
