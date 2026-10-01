@@ -2419,6 +2419,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "collections",
  "editor",
  "gpui",
  "log",
@@ -2429,6 +2430,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smol",
+ "task",
  "tempfile",
  "terminal_view",
  "toml 0.8.23",
