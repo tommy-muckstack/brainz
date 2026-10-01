@@ -238,6 +238,7 @@ pub enum InputAttempt {
 pub enum AttachmentChoice {
     JustAttach,
     LogCorrespondence,
+    DraftReply,
     FileInFolder,
 }
 
@@ -2350,8 +2351,10 @@ impl MessageEditor {
                         .collect::<Vec<_>>()
                         .join("\n\n---\n\n");
                     let prompts = brainz_calendar::ocr::Prompts { config: &config };
-                    let _ = choice;
-                    prompts.log_correspondence(found.as_ref(), &ocr_text)
+                    match choice {
+                        AttachmentChoice::DraftReply => prompts.draft_reply(found.as_ref(), &ocr_text),
+                        _ => prompts.log_correspondence(found.as_ref(), &ocr_text),
+                    }
                 })
                 .await;
             this.update_in(cx, |this, window, cx| {
@@ -2466,6 +2469,10 @@ impl MessageEditor {
     /// Brainz: the chip row under the thumbnails.
     fn render_attachment_chips(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let choice = self.brainz_attachment_choice;
+        let any_email = self
+            .brainz_ocr
+            .values()
+            .any(|task| task.peek().is_some_and(|result| result.as_ref().is_ok_and(|outcome| outcome.facts.is_email)));
         let chip = |id: &'static str, label: &'static str, active: bool, tooltip: &'static str| {
             Button::new(id, label)
                 .label_size(LabelSize::XSmall)
@@ -2491,6 +2498,19 @@ impl MessageEditor {
                     this.brainz_prefill(AttachmentChoice::LogCorrespondence, window, cx);
                 })),
             )
+            .when(any_email, |this| {
+                this.child(
+                    chip(
+                        "brainz-chip-draft",
+                        "Draft reply",
+                        choice == AttachmentChoice::DraftReply,
+                        "Ask the agent to draft a reply in your voice from the correspondence log",
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.brainz_prefill(AttachmentChoice::DraftReply, window, cx);
+                    })),
+                )
+            })
             .child(
                 chip(
                     "brainz-chip-file",
