@@ -128,7 +128,12 @@ impl Render for UpdateVersion {
             return Empty.into_any_element();
         }
         if self.showing_up_to_date {
-            return UpdateButton::up_to_date().into_any_element();
+            let version = AutoUpdater::get(cx)
+                .map(|updater| updater.read(cx).current_version().to_string());
+            return match version {
+                Some(version) => UpdateButton::up_to_date_with_version(version).into_any_element(),
+                None => UpdateButton::up_to_date().into_any_element(),
+            };
         }
         match &self.status {
             AutoUpdateStatus::Checking if self.update_check_type.is_manual() => {
