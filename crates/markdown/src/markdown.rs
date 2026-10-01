@@ -117,6 +117,7 @@ pub struct MarkdownStyle {
     pub block_quote: TextStyleRefinement,
     pub link: TextStyleRefinement,
     pub link_callback: Option<LinkStyleCallback>,
+    pub link_pills: bool,
     pub rule_color: Hsla,
     pub block_quote_border_color: Hsla,
     pub block_quote_kind_colors: BlockQuoteKindColors,
@@ -148,6 +149,7 @@ impl Default for MarkdownStyle {
             block_quote: Default::default(),
             link: Default::default(),
             link_callback: None,
+            link_pills: false,
             rule_color: Default::default(),
             block_quote_border_color: Default::default(),
             block_quote_kind_colors: Default::default(),
@@ -241,6 +243,7 @@ impl MarkdownStyle {
 
         let style = MarkdownStyle {
             base_text_style: text_style.clone(),
+            link_pills: matches!(font, MarkdownFont::Agent),
             syntax: syntax.clone(),
             selection_background_color: colors.element_selection_background,
             rule_color: colors.border,
@@ -3140,13 +3143,39 @@ impl Element for MarkdownElement {
                             if builder.code_block_stack.is_empty() {
                                 builder.link_depth += 1;
                                 builder.push_link(dest_url.clone(), range.clone());
-                                let style = self
+                                let mut style = self
                                     .style
                                     .link_callback
                                     .as_ref()
                                     .and_then(|callback| callback(dest_url, cx))
                                     .unwrap_or_else(|| self.style.link.clone());
-                                builder.push_text_style(style)
+                                let source = parsed_markdown
+                                    .source
+                                    .get(range.clone())
+                                    .unwrap_or_default();
+                                // Linked images retain their image hit target and layout.
+                                let pill = self.style.link_pills
+                                    && !self.style.prevent_mouse_interaction
+                                    && !source.contains("![")
+                                    && !source.contains("<img");
+                                if pill {
+                                    style.underline = Some(gpui::UnderlineStyle {
+                                        thickness: px(0.),
+                                        color: None,
+                                        wavy: false,
+                                    });
+                                    builder.link_pill = Some((
+                                        builder.pending_line.text.len(),
+                                        style
+                                            .color
+                                            .unwrap_or(cx.theme().colors().text_accent)
+                                            .opacity(0.16),
+                                    ));
+                                }
+                                builder.push_text_style(style);
+                                if pill {
+                                    builder.push_text("\u{2009}", range.start..range.start);
+                                }
                             }
                         }
                         MarkdownTag::FootnoteDefinition(label) => {
@@ -3392,6 +3421,21 @@ impl Element for MarkdownElement {
                     MarkdownTagEnd::Strikethrough => builder.pop_text_style(),
                     MarkdownTagEnd::Link => {
                         if builder.code_block_stack.is_empty() {
+                            if builder.link_pill.is_some() {
+                                let end = builder
+                                    .rendered_links
+                                    .last()
+                                    .map(|link| link.source_range.end)
+                                    .unwrap_or(range.end);
+                                let start = parsed_markdown
+                                    .source
+                                    .get(..end)
+                                    .and_then(|source| source.char_indices().next_back())
+                                    .map_or(end, |(index, _)| index);
+                                builder.push_text("\u{2009}", start..end);
+                                builder.finish_link_pill();
+                                builder.link_pill = None;
+                            }
                             builder.link_depth = builder.link_depth.saturating_sub(1);
                             builder.pop_text_style()
                         }
@@ -3901,6 +3945,7 @@ struct MarkdownElementBuilder {
     code_block_stack: Vec<Option<Arc<Language>>>,
     code_block_highlights: Arc<CodeBlockHighlights>,
     link_depth: usize,
+    link_pill: Option<(usize, Hsla)>,
     list_stack: Vec<ListStackEntry>,
     table: TableState,
     syntax_theme: Arc<SyntaxTheme>,
@@ -4022,6 +4067,7 @@ impl MarkdownElementBuilder {
             code_block_stack: Vec::new(),
             code_block_highlights,
             link_depth: 0,
+            link_pill: None,
             list_stack: Vec::new(),
             table: TableState::default(),
             syntax_theme,
@@ -4037,7 +4083,7 @@ impl MarkdownElementBuilder {
     ) {
         let chip_start = self.pending_line.text.len();
         self.push_text(text, source_range);
-        if let Some(background) = chip_background {
+        if let Some(background) = chip_background.filter(|_| self.link_pill.is_none()) {
             let chip_end = self.pending_line.text.len();
             if chip_start < chip_end {
                 self.pending_line
@@ -4386,9 +4432,25 @@ impl MarkdownElementBuilder {
             .into_any_element()
     }
 
+    fn finish_link_pill(&mut self) {
+        if let Some((start, background)) = self.link_pill.as_mut() {
+            let end = self.pending_line.text.len();
+            if *start < end {
+                self.pending_line
+                    .code_chips
+                    .push((*start..end, *background));
+            }
+            *start = end;
+        }
+    }
+
     fn flush_text(&mut self) {
+        self.finish_link_pill();
         let text_align = self.text_style().text_align;
         let line = mem::take(&mut self.pending_line);
+        if let Some((start, _)) = self.link_pill.as_mut() {
+            *start = 0;
+        }
         if line.text.is_empty() {
             return;
         }
@@ -6187,6 +6249,100 @@ mod tests {
                 ("two".to_string(), chip_background),
                 ("four".to_string(), chip_background)
             ]
+        );
+    }
+
+    #[gpui::test]
+    fn test_named_link_pill_keeps_title_and_click_destination(cx: &mut TestAppContext) {
+        ensure_theme_initialized(cx);
+        let destination = "file:///tmp/lisa-reconnect.md#L8";
+        let source = format!("Synced into [Lisa reconnect notes]({destination}). Next paragraph.");
+        // A caret at a wrap boundary can sit at the previous row's trailing edge.
+        let label_index = source.find("reconnect").unwrap() + 2;
+        let markdown = cx.new(|cx| Markdown::new(source.into(), None, None, cx));
+        let rendered_text = Rc::new(RefCell::new(None));
+        let (_, cx) = cx.add_window_view({
+            let rendered_text = rendered_text.clone();
+            move |window, cx| MarkdownTestView {
+                markdown,
+                style: MarkdownStyle::themed(MarkdownFont::Agent, window, cx),
+                code_span_link: None,
+                rendered_text,
+            }
+        });
+        cx.simulate_resize(size(px(240.), px(600.)));
+        cx.run_until_parked();
+        let rendered = rendered_text.borrow().clone().unwrap();
+        let chips = rendered
+            .lines
+            .iter()
+            .flat_map(|line| {
+                line.code_chips
+                    .iter()
+                    .map(|(range, _)| line.layout.text()[range.clone()].to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(chips, vec!["\u{2009}Lisa reconnect notes\u{2009}"]);
+        assert_eq!(rendered.links.len(), 1);
+        assert_eq!(rendered.links[0].destination_url, destination);
+        let (position, height) = rendered.position_for_source_index(label_index).unwrap();
+        let position = position + point(px(2.), height / 2.);
+        let hit_index = rendered
+            .source_index_for_position(position)
+            .expect("click is over text");
+        assert_eq!(
+            rendered
+                .link_for_source_index(hit_index)
+                .map(|link| link.destination_url.as_ref()),
+            Some(destination)
+        );
+        cx.simulate_mouse_move(position, None, Modifiers::default());
+        cx.simulate_click(position, Modifiers::default());
+        assert_eq!(cx.opened_url().as_deref(), Some(destination));
+    }
+
+    #[gpui::test]
+    fn test_named_link_pills_group_formatted_titles_and_keep_adjacent_links_separate(
+        cx: &mut TestAppContext,
+    ) {
+        let source = "[**Lisa** reconnect `notes`](../notes/lisa.md#L3)[Google Doc](https://docs.google.com/document/d/abc/edit)";
+        let chips = rendered_code_chips(
+            source,
+            MarkdownStyle {
+                link_pills: true,
+                link: TextStyleRefinement {
+                    color: Some(gpui::red()),
+                    ..Default::default()
+                },
+                inline_code: TextStyleRefinement {
+                    background_color: Some(gpui::blue()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            cx,
+        );
+        assert_eq!(
+            chips,
+            vec![
+                (
+                    "\u{2009}Lisa reconnect notes\u{2009}".into(),
+                    gpui::red().opacity(0.16)
+                ),
+                (
+                    "\u{2009}Google Doc\u{2009}".into(),
+                    gpui::red().opacity(0.16)
+                ),
+            ]
+        );
+        assert!(
+            rendered_code_chips(
+                "[Lisa reconnect notes](../notes/lisa.md)",
+                MarkdownStyle::default(),
+                cx
+            )
+            .is_empty()
         );
     }
 

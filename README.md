@@ -43,6 +43,8 @@ thumbnail strip above the text before you send.
 Pasted Google Doc links become clickable title pills in the composer and sent
 messages. Titles load in the background; unavailable titles stay labeled Google
 Doc, and the original link is preserved for the agent and browser.
+Named links in chat replies also render as rounded, clickable pills, preserving
+their displayed titles and original file or web destinations.
 
 The calendar button in the status bar (bottom left) opens a **Calendar** tab
 with the next seven days, read from every account macOS Calendar knows about.
