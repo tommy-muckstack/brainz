@@ -261,6 +261,7 @@ impl PrepState {
         self.repo = Some(repo.clone());
         self.workspace = Some(workspace.clone());
         self.banner = None;
+        crate::memory_share::ensure_once(repo.clone(), workspace, cx);
         self._poll = Some(cx.spawn(async move |this, cx| {
             loop {
                 let repo = repo.clone();
