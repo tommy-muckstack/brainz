@@ -4,6 +4,7 @@
 pub mod brain_config;
 pub mod brain_match;
 pub mod github_sync;
+pub mod ocr;
 pub mod prep;
 pub mod launcher;
 pub mod mcp;
