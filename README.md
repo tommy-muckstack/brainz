@@ -68,7 +68,8 @@ dismiss after five seconds; permission and input requests stay visible.
 While an agent is working, the send button's hover menu has a clickable
 **Send Immediately** action. The message box says
 "Type message…", grows as you type, and keeps model and mode options behind the
-gear button.
+gear button. The minus and plus beside Send shrink or grow the chat text one
+pixel at a time and save the size in settings.
 
 The checkbox button next to the calendar opens a **To-Do** tab over the
 brain's check-off board (`TODO.md` at the root, or the `todo` path in
