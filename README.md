@@ -41,9 +41,12 @@ character grid. The message box starts one line tall, including in a new chat,
 and grows as you type.
 Paste or attach multiple screenshots to collect them in one horizontally scrollable
 thumbnail strip above the text before you send.
-Pasted Google Doc links become clickable title pills in the composer and sent
-messages. Titles load in the background; unavailable titles stay labeled Google
-Doc, and the original link is preserved for the agent and browser.
+Pasted Google Doc, Granola, and Wispr Flow links become clickable title pills in
+the composer and sent messages (Granola shows its logo). Titles load in the
+background from the page; when a service exposes none, the pill stays labeled
+Google Doc, Granola notes, or Wispr Flow notes, and the original link is preserved
+for the agent and browser. A pasted path to a file on this Mac becomes a pill with
+the file name that opens it on click; the agent still gets the path.
 Named links in chat replies also render as rounded, clickable pills, preserving
 their displayed titles and original file or web destinations.
 
