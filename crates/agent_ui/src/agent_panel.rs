@@ -462,6 +462,16 @@ pub fn init(cx: &mut App) {
                         }
                     },
                 )
+                .register_action(
+                    |workspace, action: &brainz_calendar::prep::OpenClaudePrefilled, window, cx| {
+                        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                            workspace.focus_panel::<AgentPanel>(window, cx);
+                            panel.update(cx, |panel, cx| {
+                                panel.new_claude_thread_with_text(action.text.clone(), window, cx);
+                            });
+                        }
+                    },
+                )
                 .register_action(|workspace, _: &crate::BrainzResetThread, window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                         panel.update(cx, |panel, cx| panel.reset_active_thread(window, cx));
@@ -4579,6 +4589,35 @@ impl AgentPanel {
                 store.migrate_agent_server_from_extensions(id, project.fs().clone(), cx);
             });
         });
+    }
+
+    /// Brainz: a fresh Claude conversation with `text` waiting in the
+    /// message box, so a banner can hand the agent a task without sending it.
+    pub fn new_claude_thread_with_text(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.has_open_project(cx) {
+            return;
+        }
+        let agent: Agent = AgentId::new("claude-acp").into();
+        self.selected_agent = agent.clone();
+        self.external_thread(
+            Some(agent),
+            None,
+            None,
+            None,
+            Some(AgentInitialContent::ContentBlock {
+                blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(text))],
+                auto_submit: false,
+            }),
+            true,
+            AgentThreadSource::AgentPanel,
+            window,
+            cx,
+        );
     }
 
     pub fn new_agent_thread_with_external_source_prompt(

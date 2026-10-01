@@ -12,6 +12,15 @@
 //! dated_exclude_dirs = ["health"]
 //! stop_words = ["yourname"]   # extra terms the themes pass never counts
 //! sync = true                 # false hides the Sync to GitHub banner
+//!
+//! [calendar]
+//! prep_lead_minutes = 10      # the prep banner appears this long before an event
+//! log_delay_minutes = 5       # the "Log it?" banner appears this long after it ends
+//! match_dirs = ["companies", "projects"]   # folders whose children are matched
+//!
+//! [themes]
+//! noise_dirs = ["itinerary", "roster", "logistics", "prompt"]
+//! window_weeks = 12
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -44,6 +53,54 @@ pub struct BrainConfig {
     pub stop_words: Vec<String>,
     /// Whether the Sync to GitHub banner is offered at all.
     pub sync: bool,
+    /// The calendar-aware prep and capture banner.
+    pub calendar: CalendarConfig,
+    /// Knobs for the themes pass.
+    pub themes: ThemesConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct CalendarConfig {
+    /// Minutes before an event starts that the prep banner appears.
+    pub prep_lead_minutes: u32,
+    /// Minutes after an event ends that the "Log it?" banner appears.
+    pub log_delay_minutes: u32,
+    /// Folders whose child folders are matched against event titles,
+    /// attendee names, and email domains. Empty means `vocabulary_folders`.
+    pub match_dirs: Vec<String>,
+}
+
+impl Default for CalendarConfig {
+    fn default() -> Self {
+        Self {
+            prep_lead_minutes: 10,
+            log_delay_minutes: 5,
+            match_dirs: vec![],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ThemesConfig {
+    /// A term whose only source files sit under one of these folder names
+    /// (or in a file of that name) is not a theme.
+    pub noise_dirs: Vec<String>,
+    /// How many ISO weeks the trend line and momentum cover.
+    pub window_weeks: usize,
+}
+
+impl Default for ThemesConfig {
+    fn default() -> Self {
+        Self {
+            noise_dirs: ["itinerary", "roster", "logistics", "prompt"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            window_weeks: 12,
+        }
+    }
 }
 
 impl Default for BrainConfig {
@@ -58,6 +115,8 @@ impl Default for BrainConfig {
             dated_exclude_dirs: vec![],
             stop_words: vec![],
             sync: true,
+            calendar: CalendarConfig::default(),
+            themes: ThemesConfig::default(),
         }
     }
 }
@@ -90,6 +149,41 @@ impl BrainConfig {
         let stem = crate::themes_signals::normalize_key(name).replace(' ', "-");
         format!("{}/{stem}.md", self.people_dir.trim_end_matches('/'))
     }
+
+    /// The folders whose children are companies, clients, and projects for
+    /// calendar and screenshot matching.
+    pub fn match_dirs(&self) -> Vec<String> {
+        let dirs = if self.calendar.match_dirs.is_empty() {
+            &self.vocabulary_folders
+        } else {
+            &self.calendar.match_dirs
+        };
+        dirs.iter()
+            .map(|dir| dir.trim_matches('/').to_owned())
+            .filter(|dir| !dir.is_empty())
+            .collect()
+    }
+
+    /// The window the trend lines cover, never shorter than the eight weeks
+    /// momentum needs.
+    pub fn window_weeks(&self) -> usize {
+        self.themes.window_weeks.max(8)
+    }
+
+    /// Who "owes" the ⏰ loops in summaries: the first configured stop word
+    /// (usually the brain owner's first name), or "you".
+    pub fn owner_label(&self) -> String {
+        self.stop_words
+            .first()
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => "you".to_owned(),
+                }
+            })
+            .unwrap_or_else(|| "you".to_owned())
+    }
 }
 
 #[cfg(test)]
@@ -104,6 +198,24 @@ mod tests {
         assert!(!config.sync);
         assert_eq!(config.themes_dir, "themes");
         assert_eq!(config.people_dir, "people");
+        assert_eq!(config.calendar.prep_lead_minutes, 10);
+        assert_eq!(config.themes.window_weeks, 12);
+        assert_eq!(config.match_dirs(), config.vocabulary_folders);
+    }
+
+    #[test]
+    fn nested_tables_parse() {
+        let config: BrainConfig = toml::from_str(
+            "stop_words = [\"ada\"]\n[calendar]\nprep_lead_minutes = 15\nmatch_dirs = [\"clients/\"]\n[themes]\nwindow_weeks = 4\nnoise_dirs = [\"drafts\"]\n",
+        )
+        .unwrap();
+        assert_eq!(config.calendar.prep_lead_minutes, 15);
+        assert_eq!(config.calendar.log_delay_minutes, 5);
+        assert_eq!(config.match_dirs(), vec!["clients".to_owned()]);
+        assert_eq!(config.themes.noise_dirs, vec!["drafts".to_owned()]);
+        assert_eq!(config.window_weeks(), 8);
+        assert_eq!(config.owner_label(), "Ada");
+        assert_eq!(BrainConfig::default().owner_label(), "you");
     }
 
     #[test]

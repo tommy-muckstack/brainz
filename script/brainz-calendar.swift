@@ -61,6 +61,14 @@ let list: [[String: Any]] = events.map { event in
     let names = (event.attendees ?? []).compactMap { $0.name }.filter { !$0.isEmpty }
     if !names.isEmpty { item["attendee_names"] = Array(names.prefix(30)) }
     if let organizer = event.organizer?.name, !organizer.isEmpty { item["organizer"] = organizer }
+    // Brainz matches attendees to the brain by email domain, so the mailto
+    // addresses travel too (same cap as the names).
+    let emails = (event.attendees ?? []).compactMap { participant -> String? in
+        guard let url = participant.url as URL?, url.scheme?.lowercased() == "mailto" else { return nil }
+        let address = url.absoluteString.dropFirst("mailto:".count)
+        return address.isEmpty ? nil : String(address).lowercased()
+    }
+    if !emails.isEmpty { item["attendee_emails"] = Array(emails.prefix(30)) }
     if let color = hex(event.calendar.cgColor) { item["color"] = color }
     if let url = event.url?.absoluteString { item["url"] = url }
     return item

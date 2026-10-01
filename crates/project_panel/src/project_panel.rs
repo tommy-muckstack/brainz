@@ -145,6 +145,7 @@ pub struct ProjectPanel {
     hover_scroll_task: Option<Task<()>>,
     /// Brainz: re-render when the GitHub sync state changes.
     _brainz_sync_subscription: Option<Subscription>,
+    _brainz_prep_subscription: Option<Subscription>,
     rendered_entries_len: usize,
     folded_directory_drag_target: Option<FoldedDirectoryDragTarget>,
     drag_target_entry: Option<DragTarget>,
@@ -884,6 +885,7 @@ impl ProjectPanel {
                 project: project.clone(),
                 hover_scroll_task: None,
                 _brainz_sync_subscription: None,
+                _brainz_prep_subscription: None,
                 fs: workspace.app_state().fs.clone(),
                 focus_handle,
                 rendered_entries_len: 0,
@@ -7318,6 +7320,13 @@ impl Render for ProjectPanel {
                 Some(cx.observe(&state, |_, _, cx| cx.notify()));
         }
         let brainz_banner = brainz_calendar::github_sync::render_banner(&self.workspace, cx);
+        if self._brainz_prep_subscription.is_none()
+            && let Some(state) = brainz_calendar::prep::state(cx)
+        {
+            self._brainz_prep_subscription =
+                Some(cx.observe(&state, |_, _, cx| cx.notify()));
+        }
+        let brainz_prep_banner = brainz_calendar::prep::render_banner(&self.workspace, cx);
 
         let has_worktree = !self.state.visible_entries.is_empty();
         let project = self.project.read(cx);
@@ -7424,6 +7433,7 @@ impl Render for ProjectPanel {
             v_flex()
                 .size_full()
                 .children(brainz_banner)
+                .children(brainz_prep_banner)
                 .child(
             h_flex()
                 .id("project-panel")
