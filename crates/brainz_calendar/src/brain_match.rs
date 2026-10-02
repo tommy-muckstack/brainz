@@ -305,7 +305,7 @@ impl BrainIndex {
     }
 }
 
-/// `lisa-simpson` → `Lisa Simpson`; `24Mason` stays.
+/// `grace-hopper` → `Grace Hopper`; `3Dprint` stays.
 pub fn display_name(stem: &str) -> String {
     stem.split(['-', '_'])
         .filter(|part| !part.is_empty())
@@ -325,7 +325,7 @@ pub fn display_name(stem: &str) -> String {
 }
 
 /// Capitalized two-to-four word runs in an event title, split on the usual
-/// separators ("Alan Turing", "Call with Lisa Simpson / Acme").
+/// separators ("Grace Hopper", "Call with Alan Turing / Acme").
 pub fn title_names(title: &str) -> Vec<String> {
     let mut names = Vec::new();
     for segment in title.split(['/', '|', ':', ',', '(', ')', '<', '>', '[', ']', '·']) {
@@ -507,17 +507,17 @@ mod tests {
     #[test]
     fn title_names_and_emails_parse() {
         assert_eq!(
-            title_names("Call with Lisa Simpson / Acme"),
-            vec!["Lisa Simpson".to_owned()]
-        );
-        assert_eq!(title_names("Alan Turing"), vec!["Alan Turing".to_owned()]);
-        assert_eq!(
-            title_names("Tommy x Alan Turing - Reconnect"),
+            title_names("Call with Alan Turing / Acme"),
             vec!["Alan Turing".to_owned()]
         );
+        assert_eq!(title_names("Grace Hopper"), vec!["Grace Hopper".to_owned()]);
         assert_eq!(
-            emails_in("Grace <grace@acme.com>, cc: mailto:ada@Acme.com. Not an email: a@b"),
-            vec!["grace@acme.com".to_owned(), "ada@acme.com".to_owned()]
+            title_names("Ada x Grace Hopper - Reconnect"),
+            vec!["Grace Hopper".to_owned()]
+        );
+        assert_eq!(
+            emails_in("Grace <grace@globex.io>, cc: mailto:ada@Acme.com. Not an email: a@b"),
+            vec!["grace@globex.io".to_owned(), "ada@acme.com".to_owned()]
         );
     }
 

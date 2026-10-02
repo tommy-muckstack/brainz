@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn apple_mail_headers() {
         let facts = parse_email(
-            "From: Alan Turing <alan@acme.com>\nSubject: Re: Great meeting you\nDate: September 25, 2026 at 6:32 PM\nTo: Ada Lovelace <ada@example.com>\n\nIt was great meeting you, man!",
+            "From: Alan Turing <alan@acme.com>\nSubject: Re: Great meeting you\nDate: September 25, 2026 at 6:32 PM\nTo: Ada Lovelace <ada@example.com>\n\nIt was great meeting you!",
         );
         assert!(facts.is_email);
         assert_eq!(facts.sender_name.as_deref(), Some("Alan Turing"));
@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn prompts_name_the_folder_and_carry_the_text() {
         let config = BrainConfig {
-            stop_words: vec!["tommy".into()],
+            stop_words: vec!["ada".into()],
             ..BrainConfig::default()
         };
         let prompts = Prompts { config: &config };

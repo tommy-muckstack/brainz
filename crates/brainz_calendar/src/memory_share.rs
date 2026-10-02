@@ -343,8 +343,8 @@ mod tests {
     #[test]
     fn slug_matches_claude_code_naming() {
         assert_eq!(
-            project_slug(Path::new("/Users/ada/tommy-brain")),
-            "-Users-ada-tommy-brain"
+            project_slug(Path::new("/Users/ada/brain")),
+            "-Users-ada-brain"
         );
         assert_eq!(merge_index("a\nb\n", "b\nc\n"), "a\nb\nc\n");
     }
