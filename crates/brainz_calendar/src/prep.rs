@@ -486,6 +486,7 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
             .id("brainz-prep-banner")
             .w_full()
             .px_2()
+            .pt_1()
             .pb_2()
             .child(
                 v_flex()
@@ -497,13 +498,20 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
                     .bg(amber)
                     .child(
                         h_flex()
+                            .items_start()
                             .gap_1p5()
-                            .child(Icon::new(icon).size(IconSize::Small).color(Color::Custom(ink)))
                             .child(
-                                Label::new(text)
-                                    .size(LabelSize::Small)
-                                    .color(Color::Custom(ink))
-                                    .truncate(),
+                                div().flex_none().pt_0p5().child(
+                                    Icon::new(icon).size(IconSize::Small).color(Color::Custom(ink)),
+                                ),
+                            )
+                            .child(
+                                // Two lines beat an ellipsis: the name is the point.
+                                div().min_w_0().flex_1().child(
+                                    Label::new(text)
+                                        .size(LabelSize::Small)
+                                        .color(Color::Custom(ink)),
+                                ),
                             ),
                     )
                     .child(buttons),
