@@ -3704,7 +3704,12 @@ impl AgentCodeSpanResolver {
                 // in the file tree.
                 if entry.is_dir() {
                     let abs_path = worktree.absolutize(&relative_path);
-                    return Some(MentionUri::Directory { abs_path }.to_uri().to_string().into());
+                    return Some(
+                        MentionUri::Directory { abs_path }
+                            .to_uri()
+                            .to_string()
+                            .into(),
+                    );
                 }
                 if !entry.is_file() {
                     continue;

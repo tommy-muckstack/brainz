@@ -18,22 +18,33 @@ pub(crate) enum LinkKind {
     GoogleDoc,
     Granola,
     WisprFlow,
+    GitHub,
 }
 
 impl LinkKind {
-    pub(crate) fn fallback_title(self) -> &'static str {
+    /// The label a pill shows before (or without) a fetched title. GitHub
+    /// labels come from the path, so even an unreachable link reads well.
+    pub(crate) fn fallback_label(self, url: &str) -> String {
         match self {
-            LinkKind::GoogleDoc => "Google Doc",
-            LinkKind::Granola => "Granola notes",
-            LinkKind::WisprFlow => "Wispr Flow notes",
+            LinkKind::GoogleDoc => "Google Doc".to_owned(),
+            LinkKind::Granola => "Granola notes".to_owned(),
+            LinkKind::WisprFlow => "Wispr Flow notes".to_owned(),
+            LinkKind::GitHub => github_label(url).unwrap_or_else(|| "GitHub".to_owned()),
         }
     }
 
-    /// A logo for the pill when Brainz has one; otherwise the file glyph.
+    /// A logo for the pill when Brainz has one; otherwise the icon.
     pub(crate) fn logo(self) -> Option<&'static str> {
         match self {
             LinkKind::Granola => Some("icons/brainz/logos/granola.png"),
-            LinkKind::GoogleDoc | LinkKind::WisprFlow => None,
+            LinkKind::GoogleDoc | LinkKind::WisprFlow | LinkKind::GitHub => None,
+        }
+    }
+
+    pub(crate) fn icon(self) -> IconName {
+        match self {
+            LinkKind::GitHub => IconName::Github,
+            LinkKind::GoogleDoc | LinkKind::Granola | LinkKind::WisprFlow => IconName::File,
         }
     }
 
@@ -44,8 +55,55 @@ impl LinkKind {
             LinkKind::GoogleDoc => lower == "google docs",
             LinkKind::Granola => lower == "granola" || lower == "granola notes",
             LinkKind::WisprFlow => lower.starts_with("wispr flow"),
+            LinkKind::GitHub => lower == "github",
         }
     }
+
+    /// Trims the service's framing off a fetched title: GitHub's
+    /// "<title> by <user> · Pull Request #33 · owner/repo" becomes
+    /// "#33 <title>", and a repo page becomes "owner/repo".
+    fn clean_title(self, title: String, url: &str) -> String {
+        if self != LinkKind::GitHub {
+            return title;
+        }
+        let title = title.trim().trim_end_matches(" · GitHub").to_owned();
+        if let Some(rest) = title.strip_prefix("GitHub - ") {
+            return rest.split(':').next().unwrap_or(rest).trim().to_owned();
+        }
+        for marker in [" · Pull Request #", " · Issue #", " · Discussion #"] {
+            if let Some((head, tail)) = title.split_once(marker) {
+                let number: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+                let head = head.rsplit_once(" by ").map(|(h, _)| h).unwrap_or(head);
+                return format!("#{number} {}", head.trim());
+            }
+        }
+        if let Some((head, _)) = title.split_once(" · ") {
+            return head.trim().to_owned();
+        }
+        github_label(url).unwrap_or(title)
+    }
+}
+
+/// `owner/repo`, `owner/repo #33`, `owner/repo@abc1234`, or
+/// `owner/repo · path/to/file` from a github.com URL.
+fn github_label(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    let segments: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
+    let (owner, repo) = match segments.as_slice() {
+        [owner, repo, ..] => (*owner, repo.trim_end_matches(".git")),
+        [owner] => return Some((*owner).to_owned()),
+        _ => return None,
+    };
+    let base = format!("{owner}/{repo}");
+    Some(match &segments[2..] {
+        ["pull" | "issues" | "discussions", number, ..] => format!("{base} #{number}"),
+        ["commit", sha, ..] => format!("{base}@{}", sha.chars().take(7).collect::<String>()),
+        ["blob" | "tree", _branch, rest @ ..] if !rest.is_empty() => {
+            format!("{base} · {}", rest.join("/"))
+        }
+        ["releases", "tag", tag] => format!("{base} {tag}"),
+        _ => base,
+    })
 }
 
 /// Recognizes a shared-note link and the URL whose HTML carries its title.
@@ -59,13 +117,19 @@ pub(crate) fn known_link(url: &str) -> Option<(LinkKind, String)> {
     }
     let segments: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
     match (parsed.host_str()?, segments.as_slice()) {
-        ("notes.granola.ai", ["t", id, ..]) if !id.is_empty() => {
-            Some((LinkKind::Granola, format!("https://notes.granola.ai/t/{id}")))
-        }
+        ("notes.granola.ai", ["t", id, ..]) if !id.is_empty() => Some((
+            LinkKind::Granola,
+            format!("https://notes.granola.ai/t/{id}"),
+        )),
         ("notes.wisprflow.ai", ["shared", id, ..]) if !id.is_empty() => Some((
             LinkKind::WisprFlow,
             format!("https://notes.wisprflow.ai/shared/{id}"),
         )),
+        ("github.com" | "www.github.com", [_owner, _repo, ..]) => {
+            let mut metadata_url = parsed.clone();
+            metadata_url.set_fragment(None);
+            Some((LinkKind::GitHub, metadata_url.into()))
+        }
         _ => None,
     }
 }
@@ -187,7 +251,11 @@ fn document_title(html: &[u8], kind: LinkKind) -> Option<String> {
                     .iter()
                     .find(|attribute| attribute.name.local.as_ref() == "content")
             {
-                let content = content.value.split_whitespace().collect::<Vec<_>>().join(" ");
+                let content = content
+                    .value
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 if !content.is_empty() && og_title.is_none() {
                     og_title = Some(content);
                 }
@@ -218,8 +286,13 @@ fn document_title(html: &[u8], kind: LinkKind) -> Option<String> {
     }
     let title = match kind {
         // Login and access-error pages are not document metadata.
-        LinkKind::GoogleDoc => page_title?.strip_suffix(" - Google Docs")?.trim().to_owned(),
-        LinkKind::Granola | LinkKind::WisprFlow => og_title.or(page_title)?.trim().to_owned(),
+        LinkKind::GoogleDoc => page_title?
+            .strip_suffix(" - Google Docs")?
+            .trim()
+            .to_owned(),
+        LinkKind::Granola | LinkKind::WisprFlow | LinkKind::GitHub => {
+            og_title.or(page_title)?.trim().to_owned()
+        }
     };
     if title.is_empty() || kind.is_generic_title(&title) {
         return None;
@@ -232,6 +305,7 @@ async fn fetch_title(
     metadata_url: String,
     kind: LinkKind,
 ) -> Result<Option<String>> {
+    let original_url = metadata_url.clone();
     let mut response = client.get(&metadata_url, Default::default(), true).await?;
     if !response.status().is_success() {
         return Ok(None);
@@ -242,7 +316,7 @@ async fn fetch_title(
         .take(MAX_TITLE_RESPONSE_BYTES)
         .read_to_end(&mut html)
         .await?;
-    Ok(document_title(&html, kind))
+    Ok(document_title(&html, kind).map(|title| kind.clean_title(title, &original_url)))
 }
 
 #[derive(Default)]
@@ -292,7 +366,7 @@ impl RenderOnce for GoogleDocLink {
             cache.0.push_back(entry);
             if let Some(title) = title_hint(self.title, &self.url) {
                 view.update(cx, |view, cx| {
-                    if view.title == view.kind.fallback_title() {
+                    if view.title == view.kind.fallback_label(&view.url) {
                         view.title = title;
                         cx.notify();
                     }
@@ -359,7 +433,7 @@ impl DocumentLink {
             }
         });
         Self {
-            title: title_hint(title, &url).unwrap_or_else(|| kind.fallback_title().into()),
+            title: title_hint(title, &url).unwrap_or_else(|| kind.fallback_label(&url).into()),
             url,
             kind,
             _title_task: title_task,
@@ -376,7 +450,7 @@ impl Render for DocumentLink {
                 .flex_none()
                 .object_fit(gpui::ObjectFit::Contain)
                 .into_any_element(),
-            None => Icon::new(IconName::File)
+            None => Icon::new(self.kind.icon())
                 .size(IconSize::XSmall)
                 .into_any_element(),
         };
@@ -394,7 +468,11 @@ impl Render for DocumentLink {
                     .items_center()
                     .min_w_0()
                     .child(glyph)
-                    .child(Label::new(self.title.clone()).size(LabelSize::Small).truncate())
+                    .child(
+                        Label::new(self.title.clone())
+                            .size(LabelSize::Small)
+                            .truncate(),
+                    )
                     .child(
                         Icon::new(IconName::ArrowUpRight)
                             .size(IconSize::XSmall)
@@ -486,25 +564,96 @@ mod tests {
     fn parses_doc_titles_without_showing_login_or_error_titles() {
         assert_eq!(document_title(b"<html><head><title> Notes &amp; plans &#8212; Q4 - Google Docs </title></head></html>", LinkKind::GoogleDoc), Some("Notes & plans — Q4".into()));
         assert_eq!(
-            document_title(b"<title>Sign in - Google Accounts</title>", LinkKind::GoogleDoc),
+            document_title(
+                b"<title>Sign in - Google Accounts</title>",
+                LinkKind::GoogleDoc
+            ),
             None
         );
-        assert_eq!(document_title(b"<title>Google Docs</title>", LinkKind::GoogleDoc), None);
-        assert_eq!(document_title(b"<title>Page not found</title>", LinkKind::GoogleDoc), None);
+        assert_eq!(
+            document_title(b"<title>Google Docs</title>", LinkKind::GoogleDoc),
+            None
+        );
+        assert_eq!(
+            document_title(b"<title>Page not found</title>", LinkKind::GoogleDoc),
+            None
+        );
         assert_eq!(
             document_title(b"<html><head><meta property=\"og:title\" content=\"Grace / Ada\"><title>Granola</title></head></html>", LinkKind::Granola),
             Some("Grace / Ada".into())
         );
-        assert_eq!(document_title(b"<title>Wispr Flow Notes</title>", LinkKind::WisprFlow), None);
         assert_eq!(
-            known_link("https://notes.granola.ai/t/00000000-0000-4000-8000-000000000000-abcdefgh?x=1").map(|(kind, _)| kind),
+            document_title(b"<title>Wispr Flow Notes</title>", LinkKind::WisprFlow),
+            None
+        );
+        assert_eq!(
+            known_link(
+                "https://notes.granola.ai/t/00000000-0000-4000-8000-000000000000-abcdefgh?x=1"
+            )
+            .map(|(kind, _)| kind),
             Some(LinkKind::Granola)
         );
         assert_eq!(
-            known_link("https://notes.wisprflow.ai/shared/ExampleSharedNoteId0000000000000000000000").map(|(kind, _)| kind),
+            known_link(
+                "https://notes.wisprflow.ai/shared/ExampleSharedNoteId0000000000000000000000"
+            )
+            .map(|(kind, _)| kind),
             Some(LinkKind::WisprFlow)
         );
         assert_eq!(known_link("https://example.com/t/abc"), None);
+        assert_eq!(
+            known_link("https://github.com/acme/widgets/pull/33#discussion_r1"),
+            Some((
+                LinkKind::GitHub,
+                "https://github.com/acme/widgets/pull/33".to_owned()
+            ))
+        );
+        assert_eq!(known_link("https://github.com/acme"), None);
+        assert_eq!(
+            LinkKind::GitHub.fallback_label("https://github.com/acme/widgets"),
+            "acme/widgets"
+        );
+        assert_eq!(
+            LinkKind::GitHub.fallback_label("https://github.com/acme/widgets/pull/33"),
+            "acme/widgets #33"
+        );
+        assert_eq!(
+            LinkKind::GitHub.fallback_label("https://github.com/acme/widgets/issues/7"),
+            "acme/widgets #7"
+        );
+        assert_eq!(
+            LinkKind::GitHub.fallback_label("https://github.com/acme/widgets/commit/abcdef1234567"),
+            "acme/widgets@abcdef1"
+        );
+        assert_eq!(
+            LinkKind::GitHub.fallback_label("https://github.com/acme/widgets/blob/main/src/lib.rs"),
+            "acme/widgets · src/lib.rs"
+        );
+        assert_eq!(
+            LinkKind::GitHub.fallback_label("https://github.com/acme/widgets/releases/tag/v0.1.0"),
+            "acme/widgets v0.1.0"
+        );
+        assert_eq!(
+            LinkKind::GitHub.clean_title(
+                "Scrub names from fixtures by ada · Pull Request #33 · acme/widgets".into(),
+                "https://github.com/acme/widgets/pull/33"
+            ),
+            "#33 Scrub names from fixtures"
+        );
+        assert_eq!(
+            LinkKind::GitHub.clean_title(
+                "GitHub - acme/widgets: Widgets at the speed of thought".into(),
+                "https://github.com/acme/widgets"
+            ),
+            "acme/widgets"
+        );
+        assert_eq!(
+            LinkKind::GitHub.clean_title(
+                "widgets/README.md at main · acme/widgets".into(),
+                "https://github.com/acme/widgets/blob/main/README.md"
+            ),
+            "widgets/README.md at main"
+        );
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("2026-10-01-C387B67A.md");
         std::fs::write(&file, "notes").unwrap();
