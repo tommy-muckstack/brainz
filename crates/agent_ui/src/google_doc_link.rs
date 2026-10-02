@@ -492,16 +492,16 @@ mod tests {
         assert_eq!(document_title(b"<title>Google Docs</title>", LinkKind::GoogleDoc), None);
         assert_eq!(document_title(b"<title>Page not found</title>", LinkKind::GoogleDoc), None);
         assert_eq!(
-            document_title(b"<html><head><meta property=\"og:title\" content=\"Jared / Tommy\"><title>Granola</title></head></html>", LinkKind::Granola),
-            Some("Jared / Tommy".into())
+            document_title(b"<html><head><meta property=\"og:title\" content=\"Grace / Ada\"><title>Granola</title></head></html>", LinkKind::Granola),
+            Some("Grace / Ada".into())
         );
         assert_eq!(document_title(b"<title>Wispr Flow Notes</title>", LinkKind::WisprFlow), None);
         assert_eq!(
-            known_link("https://notes.granola.ai/t/41d2c049-4c77-4ba7-91ad-8063050a5b0c-008umkv4?x=1").map(|(kind, _)| kind),
+            known_link("https://notes.granola.ai/t/00000000-0000-4000-8000-000000000000-abcdefgh?x=1").map(|(kind, _)| kind),
             Some(LinkKind::Granola)
         );
         assert_eq!(
-            known_link("https://notes.wisprflow.ai/shared/dtqgS0lVdSOtHSMb4RpESXEC37oWHcL9d1s4NA3gQTU").map(|(kind, _)| kind),
+            known_link("https://notes.wisprflow.ai/shared/ExampleSharedNoteId0000000000000000000000").map(|(kind, _)| kind),
             Some(LinkKind::WisprFlow)
         );
         assert_eq!(known_link("https://example.com/t/abc"), None);

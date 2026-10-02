@@ -1962,11 +1962,11 @@ mod tests {
 
     #[test]
     fn loop_lines_are_not_terms_and_summaries_count_owners() {
-        assert!(has_loop_marker("- ⏳ Toni owes a band read"));
+        assert!(has_loop_marker("- ⏳ Grace owes a band read"));
         assert!(has_loop_marker("⚠️ verify the invite"));
         assert!(has_loop_marker("- ⚠️ verify the invite"));
         assert!(!has_loop_marker("Status: onsite done; ⚠️ reminder lists only two rounds, but the plan holds."));
-        assert!(!has_loop_marker("- Toni owes a band read"));
+        assert!(!has_loop_marker("- Grace owes a band read"));
         let today = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
         let loops = vec![
             OpenLoop {
