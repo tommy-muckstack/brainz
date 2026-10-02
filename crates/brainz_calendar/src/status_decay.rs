@@ -328,7 +328,7 @@ mod tests {
         );
         assert_eq!(compare(day(2026, 9, 30), &siblings), None);
         assert_eq!(compare(day(2026, 10, 1), &siblings), None);
-        assert_eq!(date_in_name("turing-2026-10-01-prep.md"), Some(day(2026, 10, 1)));
+        assert_eq!(date_in_name("hopper-2026-10-01-prep.md"), Some(day(2026, 10, 1)));
         assert_eq!(date_in_name("CLAUDE.md"), None);
     }
 
