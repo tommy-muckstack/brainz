@@ -42,9 +42,12 @@ and grows as you type.
 Paste or attach multiple screenshots to collect them in one horizontally scrollable
 thumbnail strip above the text before you send.
 Pasted Google Doc, Granola, Wispr Flow, and GitHub links become clickable title
-pills in the composer and sent messages (Granola shows its logo; GitHub pills read
-`owner/repo #33`, `owner/repo@abc1234`, or `owner/repo · path`, with the pull
-request or issue title once it loads). Titles load in the
+pills in the composer and sent messages (Granola shows its logo; Wispr Flow titles
+come from its public meetings API since the share page is an app shell; GitHub pills
+read `owner/repo #33`, `owner/repo@abc1234`, or `owner/repo · path`, with the pull
+request or issue title once it loads). Pasted paths to files on this Mac become
+pills too, and a Markdown note (a My Man meeting note, say) shows its first heading
+instead of the file name. Titles load in the
 background from the page; when a service exposes none, the pill stays labeled
 Google Doc, Granola notes, or Wispr Flow notes, and the original link is preserved
 for the agent and browser. A pasted path to a file on this Mac becomes a pill with

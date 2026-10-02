@@ -1460,10 +1460,7 @@ impl MessageEditor {
                     })
                     .collect();
             for (range, path) in crate::google_doc_link::pasted_local_files(&inserted) {
-                let label = path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                let label = crate::google_doc_link::local_file_label(&path);
                 pills.push((range, MentionUri::File { abs_path: path }, label.into()));
             }
             pills.sort_by_key(|(range, _, _)| range.start);
@@ -2104,10 +2101,18 @@ impl MessageEditor {
             let adjusted_start = insertion_start + range.start;
             let anchor = snapshot.anchor_before(MultiBufferOffset(adjusted_start));
             let image_preview = image_preview_task_for_mention(&mention);
+            // Brainz: a bare path to a Markdown note in an older message gets
+            // the note's heading as its pill label, as a fresh paste does.
+            let crease_label: SharedString = match (&mention, &mention_uri) {
+                (Mention::Link, MentionUri::File { abs_path }) => {
+                    crate::google_doc_link::local_file_label(abs_path).into()
+                }
+                _ => mention_uri.name().into(),
+            };
             let Some((crease_id, tx, crease_entity)) = insert_crease_for_mention(
                 snapshot.anchor_to_buffer_anchor(anchor).unwrap().0,
                 range.end - range.start,
-                mention_uri.name().into(),
+                crease_label,
                 mention_uri.icon_path(cx),
                 mention_uri.tooltip_text(),
                 Some(mention_uri.clone()),
