@@ -1156,6 +1156,22 @@ impl ProjectPanel {
             let is_remote = project.is_remote();
             let is_collab = project.is_via_collab();
             let is_local = project.is_local() || project.is_via_wsl_with_host_interop(cx);
+            // Brainz: an amber (stale) folder offers to have its status callout
+            // rewritten from the newest note, through a pre-filled Claude tab.
+            let brainz_refresh_status_prompt: Option<String> = if is_dir {
+                let folder = worktree.absolutize(&entry.path);
+                brainz_calendar::status_decay::lookup(&folder, cx).map(|decay| {
+                    format!(
+                        "Rewrite the status callout at the top of `{rel}/CLAUDE.md` from the newest notes in that folder. The callout is dated {status} and the newest note is `{rel}/{newest}` ({newest_date}). Keep the `> **Status YYYY-MM-DD:** …` form with today's date, under three sentences, absolute dates, no em dashes, and link the note the update came from. Change nothing else.",
+                        rel = entry.path.as_unix_str(),
+                        status = decay.status_date,
+                        newest = decay.newest_source,
+                        newest_date = decay.newest_date,
+                    )
+                })
+            } else {
+                None
+            };
             let is_markdown = !is_dir
                 && MarkdownPreviewView::is_markdown_path(
                     entry.path.as_std_path(),
@@ -1194,6 +1210,20 @@ impl ProjectPanel {
                         })
                         .when(is_dir, |menu| {
                             menu.action("Search Inside", Box::new(NewSearchInDirectory))
+                        })
+                        .when_some(brainz_refresh_status_prompt.clone(), |menu, text| {
+                            menu.separator().entry(
+                                "Refresh status from newest notes",
+                                None,
+                                move |window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(brainz_calendar::prep::OpenClaudePrefilled {
+                                            text: text.clone(),
+                                        }),
+                                        cx,
+                                    );
+                                },
+                            )
                         })
                     } else {
                         menu.action("New File", Box::new(NewFile))

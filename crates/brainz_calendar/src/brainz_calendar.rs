@@ -6,6 +6,7 @@ pub mod brain_match;
 pub mod github_sync;
 pub mod ocr;
 pub mod open_loops;
+pub mod permissions;
 pub mod prep;
 pub mod launcher;
 pub mod mcp;

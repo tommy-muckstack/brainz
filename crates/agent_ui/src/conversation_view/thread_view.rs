@@ -602,6 +602,8 @@ pub struct ThreadView {
     brainz_mcp_dismissed: HashSet<String>,
     /// Brainz: the connector whose sign-in is running from the card.
     brainz_mcp_reconnecting: Option<String>,
+    brainz_permissions_dismissed: bool,
+    brainz_permissions_writing: bool,
     _brainz_mcp_task: Option<Task<()>>,
     collapsed_sandbox_authorization_details: HashSet<acp_v1::ToolCallId>,
     collapsed_sandbox_network_details: HashSet<acp_v1::ToolCallId>,
@@ -1040,6 +1042,8 @@ impl ThreadView {
             expanded_tool_call_raw_inputs: HashSet::default(),
             brainz_mcp_dismissed: HashSet::default(),
             brainz_mcp_reconnecting: None,
+            brainz_permissions_dismissed: false,
+            brainz_permissions_writing: false,
             _brainz_mcp_task: None,
             collapsed_sandbox_authorization_details: HashSet::default(),
             collapsed_sandbox_network_details: HashSet::default(),
@@ -12112,6 +12116,106 @@ impl ThreadView {
         }));
     }
 
+    /// Brainz: offers standing permission rules for Brainz's Claude the
+    /// first time a Claude thread shows, until written or dismissed.
+    fn render_permissions_card(&mut self, cx: &mut Context<Self>) -> Option<Callout> {
+        if self.agent_id.0.as_ref() != "claude-acp"
+            || self.brainz_permissions_dismissed
+            || !brainz_calendar::permissions::needs_setup()
+        {
+            return None;
+        }
+        let action: AnyElement = if self.brainz_permissions_writing {
+            h_flex()
+                .h(px(24.))
+                .px_2()
+                .items_center()
+                .child(ui::bouncing_dots("brainz-permissions-dots", cx.theme().colors().text_accent))
+                .into_any_element()
+        } else {
+            Button::new("brainz-permissions-set", "Set standing permissions")
+                .style(ButtonStyle::Filled)
+                .on_click(cx.listener(|this, _, _, cx| this.brainz_write_permissions(cx)))
+                .into_any_element()
+        };
+        Some(
+            Callout::new()
+                .severity(Severity::Info)
+                .icon(IconName::BrainzClaude)
+                .title("Claude asks before every command here")
+                .description(
+                    "Brainz's Claude has no standing rules yet. Set them once: edits inside the brain \
+                     are accepted, reading and searching and git never ask, your connectors are \
+                     allowed, and anything destructive still prompts. Written to Brainz's own Claude \
+                     settings, never your terminal's.",
+                )
+                .actions_slot(action)
+                .dismiss_action(
+                    IconButton::new("brainz-permissions-dismiss", IconName::Close)
+                        .icon_size(IconSize::Small)
+                        .tooltip(Tooltip::text("Not now"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.brainz_permissions_dismissed = true;
+                            cx.notify();
+                        })),
+                ),
+        )
+    }
+
+    fn brainz_write_permissions(&mut self, cx: &mut Context<Self>) {
+        let Some(brain) = self
+            .workspace
+            .upgrade()
+            .and_then(|workspace| workspace.read(cx).root_paths(cx).first().cloned())
+        else {
+            return;
+        };
+        self.brainz_permissions_writing = true;
+        cx.notify();
+        let brain = brain.to_path_buf();
+        let workspace = self.workspace.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let servers = brainz_calendar::mcp::claude_server_names();
+                    brainz_calendar::permissions::write_defaults(&brain, &servers)
+                })
+                .await;
+            let message = match &result {
+                Ok(count) => format!(
+                    "Standing permissions written ({count} rules). They apply to new Claude conversations in Brainz."
+                ),
+                Err(error) => format!("Could not write permissions: {error:#}"),
+            };
+            workspace
+                .update(cx, |workspace, cx| {
+                    let id = workspace::notifications::NotificationId::unique::<brainz_calendar::permissions::Marker>();
+                    workspace.show_notification(id.clone(), cx, |cx| {
+                        cx.new(|cx| {
+                            workspace::notifications::simple_message_notification::MessageNotification::new(
+                                message, cx,
+                            )
+                        })
+                    });
+                    cx.spawn(async move |workspace, cx| {
+                        cx.background_executor().timer(Duration::from_secs(8)).await;
+                        workspace
+                            .update(cx, |workspace, cx| workspace.dismiss_notification(&id, cx))
+                            .ok();
+                    })
+                    .detach();
+                })
+                .ok();
+            this.update(cx, |this, cx| {
+                this.brainz_permissions_writing = false;
+                this.brainz_permissions_dismissed = result.is_ok();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Brainz: a card offering to sign in again when a connector has lost
     /// its authorization, instead of leaving the agent's "needs to be
     /// reconnected" sentence as the only clue.
@@ -13534,6 +13638,7 @@ impl Render for ThreadView {
             .children(self.render_thread_retry_status_callout(cx))
             .children(self.render_thread_error(window, cx))
             .children(self.render_mcp_reconnect_card(cx))
+            .children(self.render_permissions_card(cx))
             .when_some(
                 match has_messages {
                     true => None,
