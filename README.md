@@ -47,6 +47,10 @@ by path, size, and modification time, and the tab shows them as a scrollable sta
 with an **Open in Default App** button for anything more (password-protected files
 go straight to that button).
 
+In the composer, `/` opens the file and folder type-ahead for the brain (type
+`companies/` to narrow it); picking an entry inserts a pill. Commands sit behind a
+double slash (`//plan`).
+
 Pasted Google Doc, Granola, Wispr Flow, and GitHub links become clickable title
 pills in the composer and sent messages (Granola shows its logo; Wispr Flow titles
 come from its public meetings API since the share page is an app shell; GitHub pills
@@ -126,9 +130,9 @@ Sync banner carries it to GitHub like any other change.
 The hourglass button next to Themes opens an **Open loops** tab: every current
 `⏳` and `⏰` line in the brain, grouped by owner (`⏰` is owed by you, `⏳` is
 waiting on someone else), oldest first, with the counterparty when a known
-person is named on the line and the age from `git blame`. Click a row or
-**Mark done** to open the file at that line; Brainz never edits the line, you
-strike it. Lines carrying those glyphs (or `⚠️`) are kept out of theme
+person is named on the line and the age from `git blame`. Click a row to open
+the file at that line; **Mark done** turns the line's marker into `✅` in the
+note and drops the row (the next signals pass confirms it). Lines carrying those glyphs (or `⚠️`) are kept out of theme
 extraction, and the Themes status callout carries the "N owed, M waiting,
 oldest" summary. The same signals pass drops terms whose only sources are
 itinerary, roster, logistics, or prompt folders (`themes.noise_dirs`) or a
@@ -177,13 +181,15 @@ The first time Claude runs in Brainz, your terminal Claude's MCP servers are
 copied into Brainz's own config so both have the same connectors. Every minute
 Brainz probes each connector (HTTP servers must answer, even with 401; stdio
 commands must exist). Any that are down turn the MCP button red, and their row
-in the tab gets a red dot with the reason. An amber dot means Claude's sign-in to
-that connector has lapsed (read from Claude's own auth cache); **Reconnect** on the
-row, or "Reconnect in Claude / Codex" under the row's menu, runs the CLI's `mcp login`
+in the tab gets a red dot with the reason. When Claude's sign-in to a connector has
+lapsed (read from Claude's own auth cache), its Claude tile turns amber and reads
+**Reconnect**; clicking the tile, or "Reconnect in Claude / Codex" under the row's
+menu, runs the CLI's `mcp login`
 in the terminal panel and brings your panel back when it finishes. When an agent
 reply or a failed connector tool call says a connector needs reconnecting, the same
 card appears in the conversation with a one-click Reconnect. Hosted connectors
-Brainz knows how to set up (Notion, for now) appear under **Available** in the tab,
+Brainz knows how to set up (Notion, Vercel, Wispr Flow, and My Man via the filesystem
+server over `~/MyManBrain`) appear under **Available** in the tab,
 and when a conversation tries to connect one that isn't configured yet, a card
 offers to add it and sign in, since the agent cannot do that itself. The tab bar's
 split button is a plain toggle: on splits right, off joins everything back.

@@ -12307,7 +12307,12 @@ impl ThreadView {
             log::error!("brainz mcp connect {}: {error:#}", hosted.name);
             return;
         }
-        self.brainz_reconnect_mcp(hosted.name.to_owned(), window, cx);
+        if hosted.needs_login() {
+            self.brainz_reconnect_mcp(hosted.name.to_owned(), window, cx);
+        } else {
+            self.brainz_mcp_dismissed.insert(hosted.name.to_owned());
+            cx.notify();
+        }
     }
 
     fn render_mcp_connect_card(&mut self, cx: &mut Context<Self>) -> Option<Callout> {
