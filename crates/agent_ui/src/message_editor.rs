@@ -2483,9 +2483,15 @@ impl MessageEditor {
                     ),
             )
             .child(
+                // Brainz: on a sent bubble the caption takes the bubble's ink
+                // colour; the muted grey was unreadable on amber.
                 Label::new(name)
-                    .size(LabelSize::XSmall)
-                    .color(Color::Muted)
+                    .size(LabelSize::Small)
+                    .color(if self.bubble_color.is_some() {
+                        Color::Custom(self.bubble_text_color(cx).opacity(0.85))
+                    } else {
+                        Color::Muted
+                    })
                     .truncate(),
             )
             .child(
