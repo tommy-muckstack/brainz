@@ -472,6 +472,12 @@ pub fn init(cx: &mut App) {
                         }
                     },
                 )
+                .register_action(|workspace, _: &crate::BrainzCaptureClipboard, window, cx| {
+                    if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                        workspace.focus_panel::<AgentPanel>(window, cx);
+                        panel.update(cx, |panel, cx| panel.capture_clipboard(window, cx));
+                    }
+                })
                 .register_action(|workspace, _: &crate::BrainzResetThread, window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                         panel.update(cx, |panel, cx| panel.reset_active_thread(window, cx));
@@ -4599,6 +4605,31 @@ impl AgentPanel {
             project.agent_server_store().update(cx, |store, cx| {
                 store.migrate_agent_server_from_extensions(id, project.fs().clone(), cx);
             });
+        });
+    }
+
+    /// Brainz: paste the clipboard into the active conversation's message
+    /// box and focus it, opening a Claude conversation first if none is up.
+    pub fn capture_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.active_conversation_view().is_none() {
+            self.new_external_agent_thread(
+                &NewExternalAgentThread {
+                    agent: AgentId::new("claude-acp"),
+                },
+                window,
+                cx,
+            );
+        }
+        let Some(thread_view) = self
+            .active_conversation_view()
+            .and_then(|conversation| conversation.read(cx).root_thread_view())
+        else {
+            return;
+        };
+        let editor = thread_view.read(cx).message_editor.clone();
+        editor.update(cx, |editor, cx| {
+            editor.focus_handle(cx).focus(window, cx);
+            editor.paste(&editor::actions::Paste, window, cx);
         });
     }
 

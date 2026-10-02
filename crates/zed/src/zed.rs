@@ -600,6 +600,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         });
 
         let search_button = cx.new(|_| search::search_status_button::SearchButton::new());
+        let brainz_brief_button = cx.new(|_| brainz_calendar::brief::BriefButton::new());
         let brainz_calendar_button = cx.new(|_| brainz_calendar::CalendarButton::new());
         let brainz_todo_button = cx.new(|_| brainz_calendar::todo::TodoButton::new());
         let brainz_mcp_button = cx.new(|_| brainz_calendar::mcp::McpButton::new());
@@ -639,6 +640,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             cx.new(|cx| git_ui::MergeConflictIndicator::new(workspace, cx));
         workspace.status_bar().update(cx, |status_bar, cx| {
             status_bar.add_left_item(search_button, window, cx);
+            status_bar.add_left_item(brainz_brief_button, window, cx);
             status_bar.add_left_item(brainz_calendar_button, window, cx);
             status_bar.add_left_item(brainz_todo_button, window, cx);
             status_bar.add_left_item(brainz_mcp_button, window, cx);
