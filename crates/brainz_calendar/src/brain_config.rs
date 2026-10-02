@@ -188,8 +188,7 @@ mod tests {
 
     #[test]
     fn partial_config_keeps_defaults_for_missing_keys() {
-        let config: BrainConfig =
-            toml::from_str("todo = \"TODO.md\"\nsync = false\n").unwrap();
+        let config: BrainConfig = toml::from_str("todo = \"TODO.md\"\nsync = false\n").unwrap();
         assert_eq!(config.todo, "TODO.md");
         assert!(!config.sync);
         assert_eq!(config.themes_dir, "themes");

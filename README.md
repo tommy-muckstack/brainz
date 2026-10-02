@@ -173,7 +173,10 @@ that connector has lapsed (read from Claude's own auth cache); **Reconnect** on 
 row, or "Reconnect in Claude / Codex" under the row's menu, runs the CLI's `mcp login`
 in the terminal panel and brings your panel back when it finishes. When an agent
 reply or a failed connector tool call says a connector needs reconnecting, the same
-card appears in the conversation with a one-click Reconnect. The tab bar's
+card appears in the conversation with a one-click Reconnect. Hosted connectors
+Brainz knows how to set up (Notion, for now) appear under **Available** in the tab,
+and when a conversation tries to connect one that isn't configured yet, a card
+offers to add it and sign in, since the agent cannot do that itself. The tab bar's
 split button is a plain toggle: on splits right, off joins everything back.
 
 **Brainz → Install CLI** links `/usr/local/bin/brainz` to the bundled `cli` helper

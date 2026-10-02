@@ -6,7 +6,11 @@ use terminal_view::terminal_panel::{OpenClaude, OpenCodex, OpenShell};
 use ui::{ContextMenu, ContextMenuEntry, PopoverMenu, Tooltip, prelude::*};
 
 /// A Launch menu row: the tool's mark, then its name.
-pub fn launch_entry(label: &'static str, icon: IconName, action: Box<dyn Action>) -> ContextMenuEntry {
+pub fn launch_entry(
+    label: &'static str,
+    icon: IconName,
+    action: Box<dyn Action>,
+) -> ContextMenuEntry {
     let dispatch = action.boxed_clone();
     ContextMenuEntry::new(label)
         .icon(icon)
@@ -54,9 +58,21 @@ impl Render for LaunchButton {
                 .menu(|window, cx| {
                     Some(ContextMenu::build(window, cx, |menu, _, _| {
                         menu.header("Launch")
-                            .item(launch_entry("Terminal", IconName::Terminal, OpenShell.boxed_clone()))
-                            .item(launch_entry("Claude", IconName::BrainzClaude, OpenClaude.boxed_clone()))
-                            .item(launch_entry("Codex", IconName::BrainzCodex, OpenCodex.boxed_clone()))
+                            .item(launch_entry(
+                                "Terminal",
+                                IconName::Terminal,
+                                OpenShell.boxed_clone(),
+                            ))
+                            .item(launch_entry(
+                                "Claude",
+                                IconName::BrainzClaude,
+                                OpenClaude.boxed_clone(),
+                            ))
+                            .item(launch_entry(
+                                "Codex",
+                                IconName::BrainzCodex,
+                                OpenCodex.boxed_clone(),
+                            ))
                     }))
                 }),
         )

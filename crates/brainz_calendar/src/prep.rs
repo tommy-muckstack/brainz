@@ -3,22 +3,14 @@
 //! and the folder. Logging the call afterwards stays with the agent and
 //! the granola-to-brain skill; Brainz never writes the notes itself.
 
-use std::{
-    collections::HashSet,
-    path::PathBuf,
-    time::Duration,
-};
+use std::{collections::HashSet, path::PathBuf, time::Duration};
 
 use chrono::{DateTime, Local};
 use gpui::{App, AppContext as _, Entity, Global, Task, WeakEntity, Window};
 use ui::{Tooltip, prelude::*};
 use workspace::{OpenOptions, OpenVisible, Workspace};
 
-use crate::{
-    CalendarEvent, LoadState,
-    brain_config::BrainConfig,
-    brain_match::BrainIndex,
-};
+use crate::{CalendarEvent, LoadState, brain_config::BrainConfig, brain_match::BrainIndex};
 
 /// Opens a new Claude conversation in the panel with this text in the
 /// message box, not sent. Handled by the agent panel.
@@ -140,7 +132,9 @@ pub fn choose_banner(
             prep_file: found.prep_file.clone(),
         };
         if !dismissed.contains(&candidate.key())
-            && prep.as_ref().is_none_or(|current| event.start < current.start)
+            && prep
+                .as_ref()
+                .is_none_or(|current| event.start < current.start)
         {
             prep = Some(candidate);
         }
@@ -151,9 +145,12 @@ pub fn choose_banner(
 /// Google Doc and Sheet links in a prep file, opened alongside it.
 pub fn google_doc_links(text: &str) -> Vec<String> {
     let mut links = Vec::new();
-    for token in text.split(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '(' | ')' | '[' | ']' | '"' | '\'' | '`')) {
+    for token in text.split(|c: char| {
+        c.is_whitespace() || matches!(c, '<' | '>' | '(' | ')' | '[' | ']' | '"' | '\'' | '`')
+    }) {
         let token = token.trim_end_matches(['.', ',', ';', ':']);
-        if (token.starts_with("https://docs.google.com/") || token.starts_with("http://docs.google.com/"))
+        if (token.starts_with("https://docs.google.com/")
+            || token.starts_with("http://docs.google.com/"))
             && !links.iter().any(|known| known == token)
         {
             links.push(token.to_owned());
@@ -206,7 +203,9 @@ impl PrepState {
                             match &banner {
                                 Some(banner) => log::info!(
                                     "brainz prep: banner for {} ({}), prep {:?}",
-                                    banner.who, banner.folder, banner.prep_file
+                                    banner.who,
+                                    banner.folder,
+                                    banner.prep_file
                                 ),
                                 None => log::info!("brainz prep: banner cleared"),
                             }
@@ -235,9 +234,11 @@ impl PrepState {
     }
 
     fn open_prep(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(repo), Some(banner), Some(workspace)) =
-            (self.repo.clone(), self.banner.clone(), self.workspace.clone())
-        else {
+        let (Some(repo), Some(banner), Some(workspace)) = (
+            self.repo.clone(),
+            self.banner.clone(),
+            self.workspace.clone(),
+        ) else {
             return;
         };
         let Some(prep) = banner.prep_file else {
@@ -251,9 +252,11 @@ impl PrepState {
     }
 
     fn open_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(repo), Some(banner), Some(workspace)) =
-            (self.repo.clone(), self.banner.clone(), self.workspace.clone())
-        else {
+        let (Some(repo), Some(banner), Some(workspace)) = (
+            self.repo.clone(),
+            self.banner.clone(),
+            self.workspace.clone(),
+        ) else {
             return;
         };
         let folder = repo.join(&banner.folder);
@@ -310,7 +313,9 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
         .root_paths(cx)
         .first()
         .map(|path| path.to_path_buf())?;
-    state.update(cx, |state, cx| state.ensure_watching(workspace.clone(), repo, cx));
+    state.update(cx, |state, cx| {
+        state.ensure_watching(workspace.clone(), repo, cx)
+    });
     let banner = state.read(cx).banner()?.clone();
 
     let colors = cx.theme().colors();
@@ -325,7 +330,9 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
         buttons = buttons.child(
             Button::new("brainz-prep-open", "Open prep")
                 .style(ButtonStyle::Filled)
-                .tooltip(Tooltip::text("Open the prep note and any Google Doc it links"))
+                .tooltip(Tooltip::text(
+                    "Open the prep note and any Google Doc it links",
+                ))
                 .on_click({
                     let state = state.clone();
                     move |_, window, cx| {
@@ -336,7 +343,11 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
     }
     buttons = buttons.child(
         Button::new("brainz-prep-folder", "Open folder")
-            .style(if has_prep { ButtonStyle::Subtle } else { ButtonStyle::Filled })
+            .style(if has_prep {
+                ButtonStyle::Subtle
+            } else {
+                ButtonStyle::Filled
+            })
             .tooltip(Tooltip::text(banner.folder))
             .on_click({
                 let state = state.clone();
@@ -379,7 +390,9 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
                             .gap_1p5()
                             .child(
                                 div().flex_none().pt_0p5().child(
-                                    Icon::new(icon).size(IconSize::Small).color(Color::Custom(ink)),
+                                    Icon::new(icon)
+                                        .size(IconSize::Small)
+                                        .color(Color::Custom(ink)),
                                 ),
                             )
                             .child(
@@ -484,6 +497,9 @@ mod tests {
         let links = google_doc_links(
             "Doc: https://docs.google.com/document/d/abc/edit?usp=sharing. Again (https://docs.google.com/document/d/abc/edit?usp=sharing) and https://example.com",
         );
-        assert_eq!(links, vec!["https://docs.google.com/document/d/abc/edit?usp=sharing".to_owned()]);
+        assert_eq!(
+            links,
+            vec!["https://docs.google.com/document/d/abc/edit?usp=sharing".to_owned()]
+        );
     }
 }

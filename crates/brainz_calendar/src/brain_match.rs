@@ -32,9 +32,29 @@ const FREE_MAIL: &[&str] = &[
 
 /// Title words that join two names or sides and never name anyone.
 const TITLE_JOINERS: &[&str] = &[
-    "with", "and", "x", "vs", "re", "call", "chat", "sync", "meeting", "interview", "intro",
-    "coffee", "catch", "up", "catch-up", "prep", "debrief", "round", "reconnect", "zoom",
-    "google", "meet", "the",
+    "with",
+    "and",
+    "x",
+    "vs",
+    "re",
+    "call",
+    "chat",
+    "sync",
+    "meeting",
+    "interview",
+    "intro",
+    "coffee",
+    "catch",
+    "up",
+    "catch-up",
+    "prep",
+    "debrief",
+    "round",
+    "reconnect",
+    "zoom",
+    "google",
+    "meet",
+    "the",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,9 +127,7 @@ impl BrainIndex {
                     let mut files: Vec<PathBuf> = files
                         .flatten()
                         .map(|entry| entry.path())
-                        .filter(|path| {
-                            path.extension().and_then(|e| e.to_str()) == Some("md")
-                        })
+                        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("md"))
                         .collect();
                     files.sort();
                     for file in files {
@@ -150,10 +168,7 @@ impl BrainIndex {
                 people.push(Person {
                     key: normalize_key(&name),
                     name,
-                    file: format!(
-                        "{}/{stem}.md",
-                        config.people_dir.trim_end_matches('/')
-                    ),
+                    file: format!("{}/{stem}.md", config.people_dir.trim_end_matches('/')),
                     emails: emails_in(&text),
                 });
             }
@@ -180,7 +195,11 @@ impl BrainIndex {
             .filter(|name| self.is_full_name(name))
             .cloned()
             .collect();
-        names.extend(title_names(title).into_iter().filter(|n| self.is_full_name(n)));
+        names.extend(
+            title_names(title)
+                .into_iter()
+                .filter(|n| self.is_full_name(n)),
+        );
         let mut found = self.score(Some(title), &names, attendee_emails)?;
         found.prep_file = self.prep_file(&found.folder, date);
         Some(found)
@@ -202,17 +221,19 @@ impl BrainIndex {
             return false;
         }
         if !words.iter().all(|word| {
-            word.chars()
-                .next()
-                .is_some_and(|c| c.is_uppercase())
-                && word.chars().all(|c| c.is_alphanumeric() || c == '\'' || c == '-' || c == '.')
+            word.chars().next().is_some_and(|c| c.is_uppercase())
+                && word
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '\'' || c == '-' || c == '.')
         }) {
             return false;
         }
         // The brain's owner is never the counterparty.
-        !words
-            .iter()
-            .any(|word| self.stop_words.iter().any(|stop| stop.eq_ignore_ascii_case(word)))
+        !words.iter().any(|word| {
+            self.stop_words
+                .iter()
+                .any(|stop| stop.eq_ignore_ascii_case(word))
+        })
     }
 
     fn score(&self, title: Option<&str>, names: &[String], emails: &[String]) -> Option<Match> {
@@ -286,9 +307,7 @@ impl BrainIndex {
             .filter(|name| name.ends_with("-prep.md") || name == "prep.md")
             .collect();
         preps.sort();
-        preps
-            .first()
-            .map(|name| format!("{folder}/{day}/{name}"))
+        preps.first().map(|name| format!("{folder}/{day}/{name}"))
     }
 
     /// The first known person named in a line of text, for open loops.
@@ -313,7 +332,10 @@ pub fn display_name(stem: &str) -> String {
             let mut chars = part.chars();
             match chars.next() {
                 Some(first)
-                    if part.chars().skip(1).all(|c| c.is_lowercase() || c.is_ascii_digit()) =>
+                    if part
+                        .chars()
+                        .skip(1)
+                        .all(|c| c.is_lowercase() || c.is_ascii_digit()) =>
                 {
                     first.to_uppercase().collect::<String>() + chars.as_str()
                 }
@@ -339,10 +361,14 @@ pub fn title_names(title: &str) -> Vec<String> {
                 run.clear();
             };
             for token in part.split_whitespace() {
-                let word = token.trim_matches(|c: char| !(c.is_alphanumeric() || c == '\'' || c == '-' || c == '.'));
+                let word = token.trim_matches(|c: char| {
+                    !(c.is_alphanumeric() || c == '\'' || c == '-' || c == '.')
+                });
                 let lower = word.to_lowercase();
                 let capitalized = word.chars().next().is_some_and(|c| c.is_uppercase())
-                    && word.chars().all(|c| c.is_alphanumeric() || c == '\'' || c == '-' || c == '.');
+                    && word
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '\'' || c == '-' || c == '.');
                 if capitalized && !TITLE_JOINERS.contains(&lower.as_str()) {
                     run.push(word);
                 } else {
@@ -358,7 +384,13 @@ pub fn title_names(title: &str) -> Vec<String> {
 /// Every email address in a text, lowercased.
 pub fn emails_in(text: &str) -> Vec<String> {
     let mut emails = Vec::new();
-    for token in text.split(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '(' | ')' | '[' | ']' | '"' | ',' | ';' | '*' | '`' | '|')) {
+    for token in text.split(|c: char| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '<' | '>' | '(' | ')' | '[' | ']' | '"' | ',' | ';' | '*' | '`' | '|'
+            )
+    }) {
         let token = token.trim_matches(|c: char| matches!(c, '.' | ':' | '\''));
         let token = token.strip_prefix("mailto:").unwrap_or(token);
         if let Some((user, domain)) = token.split_once('@')
@@ -463,7 +495,11 @@ mod tests {
     fn first_name_alone_never_matches() {
         let date = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
         assert!(index().match_event("Hank", &[], &[], date).is_none());
-        assert!(index().match_event("Coffee with Hank", &["Hank".into()], &[], date).is_none());
+        assert!(
+            index()
+                .match_event("Coffee with Hank", &["Hank".into()], &[], date)
+                .is_none()
+        );
     }
 
     #[test]
@@ -476,7 +512,12 @@ mod tests {
             .unwrap();
         assert_eq!(found.folder, "companies/acme");
         let found = index
-            .match_event("Sync", &["Grace Hopper".into()], &["grace@globex.io".into()], date)
+            .match_event(
+                "Sync",
+                &["Grace Hopper".into()],
+                &["grace@globex.io".into()],
+                date,
+            )
             .unwrap();
         assert_eq!(found.folder, "companies/globex");
         assert_eq!(found.who, "Grace Hopper");
@@ -491,7 +532,11 @@ mod tests {
         assert_eq!(found.folder, "companies/acme");
         assert_eq!(found.who, "Alan Turing");
         // "Ada Lovelace" contains the owner's stop word, so it is not a counterparty.
-        assert!(index().match_event("Ada Lovelace", &[], &[], date).is_none());
+        assert!(
+            index()
+                .match_event("Ada Lovelace", &[], &[], date)
+                .is_none()
+        );
     }
 
     #[test]

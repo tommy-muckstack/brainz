@@ -13,8 +13,7 @@ use crate::{
     brain_match::{Match, emails_in},
 };
 
-const HOUSE_RULES: &str =
-    "House rules: no em dashes, absolute dates, headings for structure only.";
+const HOUSE_RULES: &str = "House rules: no em dashes, absolute dates, headings for structure only.";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EmailFacts {
@@ -75,10 +74,7 @@ pub fn recognize_text(image: &Path) -> Result<String> {
         serde_json::from_slice(&output.stdout).context("parsing OCR helper output")?;
     match parsed.status.as_str() {
         "ok" => Ok(parsed.text),
-        other => Err(anyhow!(
-            "OCR {other}: {}",
-            parsed.error.unwrap_or_default()
-        )),
+        other => Err(anyhow!("OCR {other}: {}", parsed.error.unwrap_or_default())),
     }
 }
 
@@ -109,7 +105,13 @@ fn name_and_email(text: &str) -> (Option<String>, Option<String>) {
     let name = text
         .split(['<', '('])
         .next()
-        .map(|name| name.trim().trim_matches('"').trim_end_matches(',').trim().to_owned())
+        .map(|name| {
+            name.trim()
+                .trim_matches('"')
+                .trim_end_matches(',')
+                .trim()
+                .to_owned()
+        })
         .filter(|name| looks_like_person(name));
     (name, email)
 }
@@ -132,9 +134,9 @@ pub fn parse_email(text: &str) -> EmailFacts {
             .iter()
             .any(|header| header_value(line, header).is_some())
     });
-    let to_me = lines
-        .iter()
-        .any(|line| line.eq_ignore_ascii_case("to me") || line.to_lowercase().starts_with("to me "));
+    let to_me = lines.iter().any(|line| {
+        line.eq_ignore_ascii_case("to me") || line.to_lowercase().starts_with("to me ")
+    });
     facts.is_email = !emails.is_empty()
         || has_header
         || to_me
@@ -150,10 +152,7 @@ pub fn parse_email(text: &str) -> EmailFacts {
         }
     }
 
-    if let Some(from) = lines
-        .iter()
-        .find_map(|line| header_value(line, "from"))
-    {
+    if let Some(from) = lines.iter().find_map(|line| header_value(line, "from")) {
         let (name, email) = name_and_email(from);
         facts.sender_name = name;
         facts.sender_email = email;
@@ -191,7 +190,9 @@ pub fn parse_email(text: &str) -> EmailFacts {
                 line.eq_ignore_ascii_case("to me")
                     || line.to_lowercase().starts_with("to me ")
                     || line.to_lowercase().starts_with("to ")
-                    || emails_in(line).first().is_some_and(|e| Some(e) == facts.sender_email.as_ref())
+                    || emails_in(line)
+                        .first()
+                        .is_some_and(|e| Some(e) == facts.sender_email.as_ref())
             })
             .unwrap_or(lines.len());
         facts.sender_name = lines[..stop]
@@ -235,7 +236,10 @@ impl Prompts<'_> {
     pub fn draft_reply(&self, found: Option<&Match>, ocr_text: &str) -> String {
         let folder = found
             .map(|found| format!("`{}`'s correspondence log", found.folder))
-            .unwrap_or_else(|| "the matching folder's correspondence log (find it from the sender and say which)".to_owned());
+            .unwrap_or_else(|| {
+                "the matching folder's correspondence log (find it from the sender and say which)"
+                    .to_owned()
+            });
         let owner = self.owner_possessive();
         let mut text = format!(
             "Draft {owner} reply to this. First open {folder} and read the last two outbound messages in this thread for voice and prior positions. Pull numbers only from the brain, never approximate. No em dashes. Give the draft and one or two notes on what it does and doesn't say."
@@ -321,7 +325,9 @@ mod tests {
 
     #[test]
     fn lines_starting_with_multibyte_characters_do_not_panic() {
-        let facts = parse_email("“Quoted” opener\n— dash line\n• bullet\n… and more\nFrom: Ada Lovelace <ada@acme.com>");
+        let facts = parse_email(
+            "“Quoted” opener\n— dash line\n• bullet\n… and more\nFrom: Ada Lovelace <ada@acme.com>",
+        );
         assert_eq!(facts.sender_email.as_deref(), Some("ada@acme.com"));
         assert_eq!(header_value("“To: x", "to"), None);
     }
@@ -355,16 +361,24 @@ mod tests {
         assert!(text.contains("say which one you chose"));
         assert!(text.contains("No text could be read"));
         let text = prompts.draft_reply(Some(&found), "x");
-        assert!(text.starts_with("Draft Ada's reply to this. First open `companies/acme`'s correspondence log"));
+        assert!(text.starts_with(
+            "Draft Ada's reply to this. First open `companies/acme`'s correspondence log"
+        ));
         let generic = BrainConfig::default();
         let prompts = Prompts { config: &generic };
         assert!(prompts.draft_reply(None, "x").starts_with("Draft my reply"));
         assert_eq!(
             prompts.file_in_folder("companies/acme", &["2026-10-01-screenshot-1.png".into()]),
-            format!("Describe this in one line in `companies/acme/CLAUDE.md` next to the file reference `companies/acme/2026-10-01-screenshot-1.png`. {HOUSE_RULES}")
+            format!(
+                "Describe this in one line in `companies/acme/CLAUDE.md` next to the file reference `companies/acme/2026-10-01-screenshot-1.png`. {HOUSE_RULES}"
+            )
         );
         assert_eq!(
-            dated_file_name(chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(), 2, "png"),
+            dated_file_name(
+                chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(),
+                2,
+                "png"
+            ),
             "2026-10-01-screenshot-2.png"
         );
     }

@@ -64,10 +64,12 @@ pub fn build(repo: &std::path::Path, now: DateTime<Local>) -> Brief {
     let mut calendar_problem = None;
     match crate::load_events() {
         Ok((LoadState::Ready, all)) => {
-            for event in all
-                .into_iter()
-                .filter(|event| event.start.date_naive() == today || (event.all_day && event.start.date_naive() <= today && today < event.end.date_naive()))
-            {
+            for event in all.into_iter().filter(|event| {
+                event.start.date_naive() == today
+                    || (event.all_day
+                        && event.start.date_naive() <= today
+                        && today < event.end.date_naive())
+            }) {
                 let found = index.match_event(
                     &event.title,
                     &event.attendee_names,
@@ -92,7 +94,9 @@ pub fn build(repo: &std::path::Path, now: DateTime<Local>) -> Brief {
         Err(error) => calendar_problem = Some(format!("{error:#}")),
     }
 
-    let mut stale: Vec<Decay> = status_decay::scan(repo, &config, today).into_values().collect();
+    let mut stale: Vec<Decay> = status_decay::scan(repo, &config, today)
+        .into_values()
+        .collect();
     stale.sort_by(|a, b| a.folder.cmp(&b.folder));
 
     let (loops, loops_total) = match signals::load_signals(repo, &config) {
@@ -144,7 +148,11 @@ impl BriefView {
             existing.update(cx, |view, cx| view.refresh(cx));
             return;
         }
-        let Some(repo) = workspace.root_paths(cx).first().map(|path| path.to_path_buf()) else {
+        let Some(repo) = workspace
+            .root_paths(cx)
+            .first()
+            .map(|path| path.to_path_buf())
+        else {
             return;
         };
         let weak = cx.entity().downgrade();
@@ -248,7 +256,11 @@ impl BriefView {
         div()
             .px_2()
             .py_1()
-            .child(Label::new(text).size(LabelSize::Small).color(Color::Placeholder))
+            .child(
+                Label::new(text)
+                    .size(LabelSize::Small)
+                    .color(Color::Placeholder),
+            )
             .into_any_element()
     }
 
@@ -272,7 +284,11 @@ impl BriefView {
                 div()
                     .px_2()
                     .py_1()
-                    .child(Label::new(problem.clone()).size(LabelSize::Small).color(Color::Muted))
+                    .child(
+                        Label::new(problem.clone())
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
                     .into_any_element(),
             );
             return rows;
@@ -297,7 +313,11 @@ impl BriefView {
                     div().w(px(64.)).flex_none().child(
                         Label::new(Self::time_label(event))
                             .size(LabelSize::XSmall)
-                            .color(if past { Color::Placeholder } else { Color::Muted }),
+                            .color(if past {
+                                Color::Placeholder
+                            } else {
+                                Color::Muted
+                            }),
                     ),
                 )
                 .child(
@@ -344,7 +364,10 @@ impl BriefView {
     }
 
     fn render_stale(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let mut rows = vec![self.section("Status lines behind their notes", Some(self.brief.stale.len()))];
+        let mut rows = vec![self.section(
+            "Status lines behind their notes",
+            Some(self.brief.stale.len()),
+        )];
         if self.brief.stale.is_empty() {
             rows.push(self.empty("Every status callout is as new as its newest note"));
             return rows;
@@ -419,15 +442,25 @@ impl BriefView {
                     .rounded_md()
                     .hover(|this| this.bg(cx.theme().colors().element_hover))
                     .cursor_pointer()
-                    .tooltip(Tooltip::text(format!("{}:{}", open_loop.file, open_loop.line)))
+                    .tooltip(Tooltip::text(format!(
+                        "{}:{}",
+                        open_loop.file, open_loop.line
+                    )))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_relative(&file, window, cx);
                     }))
-                    .child(div().w(px(22.)).flex_none().child(Label::new(open_loop.marker.clone()).size(LabelSize::Small)))
                     .child(
-                        div().w(px(140.)).flex_none().overflow_hidden().child(
-                            Label::new(who).size(LabelSize::Small).truncate(),
-                        ),
+                        div()
+                            .w(px(22.))
+                            .flex_none()
+                            .child(Label::new(open_loop.marker.clone()).size(LabelSize::Small)),
+                    )
+                    .child(
+                        div()
+                            .w(px(140.))
+                            .flex_none()
+                            .overflow_hidden()
+                            .child(Label::new(who).size(LabelSize::Small).truncate()),
                     )
                     .child(
                         div().w(px(64.)).flex_none().child(
@@ -436,7 +469,12 @@ impl BriefView {
                                 .color(Color::Muted),
                         ),
                     )
-                    .child(div().flex_1().min_w_0().child(Label::new(text).size(LabelSize::Small).truncate()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Label::new(text).size(LabelSize::Small).truncate()),
+                    )
                     .into_any_element(),
             );
         }
@@ -505,13 +543,20 @@ impl Render for BriefView {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(Label::new(updated).size(LabelSize::Small).color(Color::Muted))
+                    .child(
+                        Label::new(updated)
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
                     .child(if self.loading {
                         h_flex()
                             .h(px(24.))
                             .px_3()
                             .items_center()
-                            .child(ui::bouncing_dots("brainz-brief-loading", cx.theme().colors().text_accent))
+                            .child(ui::bouncing_dots(
+                                "brainz-brief-loading",
+                                cx.theme().colors().text_accent,
+                            ))
                             .into_any_element()
                     } else {
                         IconButton::new("brainz-brief-refresh", IconName::ArrowCircle)
@@ -572,7 +617,11 @@ impl Render for BriefButton {
             IconButton::new("brainz-brief-button", IconName::BrainzBrief)
                 .icon_size(IconSize::Small)
                 .toggle_state(active)
-                .icon_color(if active { Color::Accent } else { Color::Default })
+                .icon_color(if active {
+                    Color::Accent
+                } else {
+                    Color::Default
+                })
                 .tooltip(move |_window, cx| {
                     if let Some(focus_handle) = &focus_handle {
                         Tooltip::for_action_in("Brief", &OpenBrief, focus_handle, cx)

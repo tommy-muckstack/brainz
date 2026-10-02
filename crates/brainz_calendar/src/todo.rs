@@ -100,7 +100,11 @@ fn parse_board(text: &str) -> TodoBoard {
         } else if let Some(section) = board.sections.last_mut() {
             if let Some(item) = parse_item(line, index) {
                 section.items.push(item);
-            } else if let Some(note) = line.trim().strip_prefix('_').and_then(|s| s.strip_suffix('_')) {
+            } else if let Some(note) = line
+                .trim()
+                .strip_prefix('_')
+                .and_then(|s| s.strip_suffix('_'))
+            {
                 section.empty_note = Some(note.trim_matches(|c| c == '(' || c == ')').to_owned());
             }
         }
@@ -109,8 +113,8 @@ fn parse_board(text: &str) -> TodoBoard {
 }
 
 fn load_board(path: &PathBuf) -> Result<TodoBoard> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     Ok(parse_board(&text))
 }
 
@@ -118,8 +122,8 @@ fn load_board(path: &PathBuf) -> Result<TodoBoard> {
 /// stays in its section so it reads as done rather than vanishing; whoever
 /// maintains the board tidies it into "## Done" later.
 fn toggle_item(path: &PathBuf, line_index: usize) -> Result<()> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
     let Some(line) = lines.get(line_index).cloned() else {
         anyhow::bail!("the to-do list changed underneath; refresh and try again");
@@ -165,7 +169,11 @@ impl TodoView {
             existing.update(cx, |view, cx| view.refresh(cx));
             return;
         }
-        let Some(root) = workspace.root_paths(cx).first().map(|path| path.to_path_buf()) else {
+        let Some(root) = workspace
+            .root_paths(cx)
+            .first()
+            .map(|path| path.to_path_buf())
+        else {
             return;
         };
         let relative = BrainConfig::load(&root).todo;
@@ -418,11 +426,10 @@ impl Render for TodoView {
                     )
                     .when(is_done, |this| {
                         this.child(
-                            Button::new("brainz-todo-toggle-done", if self.show_done {
-                                "Hide"
-                            } else {
-                                "Show"
-                            })
+                            Button::new(
+                                "brainz-todo-toggle-done",
+                                if self.show_done { "Hide" } else { "Show" },
+                            )
                             .label_size(LabelSize::XSmall)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.show_done = !this.show_done;
@@ -438,9 +445,14 @@ impl Render for TodoView {
             if section.items.is_empty() {
                 block = block.child(
                     div().px_2().py_1().child(
-                        Label::new(section.empty_note.clone().unwrap_or_else(|| "Nothing here".into()))
-                            .size(LabelSize::Small)
-                            .color(Color::Placeholder),
+                        Label::new(
+                            section
+                                .empty_note
+                                .clone()
+                                .unwrap_or_else(|| "Nothing here".into()),
+                        )
+                        .size(LabelSize::Small)
+                        .color(Color::Placeholder),
                     ),
                 );
             }
@@ -497,7 +509,11 @@ impl Render for TodoButton {
             IconButton::new("brainz-todo-button", IconName::BrainzCheckboxChecked)
                 .icon_size(IconSize::Small)
                 .toggle_state(active)
-                .icon_color(if active { Color::Accent } else { Color::Default })
+                .icon_color(if active {
+                    Color::Accent
+                } else {
+                    Color::Default
+                })
                 .tooltip(move |_window, cx| {
                     if let Some(focus_handle) = &focus_handle {
                         Tooltip::for_action_in("To-Do", &OpenTodo, focus_handle, cx)
