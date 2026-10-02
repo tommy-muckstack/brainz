@@ -107,6 +107,34 @@ pub fn claude_server_names() -> Vec<String> {
     read_claude_servers().keys().cloned().collect()
 }
 
+/// The connector names either client has configured, Claude's spelling
+/// first so a shared connector shows up once.
+pub fn server_names() -> Vec<String> {
+    let mut names = claude_server_names();
+    for name in read_codex_servers().keys() {
+        if !names
+            .iter()
+            .any(|known| Connector::key(known) == Connector::key(name))
+        {
+            names.push(name.clone());
+        }
+    }
+    names
+}
+
+/// The name the client's own config uses for a connector, since Claude
+/// and Codex spell the same server differently ("Amplitude" vs
+/// "amplitude") and `mcp login` only knows its own spelling.
+pub fn server_name_for(client: McpClient, name: &str) -> Option<String> {
+    let names: Vec<String> = match client {
+        McpClient::Claude => read_claude_servers().keys().cloned().collect(),
+        McpClient::Codex => read_codex_servers().keys().cloned().collect(),
+    };
+    names
+        .into_iter()
+        .find(|known| Connector::key(known) == Connector::key(name))
+}
+
 /// Runs `claude mcp login <server>` (or the Codex equivalent) in the
 /// terminal panel, which is shown while the browser sign-in happens and
 /// swapped back for whatever panel was up when it finishes.
@@ -119,6 +147,12 @@ pub fn spawn_mcp_login(
 ) -> Task<Result<()>> {
     let Some(workspace_entity) = workspace.upgrade() else {
         return Task::ready(Err(anyhow!("workspace closed")));
+    };
+    let Some(server) = server_name_for(client, &server) else {
+        return Task::ready(Err(anyhow!(
+            "{} has no connector named {server}; add it from the MCP tab first",
+            client.name()
+        )));
     };
     let Some(terminal_panel) = workspace_entity.read(cx).panel::<TerminalPanel>(cx) else {
         return Task::ready(Err(anyhow!("Terminal panel is unavailable")));
