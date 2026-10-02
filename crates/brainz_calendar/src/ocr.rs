@@ -103,7 +103,7 @@ fn looks_like_person(line: &str) -> bool {
         })
 }
 
-/// Splits `Toni Smith <toni@acme.com>` into its parts.
+/// Splits `Grace Hopper <grace@acme.com>` into its parts.
 fn name_and_email(text: &str) -> (Option<String>, Option<String>) {
     let email = emails_in(text).into_iter().next();
     let name = text
@@ -282,41 +282,41 @@ mod tests {
     #[test]
     fn gmail_shape_name_above_to_me() {
         let facts = parse_email(
-            "Toni Smith\nto me\nHi Tommy,\nThanks for confirming. Rich is set for Thu 10/1.\nToni",
+            "Grace Hopper\nto me\nHi Ada,\nThanks for confirming. Alan is set for Thu 10/1.\nGrace",
         );
         assert!(facts.is_email);
-        assert_eq!(facts.sender_name.as_deref(), Some("Toni Smith"));
+        assert_eq!(facts.sender_name.as_deref(), Some("Grace Hopper"));
         assert_eq!(facts.sender_email, None);
     }
 
     #[test]
     fn gmail_expanded_header_with_address() {
         let facts = parse_email(
-            "Toni Smith <toni@roofr.com>\nto Tommy\nWed, Sep 30, 11:39 AM\nTeam debrief Thu 10/1.",
+            "Grace Hopper <grace@acme.com>\nto Ada\nWed, Sep 30, 11:39 AM\nTeam debrief Thu 10/1.",
         );
-        assert_eq!(facts.sender_name.as_deref(), Some("Toni Smith"));
-        assert_eq!(facts.sender_email.as_deref(), Some("toni@roofr.com"));
-        assert_eq!(facts.sender_domain(), Some("roofr.com"));
+        assert_eq!(facts.sender_name.as_deref(), Some("Grace Hopper"));
+        assert_eq!(facts.sender_email.as_deref(), Some("grace@acme.com"));
+        assert_eq!(facts.sender_domain(), Some("acme.com"));
     }
 
     #[test]
     fn apple_mail_headers() {
         let facts = parse_email(
-            "From: Richard Nelson <richard@roofr.com>\nSubject: Re: Great meeting you\nDate: September 25, 2026 at 6:32 PM\nTo: Tommy Keeley <tommy@muckstack.com>\n\nIt was great meeting you, man!",
+            "From: Alan Turing <alan@acme.com>\nSubject: Re: Great meeting you\nDate: September 25, 2026 at 6:32 PM\nTo: Ada Lovelace <ada@example.com>\n\nIt was great meeting you!",
         );
         assert!(facts.is_email);
-        assert_eq!(facts.sender_name.as_deref(), Some("Richard Nelson"));
-        assert_eq!(facts.sender_email.as_deref(), Some("richard@roofr.com"));
+        assert_eq!(facts.sender_name.as_deref(), Some("Alan Turing"));
+        assert_eq!(facts.sender_email.as_deref(), Some("alan@acme.com"));
         assert_eq!(facts.subject.as_deref(), Some("Re: Great meeting you"));
     }
 
     #[test]
     fn recipient_lines_do_not_become_the_sender() {
         let facts = parse_email(
-            "To: tommy@muckstack.com\nCc: toni@roofr.com\nAndrii Palokha <andrii@roofr.com>\nwe've just reopened our role",
+            "To: ada@example.com\nCc: grace@acme.com\nHank Scorpio <hank@acme.com>\nwe've just reopened our role",
         );
-        assert_eq!(facts.sender_email.as_deref(), Some("andrii@roofr.com"));
-        assert_eq!(facts.sender_name.as_deref(), Some("Andrii Palokha"));
+        assert_eq!(facts.sender_email.as_deref(), Some("hank@acme.com"));
+        assert_eq!(facts.sender_name.as_deref(), Some("Hank Scorpio"));
     }
 
     #[test]
@@ -336,32 +336,32 @@ mod tests {
     #[test]
     fn prompts_name_the_folder_and_carry_the_text() {
         let config = BrainConfig {
-            stop_words: vec!["tommy".into()],
+            stop_words: vec!["ada".into()],
             ..BrainConfig::default()
         };
         let prompts = Prompts { config: &config };
         let found = Match {
-            folder: "companies/roofr".into(),
-            folder_name: "Roofr".into(),
-            who: "Toni Smith".into(),
+            folder: "companies/acme".into(),
+            folder_name: "Acme".into(),
+            who: "Grace Hopper".into(),
             prep_file: None,
             score: 8,
         };
-        let text = prompts.log_correspondence(Some(&found), "Toni Smith\nto me\nHi");
-        assert!(text.starts_with("Log this email in `companies/roofr`'s correspondence log"));
-        assert!(text.contains("```\nToni Smith\nto me\nHi\n```"));
+        let text = prompts.log_correspondence(Some(&found), "Grace Hopper\nto me\nHi");
+        assert!(text.starts_with("Log this email in `companies/acme`'s correspondence log"));
+        assert!(text.contains("```\nGrace Hopper\nto me\nHi\n```"));
         assert!(!text.contains('—'));
         let text = prompts.log_correspondence(None, "");
         assert!(text.contains("say which one you chose"));
         assert!(text.contains("No text could be read"));
         let text = prompts.draft_reply(Some(&found), "x");
-        assert!(text.starts_with("Draft Tommy's reply to this. First open `companies/roofr`'s correspondence log"));
+        assert!(text.starts_with("Draft Ada's reply to this. First open `companies/acme`'s correspondence log"));
         let generic = BrainConfig::default();
         let prompts = Prompts { config: &generic };
         assert!(prompts.draft_reply(None, "x").starts_with("Draft my reply"));
         assert_eq!(
-            prompts.file_in_folder("companies/roofr", &["2026-10-01-screenshot-1.png".into()]),
-            format!("Describe this in one line in `companies/roofr/CLAUDE.md` next to the file reference `companies/roofr/2026-10-01-screenshot-1.png`. {HOUSE_RULES}")
+            prompts.file_in_folder("companies/acme", &["2026-10-01-screenshot-1.png".into()]),
+            format!("Describe this in one line in `companies/acme/CLAUDE.md` next to the file reference `companies/acme/2026-10-01-screenshot-1.png`. {HOUSE_RULES}")
         );
         assert_eq!(
             dated_file_name(chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap(), 2, "png"),
