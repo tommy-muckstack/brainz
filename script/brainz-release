@@ -76,7 +76,11 @@ echo "==> Brainz $VERSION (build $BUILD_NUMBER), signing as: $DEV_ID_IDENTITY"
 echo "==> Release build (this takes a while)..."
 export DEVELOPER_DIR="$CLT_DEV"
 export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+# Panic locations and debug paths otherwise embed the builder's home folder
+# and the checkout path in the shipped binary; map them to neutral roots.
+REMAP_FLAGS="--remap-path-prefix=$repository=/brainz --remap-path-prefix=${HOME}/.cargo=/cargo --remap-path-prefix=${HOME}=/home"
 BRAINZ_VERSION="$VERSION" ZED_BUILD_ID="$BUILD_NUMBER" \
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$REMAP_FLAGS" \
     cargo +1.98.1 build --locked --release -p zed -p cli --bin brainz --bin cli \
     --features util/debug-embed,gpui_platform/runtime_shaders
 
