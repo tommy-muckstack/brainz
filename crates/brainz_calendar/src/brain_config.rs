@@ -15,7 +15,6 @@
 //!
 //! [calendar]
 //! prep_lead_minutes = 10      # the prep banner appears this long before an event
-//! log_delay_minutes = 5       # the "Log it?" banner appears this long after it ends
 //! match_dirs = ["companies", "projects"]   # folders whose children are matched
 //!
 //! [themes]
@@ -64,8 +63,6 @@ pub struct BrainConfig {
 pub struct CalendarConfig {
     /// Minutes before an event starts that the prep banner appears.
     pub prep_lead_minutes: u32,
-    /// Minutes after an event ends that the "Log it?" banner appears.
-    pub log_delay_minutes: u32,
     /// Folders whose child folders are matched against event titles,
     /// attendee names, and email domains. Empty means `vocabulary_folders`.
     pub match_dirs: Vec<String>,
@@ -75,7 +72,6 @@ impl Default for CalendarConfig {
     fn default() -> Self {
         Self {
             prep_lead_minutes: 10,
-            log_delay_minutes: 5,
             match_dirs: vec![],
         }
     }
@@ -210,7 +206,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.calendar.prep_lead_minutes, 15);
-        assert_eq!(config.calendar.log_delay_minutes, 5);
         assert_eq!(config.match_dirs(), vec!["clients".to_owned()]);
         assert_eq!(config.themes.noise_dirs, vec!["drafts".to_owned()]);
         assert_eq!(config.window_weeks(), 8);
