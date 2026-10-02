@@ -2642,7 +2642,7 @@ impl MessageEditor {
 }
 
 /// Brainz: documents Quick Look renders well enough to stand in for a chip.
-fn is_thumbnail_document(path: &std::path::Path) -> bool {
+pub(crate) fn is_thumbnail_document(path: &std::path::Path) -> bool {
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())

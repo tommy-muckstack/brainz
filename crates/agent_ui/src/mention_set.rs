@@ -961,7 +961,9 @@ pub(crate) async fn insert_images_as_context(
                     .unwrap();
                 let text_anchor = cursor_anchor.bias_left(buffer_snapshot);
                 let multibuffer_anchor = snapshot.buffer_snapshot().anchor_in_excerpt(text_anchor);
-                editor.insert(&format!("{replacement_text} "), window, cx);
+                // Brainz: the image chip is invisible, so no separating space;
+                // text typed next starts flush left.
+                editor.insert(&replacement_text, window, cx);
                 (text_anchor, multibuffer_anchor)
             })
             .ok()
@@ -1165,6 +1167,11 @@ pub(crate) fn insert_crease_for_mention(
         let start = start.bias_right(&snapshot);
         let end = snapshot.anchor_before(start.to_offset(&snapshot) + content_len);
 
+        let hidden_chip = image.is_some()
+            || matches!(
+                &mention_uri,
+                Some(MentionUri::File { abs_path }) if crate::message_editor::is_thumbnail_document(abs_path)
+            );
         let (render, crease_entity) = render_mention_fold_button(
             crease_label.clone(),
             crease_icon.clone(),
@@ -1177,9 +1184,13 @@ pub(crate) fn insert_crease_for_mention(
             cx.weak_entity(),
             cx,
         );
+        // Brainz: pasted images and thumbnailed documents show above the text
+        // and render an empty chip, so the fold must not keep the ellipsis
+        // width either; otherwise text typed after it sits indented.
         let placeholder = FoldPlaceholder {
             render,
             merge_adjacent: false,
+            constrain_width: !hidden_chip,
             ..Default::default()
         };
 
