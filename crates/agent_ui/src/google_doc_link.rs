@@ -121,9 +121,11 @@ pub(crate) fn known_link(url: &str) -> Option<(LinkKind, String)> {
             LinkKind::Granola,
             format!("https://notes.granola.ai/t/{id}"),
         )),
+        // The share page is an empty app shell; the recording's title comes
+        // from the public API the page itself calls.
         ("notes.wisprflow.ai", ["shared", id, ..]) if !id.is_empty() => Some((
             LinkKind::WisprFlow,
-            format!("https://notes.wisprflow.ai/shared/{id}"),
+            format!("https://api.wisprflow.ai/api/v1/meetings/shared/{id}"),
         )),
         ("github.com" | "www.github.com", [_owner, _repo, ..]) => {
             let mut metadata_url = parsed.clone();
@@ -160,6 +162,50 @@ pub(crate) fn pasted_local_files(text: &str) -> Vec<(Range<usize>, std::path::Pa
     }
     files
 }
+/// The label for a pill that points at a file on this Mac: a Markdown note's
+/// first heading (My Man meeting notes, brain notes) so the pill reads like
+/// the Granola one, otherwise the file name.
+pub(crate) fn local_file_label(path: &std::path::Path) -> String {
+    markdown_title(path).unwrap_or_else(|| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned())
+    })
+}
+
+/// The first `# heading` of a Markdown file, skipping YAML front matter.
+/// Reads only the head of the file; blocking, so callers keep it off hot
+/// paths (a paste or a thread load, not a render).
+fn markdown_title(path: &std::path::Path) -> Option<String> {
+    use std::io::Read as _;
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    if !matches!(extension.as_str(), "md" | "markdown") {
+        return None;
+    }
+    let mut head = vec![0u8; 16 * 1024];
+    let mut file = std::fs::File::open(path).ok()?;
+    let read = file.read(&mut head).ok()?;
+    head.truncate(read);
+    let text = String::from_utf8_lossy(&head);
+    let mut lines = text.lines().peekable();
+    if lines.peek().is_some_and(|line| line.trim_end() == "---") {
+        lines.next();
+        for line in lines.by_ref() {
+            if line.trim_end() == "---" {
+                break;
+            }
+        }
+    }
+    lines
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(12)
+        .find_map(|line| {
+            let title = line.strip_prefix('#')?.trim_start_matches('#').trim();
+            (!title.is_empty()).then(|| title.split_whitespace().collect::<Vec<_>>().join(" "))
+        })
+}
+
 const MAX_TITLE_RESPONSE_BYTES: u64 = 512 * 1024;
 const TITLE_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -228,6 +274,15 @@ pub(crate) fn pasted_document_links(text: &str) -> Vec<(Range<usize>, Url)> {
 }
 
 fn document_title(html: &[u8], kind: LinkKind) -> Option<String> {
+    if kind == LinkKind::WisprFlow
+        && let Ok(json) = serde_json::from_slice::<serde_json::Value>(html)
+    {
+        return json
+            .get("title")
+            .and_then(|title| title.as_str())
+            .map(|title| title.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|title| !title.is_empty());
+    }
     let dom = parse_document(RcDom::default(), Default::default())
         .from_utf8()
         .read_from(&mut &html[..])
@@ -528,6 +583,45 @@ mod tests {
         assert!(bounds.size.width <= px(384.));
         cx.simulate_click(bounds.center(), gpui::Modifiers::default());
         assert_eq!(cx.opened_url().as_deref(), Some(url));
+    }
+
+    #[test]
+    fn wispr_flow_titles_come_from_the_meetings_api() {
+        assert_eq!(
+            document_title(
+                br#"{"meeting_id":"m1","title":"Grace / Ada  sync","notes":null}"#,
+                LinkKind::WisprFlow
+            ),
+            Some("Grace / Ada sync".into())
+        );
+        assert_eq!(
+            known_link("https://notes.wisprflow.ai/shared/ExampleSharedNoteId0000000000000000000000")
+                .map(|(_, url)| url),
+            Some(
+                "https://api.wisprflow.ai/api/v1/meetings/shared/ExampleSharedNoteId0000000000000000000000"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn markdown_title_skips_front_matter_and_collapses_spaces() {
+        let dir = std::env::temp_dir().join(format!("brainz-md-title-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let note = dir.join("2026-10-02-ABCD1234.md");
+        std::fs::write(
+            &note,
+            "---\nid: ABCD1234\nkind: meeting\n---\n\n# Interview with Acme  [Grace H]\n\nbody\n",
+        )
+        .unwrap();
+        assert_eq!(local_file_label(&note), "Interview with Acme [Grace H]");
+        let plain = dir.join("plain.md");
+        std::fs::write(&plain, "no heading here\n").unwrap();
+        assert_eq!(local_file_label(&plain), "plain.md");
+        let pdf = dir.join("deck.pdf");
+        std::fs::write(&pdf, "# not markdown").unwrap();
+        assert_eq!(local_file_label(&pdf), "deck.pdf");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
