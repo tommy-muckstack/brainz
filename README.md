@@ -41,6 +41,12 @@ character grid. The message box starts one line tall, including in a new chat,
 and grows as you type.
 Paste or attach multiple screenshots to collect them in one horizontally scrollable
 thumbnail strip above the text before you send.
+Clicking a `.pdf` in the file tree opens it in a tab: the bundled `brainz-pdf`
+helper (CoreGraphics) renders the pages to PNGs under Brainz's data folder, cached
+by path, size, and modification time, and the tab shows them as a scrollable stack
+with an **Open in Default App** button for anything more (password-protected files
+go straight to that button).
+
 Pasted Google Doc, Granola, Wispr Flow, and GitHub links become clickable title
 pills in the composer and sent messages (Granola shows its logo; Wispr Flow titles
 come from its public meetings API since the share page is an app shell; GitHub pills

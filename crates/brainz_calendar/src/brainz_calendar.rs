@@ -10,6 +10,7 @@ pub mod mcp;
 pub mod memory_share;
 pub mod ocr;
 pub mod open_loops;
+pub mod pdf;
 pub mod permissions;
 pub mod prep;
 pub mod status_decay;
@@ -53,6 +54,7 @@ pub fn init(cx: &mut App) {
     open_loops::init(cx);
     brief::init(cx);
     status_decay::init(cx);
+    pdf::init(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenCalendar, window, cx| {
             CalendarView::open(workspace, window, cx);
