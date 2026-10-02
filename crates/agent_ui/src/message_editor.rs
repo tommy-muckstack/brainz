@@ -217,6 +217,8 @@ pub struct MessageEditor {
     image_preview_scroll: gpui::ScrollHandle,
     /// Brainz: solid bubble colour when this editor shows a sent message.
     bubble_color: Option<gpui::Hsla>,
+    /// Brainz: the tab's colour for the composer's cursor and selection.
+    accent_color: Option<gpui::Hsla>,
     /// Brainz: OCR of each attached image, started as soon as it decodes.
     brainz_ocr: HashMap<CreaseId, Shared<Task<Result<Arc<OcrOutcome>, String>>>>,
     /// Brainz: Quick Look renderings of attached documents, by crease.
@@ -633,6 +635,7 @@ impl MessageEditor {
             pending_image_previews: HashSet::default(),
             image_preview_scroll: gpui::ScrollHandle::new(),
             bubble_color: None,
+            accent_color: None,
             brainz_ocr: HashMap::default(),
             brainz_file_thumbnails: HashMap::default(),
             _subscriptions: subscriptions,
@@ -2275,6 +2278,10 @@ impl MessageEditor {
         self.bubble_color = color;
     }
 
+    pub fn set_accent_color(&mut self, color: Option<gpui::Hsla>) {
+        self.accent_color = color;
+    }
+
     pub fn bubble_text_color(&self, cx: &App) -> gpui::Hsla {
         match self.bubble_color {
             Some(color) if color.l > 0.5 => gpui::hsla(0., 0., 0.08, 1.),
@@ -2731,7 +2738,16 @@ impl Render for MessageEditor {
                         background: self
                             .bubble_color
                             .unwrap_or_else(|| cx.theme().colors().editor_background),
-                        local_player: cx.theme().players().local(),
+                        // Brainz: the flashing cursor and selection take the
+                        // tab's colour, like the box outline and bubbles.
+                        local_player: {
+                            let mut player = cx.theme().players().local();
+                            if let Some(accent) = self.accent_color {
+                                player.cursor = accent;
+                                player.selection = accent.opacity(0.25);
+                            }
+                            player
+                        },
                         text: text_style,
                         // Brainz: sent messages sit on a solid bubble, so
                         // Markdown syntax colours would fight the ink.

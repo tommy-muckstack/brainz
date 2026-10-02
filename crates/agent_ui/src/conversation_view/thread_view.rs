@@ -5585,9 +5585,12 @@ impl ThreadView {
 
         // Brainz: the plus turns into an × while the menu is open.
         let menu_open = self.add_context_menu_handle.is_deployed();
+        let open_color = self
+            .brainz_tab_color(cx)
+            .unwrap_or_else(|| cx.theme().colors().text_accent);
         let plus = Icon::new(IconName::Plus)
             .size(IconSize::Small)
-            .color(if menu_open { Color::Default } else { Color::Muted })
+            .color(if menu_open { Color::Custom(open_color) } else { Color::Muted })
             .with_animation(
                 if menu_open {
                     "brainz-add-context-open"
@@ -5683,7 +5686,8 @@ impl ThreadView {
     ) -> impl IntoElement {
         let open = self.composer_controls_visible;
         let color = if open || customized {
-            cx.theme().colors().text_accent
+            self.brainz_tab_color(cx)
+                .unwrap_or_else(|| cx.theme().colors().text_accent)
         } else {
             cx.theme().colors().icon_muted
         };
@@ -13170,6 +13174,7 @@ impl Render for ThreadView {
         self.entry_view_state.update(cx, |state, cx| {
             state.set_bubble_color(bubble_color, cx);
         });
+        self.message_editor.update(cx, |editor, _| editor.set_accent_color(bubble_color));
         // Keep the message editor's local slash commands in sync with the
         // current availability of feedback/sharing, which can change between
         // renders (settings, connection state, feature flags).
