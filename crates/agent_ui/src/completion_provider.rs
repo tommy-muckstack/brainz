@@ -2008,11 +2008,50 @@ impl PromptCompletion {
                 return Some(Self::Mention(mention));
             }
         }
-        SlashCommandCompletion::try_parse(line, offset_to_line).map(Self::SlashCommand)
+        let slash = SlashCommandCompletion::try_parse(line, offset_to_line);
+        // Brainz: a slash only means a command at the start of the line. Later
+        // in a sentence, `companies/` or a bare `/` is somebody reaching for a
+        // folder, so it opens the file and folder type-ahead instead.
+        let leading = line.len() - line.trim_start().len();
+        if let Some(slash) = &slash
+            && slash.source_range.start == offset_to_line + leading
+        {
+            return Some(Self::SlashCommand(slash.clone()));
+        }
+        if supported_modes.contains(&PromptContextType::File)
+            && let Some(path) = Self::try_parse_path(line, offset_to_line)
+        {
+            return Some(Self::Mention(path));
+        }
+        slash.map(Self::SlashCommand)
+    }
+
+    /// The last word on the line when it looks like a path: contains a `/`,
+    /// is not a URL, and does not start with a digit (dates like 9/30).
+    fn try_parse_path(line: &str, offset_to_line: usize) -> Option<MentionCompletion> {
+        let start = line
+            .rfind(char::is_whitespace)
+            .map(|idx| idx + line[idx..].chars().next().map_or(1, char::len_utf8))
+            .unwrap_or(0);
+        let token = &line[start..];
+        if token.is_empty()
+            || !token.contains('/')
+            || token.contains("://")
+            || token.starts_with('@')
+            || token.chars().next().is_some_and(|c| c.is_ascii_digit())
+        {
+            return None;
+        }
+        let argument = (token != "/").then(|| token.to_string());
+        Some(MentionCompletion {
+            source_range: start + offset_to_line..line.len() + offset_to_line,
+            mode: Some(PromptContextType::File),
+            argument,
+        })
     }
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct SlashCommandCompletion {
     pub source_range: Range<usize>,
     pub command: Option<String>,
@@ -2879,6 +2918,44 @@ mod tests {
                 mode: Some(PromptContextType::File),
                 argument: None,
             }))
+        );
+
+        // Brainz: paths mid-sentence open the file type-ahead, not commands.
+        assert_eq!(
+            PromptCompletion::try_parse("open companies/", 0, &supported_modes),
+            Some(PromptCompletion::Mention(MentionCompletion {
+                source_range: 5..15,
+                mode: Some(PromptContextType::File),
+                argument: Some("companies/".into()),
+            }))
+        );
+        assert_eq!(
+            PromptCompletion::try_parse("companies /", 0, &supported_modes),
+            Some(PromptCompletion::Mention(MentionCompletion {
+                source_range: 10..11,
+                mode: Some(PromptContextType::File),
+                argument: None,
+            }))
+        );
+        assert_eq!(
+            PromptCompletion::try_parse("  /plan", 0, &supported_modes),
+            Some(PromptCompletion::SlashCommand(SlashCommandCompletion {
+                source_range: 2..7,
+                command: Some("plan".into()),
+                argument: None,
+            }))
+        );
+        assert_eq!(
+            PromptCompletion::try_parse("see https://a.b/c", 0, &supported_modes),
+            None
+        );
+        assert_eq!(
+            PromptCompletion::try_parse("due 9/30", 0, &supported_modes),
+            None
+        );
+        assert_eq!(
+            PromptCompletion::try_parse("open companies/", 0, &[PromptContextType::Symbol]),
+            None
         );
     }
 
