@@ -2008,22 +2008,24 @@ impl PromptCompletion {
                 return Some(Self::Mention(mention));
             }
         }
-        let slash = SlashCommandCompletion::try_parse(line, offset_to_line);
-        // Brainz: a slash only means a command at the start of the line. Later
-        // in a sentence, `companies/` or a bare `/` is somebody reaching for a
-        // folder, so it opens the file and folder type-ahead instead.
+        // Brainz: `/` reaches for a folder or file in the brain, so it opens
+        // the file type-ahead with the typed path as the query. Commands sit
+        // behind a double slash (`//plan`) at the start of the line.
         let leading = line.len() - line.trim_start().len();
-        if let Some(slash) = &slash
-            && slash.source_range.start == offset_to_line + leading
-        {
-            return Some(Self::SlashCommand(slash.clone()));
+        if line[leading..].starts_with("//") {
+            return SlashCommandCompletion::try_parse(
+                &line[leading + 1..],
+                offset_to_line + leading + 1,
+            )
+            .map(|mut slash| {
+                slash.source_range.start -= 1;
+                Self::SlashCommand(slash)
+            });
         }
-        if supported_modes.contains(&PromptContextType::File)
-            && let Some(path) = Self::try_parse_path(line, offset_to_line)
-        {
-            return Some(Self::Mention(path));
+        if supported_modes.contains(&PromptContextType::File) {
+            return Self::try_parse_path(line, offset_to_line).map(Self::Mention);
         }
-        slash.map(Self::SlashCommand)
+        SlashCommandCompletion::try_parse(line, offset_to_line).map(Self::SlashCommand)
     }
 
     /// The last word on the line when it looks like a path: contains a `/`,
@@ -2895,9 +2897,25 @@ mod tests {
 
         assert_eq!(
             PromptCompletion::try_parse("/", 0, &supported_modes),
-            Some(PromptCompletion::SlashCommand(SlashCommandCompletion {
+            Some(PromptCompletion::Mention(MentionCompletion {
                 source_range: 0..1,
+                mode: Some(PromptContextType::File),
+                argument: None,
+            }))
+        );
+        assert_eq!(
+            PromptCompletion::try_parse("//", 0, &supported_modes),
+            Some(PromptCompletion::SlashCommand(SlashCommandCompletion {
+                source_range: 0..2,
                 command: None,
+                argument: None,
+            }))
+        );
+        assert_eq!(
+            PromptCompletion::try_parse("//plan", 0, &supported_modes),
+            Some(PromptCompletion::SlashCommand(SlashCommandCompletion {
+                source_range: 0..6,
+                command: Some("plan".into()),
                 argument: None,
             }))
         );
@@ -2939,8 +2957,16 @@ mod tests {
         );
         assert_eq!(
             PromptCompletion::try_parse("  /plan", 0, &supported_modes),
-            Some(PromptCompletion::SlashCommand(SlashCommandCompletion {
+            Some(PromptCompletion::Mention(MentionCompletion {
                 source_range: 2..7,
+                mode: Some(PromptContextType::File),
+                argument: Some("/plan".into()),
+            }))
+        );
+        assert_eq!(
+            PromptCompletion::try_parse("//plan", 0, &[PromptContextType::Symbol]),
+            Some(PromptCompletion::SlashCommand(SlashCommandCompletion {
+                source_range: 0..6,
                 command: Some("plan".into()),
                 argument: None,
             }))

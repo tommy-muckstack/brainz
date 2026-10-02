@@ -163,6 +163,50 @@ impl OpenLoopsView {
         }
     }
 
+    /// Marks the loop done in its note (the ⏳ or ⏰ becomes ✅ on that
+    /// line) and drops the row here. The next signals pass confirms it.
+    fn mark_done(&mut self, open_loop: &OpenLoop, cx: &mut Context<Self>) {
+        let path = self.repo.join(&open_loop.file);
+        let target = open_loop.clone();
+        if let Some(signals) = &mut self.signals {
+            signals.open_loops.retain(|candidate| {
+                !(candidate.file == target.file
+                    && candidate.line == target.line
+                    && candidate.text == target.text)
+            });
+        }
+        cx.notify();
+        let workspace = self.workspace.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { strike_marker(&path, &target) })
+                .await;
+            match result {
+                Ok(()) => {
+                    this.update(cx, |this, cx| this.run_now(cx)).ok();
+                }
+                Err(error) => {
+                    log::error!("brainz mark done: {error:#}");
+                    workspace
+                        .update(cx, |workspace, cx| {
+                            let id = workspace::notifications::NotificationId::unique::<OpenLoopsView>();
+                            workspace.show_notification(id, cx, |cx| {
+                                cx.new(|cx| {
+                                    workspace::notifications::simple_message_notification::MessageNotification::new(
+                                        format!("Could not mark the loop done: {error:#}"),
+                                        cx,
+                                    )
+                                })
+                            });
+                        })
+                        .ok();
+                    this.update(cx, |this, cx| this.reload(cx)).ok();
+                }
+            }
+        })
+        .detach();
+    }
+
     /// Opens the loop's file with the cursor on its line. With
     /// `select_marker`, the ⏳ or ⏰ glyph is selected so one keystroke
     /// replaces it; the edit itself stays the user's.
@@ -331,32 +375,68 @@ impl OpenLoopsView {
                         div().w(px(64.)).flex_none().child(
                             Label::new(age_label)
                                 .size(LabelSize::XSmall)
-                                .color(if age >= 14 { Color::Accent } else { Color::Muted }),
+                                .color(if age >= 14 {
+                                    Color::Accent
+                                } else {
+                                    Color::Muted
+                                }),
                         ),
                     )
                     .child(
-                        div().flex_1().min_w_0().child(
-                            Label::new(text)
-                                .size(LabelSize::Small)
-                                .truncate(),
-                        ),
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Label::new(text).size(LabelSize::Small).truncate()),
                     )
                     .child(
                         Button::new(("brainz-open-loop-done", ix_base + ix), "Mark done")
                             .label_size(LabelSize::XSmall)
                             .color(Color::Muted)
                             .tooltip(Tooltip::text(
-                                "Opens the note with the marker selected; type ✅ or delete to strike it",
+                                "Turns the marker into ✅ in the note and removes this row",
                             ))
-                            .on_click(cx.listener(move |this, _, window, cx| {
+                            .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
-                                this.open_loop(&done_loop, true, window, cx);
+                                this.mark_done(&done_loop, cx);
                             })),
                     ),
             );
         }
         block.into_any_element()
     }
+}
+
+/// Replaces the loop's marker with ✅ on its line. The line number comes
+/// from the last signals pass, so when the file has since shifted, the
+/// nearest line carrying the same marker and text is used instead.
+fn strike_marker(path: &std::path::Path, open_loop: &OpenLoop) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let marker = open_loop.marker.as_str();
+    let snippet: String = open_loop.text.chars().take(40).collect();
+    let matches_line =
+        |line: &str| line.contains(marker) && (snippet.is_empty() || line.contains(snippet.trim()));
+    let expected = open_loop.line.saturating_sub(1) as usize;
+    let row = if lines.get(expected).is_some_and(|line| matches_line(line)) {
+        expected
+    } else {
+        let mut best: Option<usize> = None;
+        for (ix, line) in lines.iter().enumerate() {
+            if matches_line(line)
+                && best.is_none_or(|current| ix.abs_diff(expected) < current.abs_diff(expected))
+            {
+                best = Some(ix);
+            }
+        }
+        best.ok_or_else(|| anyhow::anyhow!("the line is no longer in {}", open_loop.file))?
+    };
+    let updated = lines[row].replacen(marker, "✅", 1);
+    lines[row] = &updated;
+    let joined: String = lines.concat();
+    std::fs::write(path, joined).with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
 }
 
 impl EventEmitter<()> for OpenLoopsView {}
@@ -434,7 +514,7 @@ impl Render for OpenLoopsView {
         let mut body: Vec<AnyElement> = vec![
             Label::new(format!(
                 "Unfinished items your notes mark with ⏰ (something {owner} owes) or ⏳ (waiting on someone else), \
-                 oldest first. Click a row to open the note at that line; strike it there when it is done."
+                 oldest first. Click a row to open the note at that line; Mark done turns its marker into ✅ for you."
             ))
             .size(LabelSize::Small)
             .color(Color::Muted)

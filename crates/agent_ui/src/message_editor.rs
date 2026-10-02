@@ -3585,10 +3585,12 @@ mod tests {
             message_editor.read(cx).editor().clone()
         });
 
-        cx.simulate_input("/");
+        // Brainz: commands live behind a double slash; a single slash is the
+        // folder type-ahead.
+        cx.simulate_input("//");
 
         editor.update_in(&mut cx, |editor, window, cx| {
-            assert_eq!(editor.text(cx), "/");
+            assert_eq!(editor.text(cx), "//");
             assert!(editor.has_visible_completions_menu());
 
             assert_eq!(
@@ -3601,10 +3603,10 @@ mod tests {
             editor.set_text("", window, cx);
         });
 
-        cx.simulate_input("/qui");
+        cx.simulate_input("//qui");
 
         editor.update_in(&mut cx, |editor, window, cx| {
-            assert_eq!(editor.text(cx), "/qui");
+            assert_eq!(editor.text(cx), "//qui");
             assert!(editor.has_visible_completions_menu());
 
             assert_eq!(
@@ -3627,10 +3629,10 @@ mod tests {
             editor.set_text("", window, cx);
         });
 
-        cx.simulate_input("/say");
+        cx.simulate_input("//say");
 
         editor.update_in(&mut cx, |editor, _window, cx| {
-            assert_eq!(editor.display_text(cx), "/say");
+            assert_eq!(editor.display_text(cx), "//say");
             assert!(editor.has_visible_completions_menu());
 
             assert_eq!(
