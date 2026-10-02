@@ -4551,6 +4551,11 @@ impl ThreadView {
         let queue_len = self.message_queue.len();
         let can_fast_track = self.message_queue.can_fast_track();
         let is_native = self.as_native_thread(cx).is_some();
+        // Brainz: the "next" dot wears the tab's colour, like the bubbles.
+        let next_color = self
+            .brainz_tab_color(cx)
+            .map(Color::Custom)
+            .unwrap_or(Color::Accent);
 
         v_flex()
             .id("message_queue_list")
@@ -4561,7 +4566,7 @@ impl ThreadView {
                 let editor = &entry.editor;
                 let is_next = index == 0;
                 let (icon_color, tooltip_text) = if is_next {
-                    (Color::Accent, "Next in Queue")
+                    (next_color, "Next in Queue")
                 } else {
                     (Color::Muted, "In Queue")
                 };
