@@ -12009,7 +12009,7 @@ impl ThreadView {
         if !self.agent_id.0.ends_with("-acp") {
             return None;
         }
-        let servers = brainz_calendar::mcp::claude_server_names();
+        let servers = brainz_calendar::mcp::server_names();
         let find_server = |text: &str| -> Option<String> {
             let lower = text.to_lowercase();
             servers
