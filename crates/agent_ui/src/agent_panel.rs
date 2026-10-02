@@ -6977,12 +6977,7 @@ impl AgentPanel {
         cx.notify();
     }
 
-    fn set_panel_tab_color(
-        &mut self,
-        tab: PanelTab,
-        color: Option<usize>,
-        cx: &mut Context<Self>,
-    ) {
+    fn set_panel_tab_color(&mut self, tab: PanelTab, color: Option<usize>, cx: &mut Context<Self>) {
         match color {
             Some(color) => {
                 self.tab_colors.insert(tab, color);
@@ -7152,11 +7147,7 @@ impl AgentPanel {
     }
 
     /// Brainz: full-screen toggle and the options menu, at the end of the tab strip.
-    fn render_tab_strip_controls(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_tab_strip_controls(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let is_full_screen = self.is_zoomed(window, cx);
         let (icon_name, tooltip_text) = if is_full_screen {
             (IconName::Minimize, "Disable Full Screen")
@@ -7439,19 +7430,13 @@ impl Render for AgentPanel {
             })
             .children(self.render_trial_end_upsell(window, cx))
             // Brainz: a soft shadow falling from the seam onto the tab strip.
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .right_0()
-                    .h(px(14.))
-                    .bg(gpui::linear_gradient(
-                        180.,
-                        gpui::linear_color_stop(gpui::black().opacity(0.45), 0.),
-                        gpui::linear_color_stop(gpui::black().opacity(0.), 1.),
-                    )),
-            );
+            .child(div().absolute().top_0().left_0().right_0().h(px(14.)).bg(
+                gpui::linear_gradient(
+                    180.,
+                    gpui::linear_color_stop(gpui::black().opacity(0.45), 0.),
+                    gpui::linear_color_stop(gpui::black().opacity(0.), 1.),
+                ),
+            ));
 
         match self.visible_font_size() {
             WhichFontSize::AgentFont => {

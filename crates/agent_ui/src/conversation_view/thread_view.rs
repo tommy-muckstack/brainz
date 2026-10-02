@@ -2069,7 +2069,12 @@ impl ThreadView {
 
     /// Brainz: sends the text of an earlier message again as a new message,
     /// without rewinding the conversation.
-    fn resend_user_message(&mut self, entry_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn resend_user_message(
+        &mut self,
+        entry_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let entry_editor = self
             .entry_view_state
             .read(cx)
@@ -5594,7 +5599,11 @@ impl ThreadView {
             .unwrap_or_else(|| cx.theme().colors().text_accent);
         let plus = Icon::new(IconName::Plus)
             .size(IconSize::Small)
-            .color(if menu_open { Color::Custom(open_color) } else { Color::Muted })
+            .color(if menu_open {
+                Color::Custom(open_color)
+            } else {
+                Color::Muted
+            })
             .with_animation(
                 if menu_open {
                     "brainz-add-context-open"
@@ -5649,10 +5658,12 @@ impl ThreadView {
                 .mode_selector
                 .as_ref()
                 .map(|selector| selector.read(cx).mode()),
-            model: self
-                .model_selector
-                .as_ref()
-                .and_then(|selector| selector.read(cx).active_model(cx).map(|model| model.id.clone())),
+            model: self.model_selector.as_ref().and_then(|selector| {
+                selector
+                    .read(cx)
+                    .active_model(cx)
+                    .map(|model| model.id.clone())
+            }),
             effort: native
                 .as_ref()
                 .and_then(|thread| thread.thinking_effort().cloned()),
@@ -5739,9 +5750,23 @@ impl ThreadView {
                 )
         };
         let (top_from, top_to, bottom_from, bottom_to, top_id, bottom_id) = if open {
-            (travel, 0., 0., travel, "brainz-sliders-top-open", "brainz-sliders-bottom-open")
+            (
+                travel,
+                0.,
+                0.,
+                travel,
+                "brainz-sliders-top-open",
+                "brainz-sliders-bottom-open",
+            )
         } else {
-            (0., travel, travel, 0., "brainz-sliders-top-closed", "brainz-sliders-bottom-closed")
+            (
+                0.,
+                travel,
+                travel,
+                0.,
+                "brainz-sliders-top-closed",
+                "brainz-sliders-bottom-closed",
+            )
         };
         ui::ButtonLike::new("brainz-composer-controls")
             .size(ui::ButtonSize::Compact)
@@ -5797,51 +5822,45 @@ impl ThreadView {
             .bg(cx.theme().colors().elevated_surface_background)
             .shadow_lg()
             .child(
-                v_flex()
-                    .gap_1()
-                    .child(row("Model"))
-                    .child(
-                        h_flex()
-                            .flex_wrap()
-                            .gap_1()
-                            .map(|this| match self.config_options_view.clone() {
-                                Some(config_view) => this.child(config_view),
-                                None => this
-                                    .children(self.mode_selector.clone())
-                                    .children(self.model_selector.clone()),
-                            })
-                            .children(self.profile_selector.clone()),
-                    ),
+                v_flex().gap_1().child(row("Model")).child(
+                    h_flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .map(|this| match self.config_options_view.clone() {
+                            Some(config_view) => this.child(config_view),
+                            None => this
+                                .children(self.mode_selector.clone())
+                                .children(self.model_selector.clone()),
+                        })
+                        .children(self.profile_selector.clone()),
+                ),
             )
             .child(
-                v_flex()
-                    .gap_1()
-                    .child(row("Options"))
-                    .child(
-                        h_flex()
-                            .flex_wrap()
-                            .gap_1()
-                            .children(self.render_thinking_control(cx))
-                            .children(self.render_fast_mode_control(cx))
-                            .child(self.render_follow_toggle(cx))
-                            .child(
-                                IconButton::new("brainz-reset-thread", IconName::RotateCcw)
-                                    .icon_size(IconSize::Small)
-                                    .icon_color(Color::Muted)
-                                    .tooltip(Tooltip::text(
-                                        "Reset: start fresh with this agent, keeping the connection",
-                                    ))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.composer_controls_visible = false;
-                                        window.dispatch_action(
-                                            crate::BrainzResetThread.boxed_clone(),
-                                            cx,
-                                        );
-                                        cx.notify();
-                                    })),
-                            )
-                            .children(self.render_token_usage(cx)),
-                    ),
+                v_flex().gap_1().child(row("Options")).child(
+                    h_flex()
+                        .flex_wrap()
+                        .gap_1()
+                        .children(self.render_thinking_control(cx))
+                        .children(self.render_fast_mode_control(cx))
+                        .child(self.render_follow_toggle(cx))
+                        .child(
+                            IconButton::new("brainz-reset-thread", IconName::RotateCcw)
+                                .icon_size(IconSize::Small)
+                                .icon_color(Color::Muted)
+                                .tooltip(Tooltip::text(
+                                    "Reset: start fresh with this agent, keeping the connection",
+                                ))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.composer_controls_visible = false;
+                                    window.dispatch_action(
+                                        crate::BrainzResetThread.boxed_clone(),
+                                        cx,
+                                    );
+                                    cx.notify();
+                                })),
+                        )
+                        .children(self.render_token_usage(cx)),
+                ),
             )
     }
 
@@ -6478,7 +6497,10 @@ impl ThreadView {
                 // permission request goes unanswered. It is a system note, not
                 // something the user typed, so show it as one.
                 let marker_text = message.content.to_markdown(cx);
-                if marker_text.trim().starts_with("[Request interrupted by user") {
+                if marker_text
+                    .trim()
+                    .starts_with("[Request interrupted by user")
+                {
                     return v_flex()
                         .id(("brainz-interrupted", entry_ix))
                         .w_full()
@@ -6791,27 +6813,25 @@ impl ThreadView {
                                 .border_color(cx.theme().colors().border_variant)
                                 .child(message_body)
                                 // Brainz: copy appears in the bubble's corner on hover.
-                                .child(
-                                    ui::StickyTopRight::new(px(6.), {
-                                        let thread = self.thread.clone();
-                                        ui::CopyButton::new(("brainz-copy-bubble", entry_ix), "")
-                                            .icon_size(IconSize::XSmall)
-                                            .tooltip_label("Copy")
-                                            .visible_on_hover("brainz-agent-bubble")
-                                            .custom_on_click(move |_, cx| {
-                                                let entries = thread.read(cx).entries();
-                                                if let Some(text) = Self::get_agent_message_content(
-                                                    entries, entry_ix, cx,
-                                                ) {
-                                                    // Plain text, so it pastes cleanly
-                                                    // into mail and docs.
-                                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                                        markdown::markdown_to_plain_text(&text),
-                                                    ));
-                                                }
-                                            })
-                                    }),
-                                ),
+                                .child(ui::StickyTopRight::new(px(6.), {
+                                    let thread = self.thread.clone();
+                                    ui::CopyButton::new(("brainz-copy-bubble", entry_ix), "")
+                                        .icon_size(IconSize::XSmall)
+                                        .tooltip_label("Copy")
+                                        .visible_on_hover("brainz-agent-bubble")
+                                        .custom_on_click(move |_, cx| {
+                                            let entries = thread.read(cx).entries();
+                                            if let Some(text) = Self::get_agent_message_content(
+                                                entries, entry_ix, cx,
+                                            ) {
+                                                // Plain text, so it pastes cleanly
+                                                // into mail and docs.
+                                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                                    markdown::markdown_to_plain_text(&text),
+                                                ));
+                                            }
+                                        })
+                                })),
                         )
                         .when_some(
                             self.entry_view_state
@@ -6857,9 +6877,8 @@ impl ThreadView {
                     matches!(tool_call.status(), ToolCallStatus::WaitingForConfirmation);
                 let (group_start, group_count, group_running, group_last_label) = {
                     let entries = self.thread.read(cx).entries();
-                    let is_tool = |ix: usize| {
-                        matches!(entries.get(ix), Some(AgentThreadEntry::ToolCall(_)))
-                    };
+                    let is_tool =
+                        |ix: usize| matches!(entries.get(ix), Some(AgentThreadEntry::ToolCall(_)));
                     let mut start = entry_ix;
                     while start > 0 && is_tool(start - 1) {
                         start -= 1;
@@ -11993,7 +12012,17 @@ impl ThreadView {
                 .find(|server| lower.contains(&server.to_lowercase()))
                 .cloned()
         };
-        let auth_words = ["reconnect", "re-auth", "reauth", "sign in again", "needs to be re", "authentication", "unauthorized", "401", "expired"];
+        let auth_words = [
+            "reconnect",
+            "re-auth",
+            "reauth",
+            "sign in again",
+            "needs to be re",
+            "authentication",
+            "unauthorized",
+            "401",
+            "expired",
+        ];
         let mentions_auth = |text: &str| {
             let lower = text.to_lowercase();
             auth_words.iter().any(|word| lower.contains(word))
@@ -12049,7 +12078,12 @@ impl ThreadView {
         None
     }
 
-    fn brainz_reconnect_mcp(&mut self, server: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn brainz_reconnect_mcp(
+        &mut self,
+        server: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let client = if self.agent_id.0.starts_with("codex") {
             brainz_calendar::mcp::McpClient::Codex
         } else {
@@ -12130,7 +12164,10 @@ impl ThreadView {
                 .h(px(24.))
                 .px_2()
                 .items_center()
-                .child(ui::bouncing_dots("brainz-permissions-dots", cx.theme().colors().text_accent))
+                .child(ui::bouncing_dots(
+                    "brainz-permissions-dots",
+                    cx.theme().colors().text_accent,
+                ))
                 .into_any_element()
         } else {
             Button::new("brainz-permissions-set", "Set standing permissions")
@@ -12231,7 +12268,10 @@ impl ThreadView {
                 .h(px(24.))
                 .px_2()
                 .items_center()
-                .child(ui::bouncing_dots("brainz-mcp-card-dots", cx.theme().colors().text_accent))
+                .child(ui::bouncing_dots(
+                    "brainz-mcp-card-dots",
+                    cx.theme().colors().text_accent,
+                ))
                 .into_any_element()
         } else {
             let server_for_click = server.clone();
@@ -13289,7 +13329,8 @@ impl Render for ThreadView {
         self.entry_view_state.update(cx, |state, cx| {
             state.set_bubble_color(bubble_color, cx);
         });
-        self.message_editor.update(cx, |editor, _| editor.set_accent_color(bubble_color));
+        self.message_editor
+            .update(cx, |editor, _| editor.set_accent_color(bubble_color));
         // Keep the message editor's local slash commands in sync with the
         // current availability of feedback/sharing, which can change between
         // renders (settings, connection state, feature flags).

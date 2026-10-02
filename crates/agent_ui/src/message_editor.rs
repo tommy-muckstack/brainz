@@ -14,6 +14,7 @@ use agent::ThreadStore;
 use agent_client_protocol::schema::v1 as acp_v1;
 use anyhow::{Result, anyhow};
 use base64::Engine as _;
+use collections::{HashMap, HashSet};
 use editor::{
     Addon, AnchorRangeExt, ContextMenuOptions, Editor, EditorElement, EditorEvent, EditorMode,
     EditorStyle, Inlay, MultiBuffer, MultiBufferOffset, MultiBufferSnapshot, ToOffset,
@@ -22,6 +23,7 @@ use editor::{
     display_map::{CreaseId, CreaseSnapshot},
     scroll::Autoscroll,
 };
+use futures::future::Shared;
 use futures::{FutureExt as _, future::join_all};
 use gpui::{
     AppContext, ClipboardEntry, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
@@ -39,10 +41,9 @@ use settings::Settings;
 use std::{cmp::min, fmt::Write, ops::Range, path::PathBuf, rc::Rc, sync::Arc};
 use text::LineEnding;
 use theme_settings::ThemeSettings;
-use collections::{HashMap, HashSet};
-use futures::future::Shared;
 use ui::{
-    ButtonStyle, ContextMenu, IconButton, ScrollAxes, Scrollbars, Tooltip, WithScrollbar, prelude::*,
+    ButtonStyle, ContextMenu, IconButton, ScrollAxes, Scrollbars, Tooltip, WithScrollbar,
+    prelude::*,
 };
 use util::paths::PathStyle;
 use util::{ResultExt, debug_panic};
@@ -951,14 +952,16 @@ impl MessageEditor {
                         }
                         text.push_str(".)");
                     }
-                    ocr_blocks.push(acp_v1::ContentBlock::Resource(acp_v1::EmbeddedResource::new(
-                        acp_v1::EmbeddedResourceResource::TextResourceContents(
-                            acp_v1::TextResourceContents::new(
-                                text,
-                                format!("brainz-ocr://screenshot-{}", index + 1),
+                    ocr_blocks.push(acp_v1::ContentBlock::Resource(
+                        acp_v1::EmbeddedResource::new(
+                            acp_v1::EmbeddedResourceResource::TextResourceContents(
+                                acp_v1::TextResourceContents::new(
+                                    text,
+                                    format!("brainz-ocr://screenshot-{}", index + 1),
+                                ),
                             ),
                         ),
-                    )));
+                    ));
                 }
             }
             Ok(editor.update(cx, |editor, cx| {
@@ -1451,8 +1454,8 @@ impl MessageEditor {
                     .into_iter()
                     .map(|(range, url)| {
                         let label = crate::google_doc_link::link_kind(url.as_str())
-                            .map(|kind| kind.fallback_title())
-                            .unwrap_or("Link");
+                            .map(|kind| kind.fallback_label(url.as_str()))
+                            .unwrap_or_else(|| "Link".to_owned());
                         (range, MentionUri::Fetch { url }, SharedString::from(label))
                     })
                     .collect();
@@ -2052,12 +2055,12 @@ impl MessageEditor {
         // older messages become pills too, display only; the text the agent
         // saw is unchanged.
         {
-            let covered = |range: &Range<usize>, mentions: &[(Range<usize>, MentionUri, Mention)]| {
-                mentions
-                    .iter()
-                    .any(|(existing, _, _)| existing.start <= range.start && range.end <= existing.end)
-                    || text[..range.start].ends_with("](")
-            };
+            let covered =
+                |range: &Range<usize>, mentions: &[(Range<usize>, MentionUri, Mention)]| {
+                    mentions.iter().any(|(existing, _, _)| {
+                        existing.start <= range.start && range.end <= existing.end
+                    }) || text[..range.start].ends_with("](")
+                };
             let mut extra = Vec::new();
             for (range, url) in crate::google_doc_link::pasted_document_links(&text) {
                 if !covered(&range, &mentions) {
@@ -2350,7 +2353,12 @@ impl MessageEditor {
 
     /// Brainz: runs the OCR helper over a decoded image once, in the
     /// background, so the chips know whether it is an email.
-    fn brainz_ensure_ocr(&mut self, crease_id: CreaseId, image: Arc<Image>, cx: &mut Context<Self>) {
+    fn brainz_ensure_ocr(
+        &mut self,
+        crease_id: CreaseId,
+        image: Arc<Image>,
+        cx: &mut Context<Self>,
+    ) {
         if self.brainz_ocr.contains_key(&crease_id) {
             return;
         }
@@ -2628,7 +2636,7 @@ impl MessageEditor {
                         window,
                         cx,
                     ),
-            )
+            ),
         )
     }
 }
@@ -2650,11 +2658,12 @@ fn is_thumbnail_document(path: &std::path::Path) -> bool {
 /// only ever called from the background executor.
 #[allow(clippy::disallowed_methods)]
 fn quick_look_thumbnail(path: &std::path::Path) -> Result<Arc<Image>, String> {
-    let directory = paths::data_dir()
-        .join("thumbnails")
-        .join(format!("{:x}", path.to_string_lossy().bytes().fold(0u64, |hash, byte| {
+    let directory = paths::data_dir().join("thumbnails").join(format!(
+        "{:x}",
+        path.to_string_lossy().bytes().fold(0u64, |hash, byte| {
             hash.wrapping_mul(31).wrapping_add(u64::from(byte))
-        })));
+        })
+    ));
     std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let output = std::process::Command::new("/usr/bin/qlmanage")
         .arg("-t")
@@ -2677,7 +2686,8 @@ fn quick_look_thumbnail(path: &std::path::Path) -> Result<Arc<Image>, String> {
         .map(|name| name.to_string_lossy().into_owned())
         .ok_or_else(|| "file has no name".to_owned())?;
     let png = directory.join(format!("{name}.png"));
-    let bytes = std::fs::read(&png).map_err(|error| format!("reading {}: {error}", png.display()))?;
+    let bytes =
+        std::fs::read(&png).map_err(|error| format!("reading {}: {error}", png.display()))?;
     std::fs::remove_file(&png).ok();
     Ok(Arc::new(Image::from_bytes(ImageFormat::Png, bytes)))
 }
