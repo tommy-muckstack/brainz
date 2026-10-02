@@ -10,8 +10,8 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use gpui::{
-    Animation, AnimationExt, AnyWindowHandle, App, DismissEvent, Entity, EventEmitter,
-    FocusHandle, Focusable, Global, Task, WeakEntity, Window, ease_out_quint,
+    Animation, AnimationExt, AnyWindowHandle, App, DismissEvent, Entity, EventEmitter, FocusHandle,
+    Focusable, Global, Task, WeakEntity, Window, ease_out_quint,
 };
 use ui::{Tooltip, prelude::*};
 use workspace::{ModalView, Workspace};
@@ -190,7 +190,11 @@ fn review(repo: &Path) -> Result<()> {
         if line.len() < 4 || line.starts_with(" D") || line.starts_with("D ") {
             continue;
         }
-        let rel = line[3..].split(" -> ").last().unwrap_or("").trim_matches('"');
+        let rel = line[3..]
+            .split(" -> ")
+            .last()
+            .unwrap_or("")
+            .trim_matches('"');
         let path = repo.join(rel);
         let Ok(metadata) = std::fs::metadata(&path) else {
             continue;
@@ -246,7 +250,8 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
     if branch != "main" {
         bail!("You're on branch `{branch}`. Switch to `main` first, then sync.");
     }
-    run(repo, "gh", &["auth", "status"]).context("GitHub CLI isn't signed in. Run `gh auth login` in a shell.")?;
+    run(repo, "gh", &["auth", "status"])
+        .context("GitHub CLI isn't signed in. Run `gh auth login` in a shell.")?;
 
     progress("Reviewing changes".into());
     review(repo)?;
@@ -283,12 +288,7 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
     run(repo, "git", &["push", "-u", "origin", &sync_branch])?;
 
     progress("Opening pull request".into());
-    let commits = run(
-        repo,
-        "git",
-        &["log", "--oneline", "origin/main..HEAD"],
-    )
-    .unwrap_or_default();
+    let commits = run(repo, "git", &["log", "--oneline", "origin/main..HEAD"]).unwrap_or_default();
     let body = format!(
         "Synced from Brainz.\n\nCommits:\n{}\n\nReviewed automatically: no credential files, secret markers, or files over 25 MB.",
         commits
@@ -300,13 +300,24 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
     let title = if ahead + usize::from(changed > 0) == 1 {
         "Sync from Brainz".to_owned()
     } else {
-        format!("Sync from Brainz ({} commits)", ahead + usize::from(changed > 0))
+        format!(
+            "Sync from Brainz ({} commits)",
+            ahead + usize::from(changed > 0)
+        )
     };
     let pr_url = run(
         repo,
         "gh",
         &[
-            "pr", "create", "--base", "main", "--head", &sync_branch, "--title", &title, "--body",
+            "pr",
+            "create",
+            "--base",
+            "main",
+            "--head",
+            &sync_branch,
+            "--title",
+            &title,
+            "--body",
             &body,
         ],
     )?;
@@ -317,7 +328,15 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
         let state = run(
             repo,
             "gh",
-            &["pr", "view", &sync_branch, "--json", "mergeable", "--jq", ".mergeable"],
+            &[
+                "pr",
+                "view",
+                &sync_branch,
+                "--json",
+                "mergeable",
+                "--jq",
+                ".mergeable",
+            ],
         )?;
         match state.as_str() {
             "MERGEABLE" => {
@@ -331,7 +350,9 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
         }
     }
     if !mergeable {
-        bail!("GitHub hasn't finished checking the pull request. Open it and merge when ready:\n{pr_url}");
+        bail!(
+            "GitHub hasn't finished checking the pull request. Open it and merge when ready:\n{pr_url}"
+        );
     }
 
     progress("Merging into main".into());
@@ -351,7 +372,12 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
 }
 
 impl SyncState {
-    fn ensure_watching(&mut self, workspace: WeakEntity<Workspace>, repo: PathBuf, cx: &mut Context<Self>) {
+    fn ensure_watching(
+        &mut self,
+        workspace: WeakEntity<Workspace>,
+        repo: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
         if self.repo.as_deref() == Some(repo.as_path()) {
             return;
         }
@@ -575,7 +601,10 @@ impl Render for SyncErrorModal {
                 h_flex()
                     .gap_2()
                     .child(Icon::new(IconName::Warning).color(Color::Warning))
-                    .child(Label::new("Sync to GitHub didn't finish").weight(gpui::FontWeight::SEMIBOLD)),
+                    .child(
+                        Label::new("Sync to GitHub didn't finish")
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    ),
             )
             .child(Label::new(self.message.clone()).size(LabelSize::Small))
             .child(
@@ -592,10 +621,7 @@ impl Render for SyncErrorModal {
 }
 
 /// The banner the project panel shows above the file tree.
-pub fn render_banner(
-    workspace: &WeakEntity<Workspace>,
-    cx: &mut App,
-) -> Option<gpui::AnyElement> {
+pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<gpui::AnyElement> {
     let state = state(cx)?;
     let repo = workspace
         .upgrade()?
@@ -603,7 +629,9 @@ pub fn render_banner(
         .root_paths(cx)
         .first()
         .map(|path| path.to_path_buf())?;
-    state.update(cx, |state, cx| state.ensure_watching(workspace.clone(), repo, cx));
+    state.update(cx, |state, cx| {
+        state.ensure_watching(workspace.clone(), repo, cx)
+    });
     let (status, leaving) = {
         let state = state.read(cx);
         (state.status().clone(), state.leaving)
@@ -623,9 +651,8 @@ pub fn render_banner(
             ahead,
             behind,
         } => {
-            let plural = |n: usize, word: &str| {
-                format!("{n} {word}{}", if n == 1 { "" } else { "s" })
-            };
+            let plural =
+                |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
             let mut local = Vec::new();
             if *changed > 0 {
                 local.push(plural(*changed, "change"));
@@ -755,9 +782,7 @@ pub fn render_banner(
                 Animation::new(Duration::from_millis(SLIDE_MS)).with_easing(ease_out_quint()),
                 |wrapper, delta| {
                     let remaining = 1.0 - delta;
-                    wrapper
-                        .h(px(BANNER_HEIGHT * remaining))
-                        .opacity(remaining)
+                    wrapper.h(px(BANNER_HEIGHT * remaining)).opacity(remaining)
                 },
             )
             .into_any_element()
@@ -769,11 +794,7 @@ pub fn render_banner(
             .with_animation(
                 "brainz-github-sync-banner-in",
                 Animation::new(Duration::from_millis(SLIDE_MS)).with_easing(ease_out_back),
-                |wrapper, delta| {
-                    wrapper
-                        .h(px(BANNER_HEIGHT * delta))
-                        .opacity(delta.min(1.0))
-                },
+                |wrapper, delta| wrapper.h(px(BANNER_HEIGHT * delta)).opacity(delta.min(1.0)),
             )
             .into_any_element()
     };

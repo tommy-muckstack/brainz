@@ -3,8 +3,6 @@
 
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
-
-
 use anyhow::{Context as _, Result, anyhow};
 use gpui::{
     App, Entity, EventEmitter, FocusHandle, Focusable, Global, Subscription, Task, WeakEntity,
@@ -65,7 +63,9 @@ impl McpClient {
 }
 
 fn claude_auth_cache_path() -> PathBuf {
-    paths::config_dir().join("claude").join("mcp-needs-auth-cache.json")
+    paths::config_dir()
+        .join("claude")
+        .join("mcp-needs-auth-cache.json")
 }
 
 /// Claude Code records the servers whose sign-in has lapsed in a small
@@ -295,7 +295,11 @@ fn probe(connector: &Connector) -> Option<String> {
             Err(error) => Some(format!("couldn't run curl: {error}")),
         }
     } else {
-        let command = connector.detail.split_whitespace().next().unwrap_or_default();
+        let command = connector
+            .detail
+            .split_whitespace()
+            .next()
+            .unwrap_or_default();
         if command.is_empty() {
             return Some("no command configured".into());
         }
@@ -351,7 +355,10 @@ struct Connector {
 
 impl Connector {
     fn key(name: &str) -> String {
-        name.trim().to_lowercase().replace("-mcp", "").replace("_mcp", "")
+        name.trim()
+            .to_lowercase()
+            .replace("-mcp", "")
+            .replace("_mcp", "")
     }
 }
 
@@ -371,14 +378,82 @@ fn logo_for(name: &str) -> Option<&'static str> {
         Some("icons/brainz/logos/figma.png")
     } else if lower.contains("vapi") {
         Some("icons/brainz/logos/vapi.png")
-    } else if lower.contains("atlassian") || lower.contains("jira") || lower.contains("confluence") {
+    } else if lower.contains("atlassian") || lower.contains("jira") || lower.contains("confluence")
+    {
         Some("icons/brainz/logos/atlassian.png")
     } else if lower.contains("glean") {
         Some("icons/brainz/logos/glean.png")
     } else if lower.contains("asana") {
         Some("icons/brainz/logos/asana.png")
+    } else if lower.contains("notion") {
+        Some("icons/brainz/logos/notion.png")
     } else {
         None
+    }
+}
+
+/// A hosted (remote, OAuth) connector Brainz can set up in one click, so
+/// "let's connect Notion" does not end in a shell command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostedConnector {
+    pub name: &'static str,
+    pub url: &'static str,
+    pub blurb: &'static str,
+}
+
+pub const HOSTED_CONNECTORS: &[HostedConnector] = &[HostedConnector {
+    name: "notion",
+    url: "https://mcp.notion.com/mcp",
+    blurb: "Pages, databases, and search in your Notion workspace",
+}];
+
+impl HostedConnector {
+    pub fn title(&self) -> String {
+        let mut chars = self.name.chars();
+        match chars.next() {
+            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            None => String::new(),
+        }
+    }
+
+    pub fn logo(&self) -> Option<&'static str> {
+        logo_for(self.name)
+    }
+
+    fn is_configured(&self, configured: &[String]) -> bool {
+        configured
+            .iter()
+            .any(|server| Connector::key(server) == Connector::key(self.name))
+    }
+
+    /// The hosted connectors a piece of text names that neither client has
+    /// configured yet.
+    pub fn mentioned_unconfigured(text: &str) -> Option<&'static HostedConnector> {
+        let lower = text.to_lowercase();
+        let configured: Vec<String> = read_claude_servers()
+            .keys()
+            .cloned()
+            .chain(read_codex_servers().keys().cloned())
+            .collect();
+        HOSTED_CONNECTORS
+            .iter()
+            .find(|hosted| lower.contains(hosted.name) && !hosted.is_configured(&configured))
+    }
+
+    /// Writes the connector into the client's config; the caller then runs
+    /// the sign-in.
+    pub fn add(&self, client: McpClient) -> Result<()> {
+        match client {
+            McpClient::Claude => connect_claude(
+                self.name,
+                serde_json::json!({ "type": "http", "url": self.url }),
+            ),
+            McpClient::Codex => {
+                let mut table = toml::map::Map::new();
+                table.insert("url".into(), toml::Value::String(self.url.into()));
+                connect_codex(self.name, toml::Value::Table(table))
+            }
+        }
     }
 }
 
@@ -557,7 +632,10 @@ fn claude_to_codex(config: &serde_json::Value) -> toml::Value {
         if let Some(headers) = config.get("headers").and_then(|v| v.as_object()) {
             let headers: toml::map::Map<String, toml::Value> = headers
                 .iter()
-                .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), toml::Value::String(v.into()))))
+                .filter_map(|(k, v)| {
+                    v.as_str()
+                        .map(|v| (k.clone(), toml::Value::String(v.into())))
+                })
                 .collect();
             out.insert("http_headers".into(), toml::Value::Table(headers));
         }
@@ -575,7 +653,10 @@ fn claude_to_codex(config: &serde_json::Value) -> toml::Value {
         if let Some(env) = config.get("env").and_then(|v| v.as_object()) {
             let env: toml::map::Map<String, toml::Value> = env
                 .iter()
-                .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), toml::Value::String(v.into()))))
+                .filter_map(|(k, v)| {
+                    v.as_str()
+                        .map(|v| (k.clone(), toml::Value::String(v.into())))
+                })
                 .collect();
             out.insert("env".into(), toml::Value::Table(env));
         }
@@ -694,6 +775,109 @@ impl McpView {
         }));
     }
 
+    /// Adds a hosted connector to Claude and runs its sign-in.
+    fn connect_hosted(
+        &mut self,
+        hosted: &'static HostedConnector,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match hosted.add(McpClient::Claude) {
+            Ok(()) => {
+                self.error = None;
+                self.reconnect(McpClient::Claude, hosted.name.to_owned(), window, cx);
+            }
+            Err(error) => {
+                log::error!("brainz mcp connect {}: {error:#}", hosted.name);
+                self.error = Some(format!("Couldn't add {}: {error:#}", hosted.title()));
+                cx.notify();
+            }
+        }
+    }
+
+    fn render_hosted(
+        &self,
+        ix: usize,
+        hosted: &'static HostedConnector,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let logo: gpui::AnyElement = match hosted.logo() {
+            Some(path) => gpui::img(path.to_owned())
+                .size_8()
+                .object_fit(gpui::ObjectFit::Contain)
+                .into_any_element(),
+            None => Icon::new(IconName::BrainzMcp)
+                .size(IconSize::Medium)
+                .color(Color::Muted)
+                .into_any_element(),
+        };
+        let connecting = self.reconnecting.contains(hosted.name);
+        h_flex()
+            .id(("brainz-mcp-hosted", ix))
+            .w_full()
+            .gap_3()
+            .p_3()
+            .rounded_lg()
+            .border_1()
+            .border_dashed()
+            .border_color(cx.theme().colors().border)
+            .child(
+                div()
+                    .flex_none()
+                    .size_10()
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(cx.theme().colors().element_background)
+                    .child(logo),
+            )
+            .child(
+                v_flex()
+                    .min_w_0()
+                    .flex_1()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(Label::new(hosted.title()).weight(gpui::FontWeight::SEMIBOLD))
+                            .child(
+                                Label::new("HTTP")
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            ),
+                    )
+                    .child(
+                        Label::new(hosted.blurb)
+                            .size(LabelSize::Small)
+                            .color(Color::Muted)
+                            .truncate(),
+                    ),
+            )
+            .child(if connecting {
+                h_flex()
+                    .h(px(24.))
+                    .px_2()
+                    .items_center()
+                    .child(ui::bouncing_dots(
+                        format!("brainz-mcp-hosted-connecting-{ix}"),
+                        cx.theme().colors().text_accent,
+                    ))
+                    .into_any_element()
+            } else {
+                Button::new(("brainz-mcp-hosted-connect", ix), "Connect")
+                    .style(ButtonStyle::Filled)
+                    .label_size(LabelSize::Small)
+                    .tooltip(Tooltip::text(format!(
+                        "Add {} to Claude and sign in; a terminal opens with the link",
+                        hosted.title()
+                    )))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.connect_hosted(hosted, window, cx);
+                    }))
+                    .into_any_element()
+            })
+    }
+
     /// Adds the server to the other client's config, translated to its shape.
     fn connect(&mut self, ix: usize, client: Client, cx: &mut Context<Self>) {
         let Some(connector) = self.connectors.get(ix).cloned() else {
@@ -741,7 +925,10 @@ impl McpView {
             format!("Connect to {name}")
         };
         h_flex()
-            .id(("brainz-mcp-client", ix * 2 + (client == Client::Codex) as usize))
+            .id((
+                "brainz-mcp-client",
+                ix * 2 + (client == Client::Codex) as usize,
+            ))
             .gap_1()
             .px_2()
             .py_1()
@@ -763,15 +950,19 @@ impl McpView {
                     .on_click(cx.listener(move |this, _, _, cx| this.connect(ix, client, cx)))
             })
             .tooltip(Tooltip::text(tooltip))
-            .child(
-                Icon::new(icon)
-                    .size(IconSize::Small)
-                    .color(if connected { Color::Default } else { Color::Muted }),
-            )
+            .child(Icon::new(icon).size(IconSize::Small).color(if connected {
+                Color::Default
+            } else {
+                Color::Muted
+            }))
             .child(
                 Label::new(name)
                     .size(LabelSize::XSmall)
-                    .color(if connected { Color::Default } else { Color::Muted }),
+                    .color(if connected {
+                        Color::Default
+                    } else {
+                        Color::Muted
+                    }),
             )
             .when(connected, |this| {
                 this.child(
@@ -782,7 +973,13 @@ impl McpView {
             })
     }
 
-    fn reconnect(&mut self, client: McpClient, server: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn reconnect(
+        &mut self,
+        client: McpClient,
+        server: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.reconnecting.contains(&server) {
             return;
         }
@@ -803,7 +1000,12 @@ impl McpView {
         }));
     }
 
-    fn render_connector_menu(&self, ix: usize, connector: &Connector, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_connector_menu(
+        &self,
+        ix: usize,
+        connector: &Connector,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let view = cx.weak_entity();
         let name = connector.name.clone();
         let has_claude = connector.claude.is_some();
@@ -821,7 +1023,10 @@ impl McpView {
                 let name = name.clone();
                 Some(ContextMenu::build(window, cx, move |mut menu, _, _| {
                     menu = menu.header("Sign in again");
-                    for (client, present) in [(McpClient::Claude, has_claude), (McpClient::Codex, has_codex)] {
+                    for (client, present) in [
+                        (McpClient::Claude, has_claude),
+                        (McpClient::Codex, has_codex),
+                    ] {
                         if !present {
                             continue;
                         }
@@ -831,8 +1036,10 @@ impl McpView {
                             format!("Reconnect in {}", client.name()),
                             None,
                             move |window, cx| {
-                                view.update(cx, |view, cx| view.reconnect(client, name.clone(), window, cx))
-                                    .ok();
+                                view.update(cx, |view, cx| {
+                                    view.reconnect(client, name.clone(), window, cx)
+                                })
+                                .ok();
                             },
                         );
                     }
@@ -857,19 +1064,21 @@ impl McpView {
                 .color(Color::Muted)
                 .into_any_element(),
         };
-        let status = health(cx).and_then(|health| health.read(cx).status_of(&connector.name).cloned());
-        let sign_in_needed = connector.claude.is_some() && needs_sign_in(McpClient::Claude, &connector.name);
+        let status =
+            health(cx).and_then(|health| health.read(cx).status_of(&connector.name).cloned());
+        let sign_in_needed =
+            connector.claude.is_some() && needs_sign_in(McpClient::Claude, &connector.name);
         let reconnecting = self.reconnecting.contains(&connector.name);
         let (dot_color, status_text): (gpui::Hsla, SharedString) = match &status {
-            Some(Some(reason)) => (
-                cx.theme().status().error,
-                format!("Down: {reason}").into(),
-            ),
+            Some(Some(reason)) => (cx.theme().status().error, format!("Down: {reason}").into()),
             _ if sign_in_needed => (
                 cx.theme().colors().text_accent,
                 format!("Claude needs to sign in to {} again", connector.name).into(),
             ),
-            Some(None) => (cx.theme().status().success, "Reachable and signed in".into()),
+            Some(None) => (
+                cx.theme().status().success,
+                "Reachable and signed in".into(),
+            ),
             None => (cx.theme().colors().icon_muted, "Checking…".into()),
         };
         h_flex()
@@ -958,12 +1167,12 @@ impl McpView {
                         )
                     })
                     .when(reconnecting, |this| {
-                        this.child(
-                            h_flex().h(px(24.)).px_2().items_center().child(ui::bouncing_dots(
+                        this.child(h_flex().h(px(24.)).px_2().items_center().child(
+                            ui::bouncing_dots(
                                 format!("brainz-mcp-reconnecting-{ix}"),
                                 cx.theme().colors().text_accent,
-                            )),
-                        )
+                            ),
+                        ))
                     })
                     .child(self.render_client_badge(
                         ix,
@@ -1052,7 +1261,11 @@ impl Render for McpView {
         } else {
             let mut rows: Vec<gpui::AnyElement> = Vec::new();
             if let Some(error) = &self.error {
-                rows.push(Label::new(error.clone()).color(Color::Error).into_any_element());
+                rows.push(
+                    Label::new(error.clone())
+                        .color(Color::Error)
+                        .into_any_element(),
+                );
             }
             rows.push(
                 Label::new("Click a Claude or Codex badge to add that connector to it. An amber dot means Claude's sign-in to that connector has lapsed; Reconnect opens the sign-in.")
@@ -1063,6 +1276,22 @@ impl Render for McpView {
             let connectors = self.connectors.clone();
             for (ix, connector) in connectors.iter().enumerate() {
                 rows.push(self.render_connector(ix, connector, cx).into_any_element());
+            }
+            let configured: Vec<String> = connectors.iter().map(|c| c.name.clone()).collect();
+            let available: Vec<&'static HostedConnector> = HOSTED_CONNECTORS
+                .iter()
+                .filter(|hosted| !hosted.is_configured(&configured))
+                .collect();
+            if !available.is_empty() {
+                rows.push(
+                    Label::new("Available")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted)
+                        .into_any_element(),
+                );
+                for (ix, hosted) in available.into_iter().enumerate() {
+                    rows.push(self.render_hosted(ix, hosted, cx).into_any_element());
+                }
             }
             rows
         };
@@ -1114,8 +1343,7 @@ impl Render for McpButton {
         let failing = health(cx)
             .map(|health| {
                 if self._health_subscription.is_none() {
-                    self._health_subscription =
-                        Some(cx.observe(&health, |_, _, cx| cx.notify()));
+                    self._health_subscription = Some(cx.observe(&health, |_, _, cx| cx.notify()));
                 }
                 health.read(cx).failing()
             })

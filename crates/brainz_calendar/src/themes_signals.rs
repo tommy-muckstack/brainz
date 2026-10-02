@@ -60,18 +60,136 @@ const NARRATIVE_START: &str = "<!-- narrative:start -->";
 const NARRATIVE_END: &str = "<!-- narrative:end -->";
 
 const STOPLIST: &[&str] = &[
-    "claude", "read", "status", "next", "the", "monday", "tuesday", "wednesday",
-    "thursday", "friday", "saturday", "sunday", "mon", "tue", "tues", "wed", "thu", "thur",
-    "thurs", "fri", "sat", "sun", "january", "february", "march", "april", "may", "june", "july",
-    "august", "september", "october", "november", "december", "jan", "feb", "mar", "apr", "jun",
-    "jul", "aug", "sep", "sept", "oct", "nov", "dec", "note", "notes", "todo", "done", "yes", "no",
-    "see", "also", "this", "that", "new", "last", "first", "not", "and", "but", "for", "with",
-    "all", "any", "from", "into", "only", "over", "than", "then", "when", "what", "who", "why",
-    "how", "are", "was", "were", "will", "can", "must", "should", "never", "always", "every",
-    "each", "more", "most", "some", "such", "very", "just", "now", "here", "there", "out", "off",
-    "own", "today", "tomorrow", "yesterday", "week", "day", "time", "update", "updated", "open",
-    "closed", "pending", "why", "because", "before", "after", "one", "two", "three", "total",
-    "source", "et", "pdf", "png", "docx", "link", "links", "file", "files", "folder", "email",
+    "claude",
+    "read",
+    "status",
+    "next",
+    "the",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+    "mon",
+    "tue",
+    "tues",
+    "wed",
+    "thu",
+    "thur",
+    "thurs",
+    "fri",
+    "sat",
+    "sun",
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+    "jan",
+    "feb",
+    "mar",
+    "apr",
+    "jun",
+    "jul",
+    "aug",
+    "sep",
+    "sept",
+    "oct",
+    "nov",
+    "dec",
+    "note",
+    "notes",
+    "todo",
+    "done",
+    "yes",
+    "no",
+    "see",
+    "also",
+    "this",
+    "that",
+    "new",
+    "last",
+    "first",
+    "not",
+    "and",
+    "but",
+    "for",
+    "with",
+    "all",
+    "any",
+    "from",
+    "into",
+    "only",
+    "over",
+    "than",
+    "then",
+    "when",
+    "what",
+    "who",
+    "why",
+    "how",
+    "are",
+    "was",
+    "were",
+    "will",
+    "can",
+    "must",
+    "should",
+    "never",
+    "always",
+    "every",
+    "each",
+    "more",
+    "most",
+    "some",
+    "such",
+    "very",
+    "just",
+    "now",
+    "here",
+    "there",
+    "out",
+    "off",
+    "own",
+    "today",
+    "tomorrow",
+    "yesterday",
+    "week",
+    "day",
+    "time",
+    "update",
+    "updated",
+    "open",
+    "closed",
+    "pending",
+    "why",
+    "because",
+    "before",
+    "after",
+    "one",
+    "two",
+    "three",
+    "total",
+    "source",
+    "et",
+    "pdf",
+    "png",
+    "docx",
+    "link",
+    "links",
+    "file",
+    "files",
+    "folder",
+    "email",
 ];
 /// Threads need this much total weight, so a term that brushed three folders
 /// once does not read as a cross-folder thread.
@@ -381,12 +499,17 @@ pub struct Term {
 }
 
 fn make_term(display: &str, stop_words: &[String]) -> Option<Term> {
-    let display = display.trim().trim_matches(|c: char| !c.is_alphanumeric() && c != '&');
+    let display = display
+        .trim()
+        .trim_matches(|c: char| !c.is_alphanumeric() && c != '&');
     let key = normalize_key(display);
     if key.chars().count() < MIN_TERM_CHARS || key.chars().count() > MAX_TERM_CHARS {
         return None;
     }
-    if key.chars().all(|c| c.is_ascii_digit() || c == '-' || c == ' ') {
+    if key
+        .chars()
+        .all(|c| c.is_ascii_digit() || c == '-' || c == ' ')
+    {
         return None;
     }
     if key.chars().filter(|c| c.is_ascii_digit()).count() > MAX_TERM_DIGITS {
@@ -627,7 +750,12 @@ fn title_case(stem: &str) -> String {
         .map(|part| {
             let mut chars = part.chars();
             match chars.next() {
-                Some(first) if part.chars().skip(1).all(|c| c.is_lowercase() || c.is_ascii_digit()) => {
+                Some(first)
+                    if part
+                        .chars()
+                        .skip(1)
+                        .all(|c| c.is_lowercase() || c.is_ascii_digit()) =>
+                {
                     first.to_uppercase().collect::<String>() + chars.as_str()
                 }
                 _ => part.to_owned(),
@@ -668,9 +796,7 @@ fn find_word(haystack: &str, needle: &str) -> Option<usize> {
 }
 
 fn strip_token(token: &str) -> &str {
-    token.trim_matches(|c: char| {
-        !(c.is_alphanumeric() || c == '&' || c == '\'' || c == '-')
-    })
+    token.trim_matches(|c: char| !(c.is_alphanumeric() || c == '&' || c == '\'' || c == '-'))
 }
 
 fn is_capitalized_word(word: &str) -> bool {
@@ -678,8 +804,7 @@ fn is_capitalized_word(word: &str) -> bool {
     let Some(first) = chars.next() else {
         return false;
     };
-    first.is_uppercase()
-        && chars.all(|c| c.is_alphanumeric() || c == '\'' || c == '-' || c == '&')
+    first.is_uppercase() && chars.all(|c| c.is_alphanumeric() || c == '\'' || c == '-' || c == '&')
 }
 
 /// Candidate terms in one added line: bold spans, wiki links, vocabulary
@@ -905,7 +1030,11 @@ fn git(repo: &Path, args: &[&str]) -> Result<String> {
         .with_context(|| format!("running git {}", args.join(" ")))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        bail!("`git {}` failed ({}): {stderr}", args.join(" "), output.status);
+        bail!(
+            "`git {}` failed ({}): {stderr}",
+            args.join(" "),
+            output.status
+        );
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
@@ -990,7 +1119,9 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
     let pins = parse_pins(&std::fs::read_to_string(&pins_path).unwrap_or_default());
     let acronyms = read_list_file(&vocabulary_path);
 
-    let head = git(repo, &["rev-parse", "--short", "HEAD"])?.trim().to_owned();
+    let head = git(repo, &["rev-parse", "--short", "HEAD"])?
+        .trim()
+        .to_owned();
     let tree: Vec<String> = git(repo, &["ls-tree", "-r", "--name-only", "HEAD"])?
         .lines()
         .map(str::to_owned)
@@ -1201,10 +1332,18 @@ pub fn ranked_themes(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| b.recent.cmp(&a.recent))
     });
-    let rising: Vec<String> = rising.iter().take(LIST_LIMIT).map(|t| t.id.clone()).collect();
+    let rising: Vec<String> = rising
+        .iter()
+        .take(LIST_LIMIT)
+        .map(|t| t.id.clone())
+        .collect();
     let mut fresh: Vec<&Theme> = visible().filter(|theme| theme.is_new).collect();
     fresh.sort_by(|a, b| b.recent.cmp(&a.recent).then_with(|| a.id.cmp(&b.id)));
-    let fresh: Vec<String> = fresh.iter().take(LIST_LIMIT).map(|t| t.id.clone()).collect();
+    let fresh: Vec<String> = fresh
+        .iter()
+        .take(LIST_LIMIT)
+        .map(|t| t.id.clone())
+        .collect();
     let mut fading: Vec<&Theme> = visible()
         .filter(|theme| {
             theme.prior >= FADING_PRIOR_MIN && theme.momentum.is_some_and(|m| m <= FADING_MAX)
@@ -1216,7 +1355,11 @@ pub fn ranked_themes(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| b.prior.cmp(&a.prior))
     });
-    let fading: Vec<String> = fading.iter().take(LIST_LIMIT).map(|t| t.id.clone()).collect();
+    let fading: Vec<String> = fading
+        .iter()
+        .take(LIST_LIMIT)
+        .map(|t| t.id.clone())
+        .collect();
 
     (rising, fresh, fading)
 }
@@ -1299,7 +1442,9 @@ fn blame_dates(repo: &Path, file: &str) -> HashMap<u32, NaiveDate> {
             commit_dates.insert(sha.clone(), date.date_naive());
             continue;
         }
-        if line.starts_with('\t') || line.contains(' ') && !line.chars().next().is_some_and(|c| c.is_ascii_hexdigit()) {
+        if line.starts_with('\t')
+            || line.contains(' ') && !line.chars().next().is_some_and(|c| c.is_ascii_hexdigit())
+        {
             continue;
         }
         let mut parts = line.split(' ');
@@ -1318,7 +1463,8 @@ fn blame_dates(repo: &Path, file: &str) -> HashMap<u32, NaiveDate> {
     if let Ok(output) = git(repo, &["blame", "--porcelain", "HEAD", "--", file]) {
         for line in output.lines() {
             let mut parts = line.split(' ');
-            if let (Some(sha), Some(_), Some(final_line)) = (parts.next(), parts.next(), parts.next())
+            if let (Some(sha), Some(_), Some(final_line)) =
+                (parts.next(), parts.next(), parts.next())
                 && sha.len() == 40
                 && sha.chars().all(|c| c.is_ascii_hexdigit())
                 && let Ok(final_line) = final_line.parse::<u32>()
@@ -1338,8 +1484,11 @@ fn collect_open_loops(
     vocabulary: &Vocabulary,
     today: NaiveDate,
 ) -> Result<Vec<OpenLoop>> {
-    let grep = git(repo, &["grep", "-n", "-e", "⏳", "-e", "⏰", "HEAD", "--", "*.md"])
-        .unwrap_or_default();
+    let grep = git(
+        repo,
+        &["grep", "-n", "-e", "⏳", "-e", "⏰", "HEAD", "--", "*.md"],
+    )
+    .unwrap_or_default();
     let mut by_file: BTreeMap<String, Vec<(u32, String)>> = BTreeMap::new();
     for line in grep.lines() {
         let Some(rest) = line.strip_prefix("HEAD:") else {
@@ -1409,11 +1558,7 @@ fn collect_open_loops(
 
 fn open_loop_counts(repo: &Path) -> Result<Vec<OpenLoopCounts>> {
     let mut by_folder: BTreeMap<String, OpenLoopCounts> = BTreeMap::new();
-    let now = git(
-        repo,
-        &["grep", "-c", "-e", "⏳", "-e", "⏰", "--", "*.md"],
-    )
-    .unwrap_or_default();
+    let now = git(repo, &["grep", "-c", "-e", "⏳", "-e", "⏰", "--", "*.md"]).unwrap_or_default();
     for line in now.lines() {
         if let Some((path, count)) = line.rsplit_once(':')
             && let Ok(count) = count.trim().parse::<u32>()
@@ -1435,7 +1580,17 @@ fn open_loop_counts(repo: &Path) -> Result<Vec<OpenLoopCounts>> {
     if !week_ago_rev.is_empty() {
         let then = git(
             repo,
-            &["grep", "-c", "-e", "⏳", "-e", "⏰", &week_ago_rev, "--", "*.md"],
+            &[
+                "grep",
+                "-c",
+                "-e",
+                "⏳",
+                "-e",
+                "⏰",
+                &week_ago_rev,
+                "--",
+                "*.md",
+            ],
         )
         .unwrap_or_default();
         for line in then.lines() {
@@ -1496,7 +1651,9 @@ fn render_generated(signals: &Signals, config: &BrainConfig) -> String {
     ));
     let weeks_heading = format!("{} weeks", signals.weeks.len());
     let table = |ids: &[String], out: &mut String| {
-        out.push_str(&format!("| Theme | {weeks_heading} | Momentum | Folders |\n|---|---|---|---|\n"));
+        out.push_str(&format!(
+            "| Theme | {weeks_heading} | Momentum | Folders |\n|---|---|---|---|\n"
+        ));
         for id in ids {
             let Some(theme) = theme_by_id.get(id.as_str()) else {
                 continue;
@@ -1556,7 +1713,10 @@ fn render_generated(signals: &Signals, config: &BrainConfig) -> String {
         ));
     }
     let owner = config.owner_label();
-    for (heading, owed) in [(format!("Owed by {owner}"), true), ("Waiting on others".to_owned(), false)] {
+    for (heading, owed) in [
+        (format!("Owed by {owner}"), true),
+        ("Waiting on others".to_owned(), false),
+    ] {
         let group: Vec<&OpenLoop> = signals
             .open_loops
             .iter()
@@ -1883,7 +2043,10 @@ mod tests {
         );
         assert_eq!(
             pins.merge,
-            vec![(vec!["globex corp".to_owned(), "globex inc".to_owned()], "globex".to_owned())]
+            vec![(
+                vec!["globex corp".to_owned(), "globex inc".to_owned()],
+                "globex".to_owned()
+            )]
         );
         assert_eq!(pins.hide, vec!["read"]);
         assert_eq!(pins.canonical("pls").0, "product-led sales");
@@ -1946,7 +2109,10 @@ mod tests {
         assert_eq!(recent_weeks(date, 4).len(), 4);
         assert_eq!(
             month_range(NaiveDate::from_ymd_opt(2025, 11, 15).unwrap(), date),
-            ["2025-11", "2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"]
+            [
+                "2025-11", "2025-12", "2026-01", "2026-02", "2026-03", "2026-04", "2026-05",
+                "2026-06", "2026-07", "2026-08", "2026-09"
+            ]
         );
     }
 
@@ -1965,7 +2131,9 @@ mod tests {
         assert!(has_loop_marker("- ⏳ Grace owes a band read"));
         assert!(has_loop_marker("⚠️ verify the invite"));
         assert!(has_loop_marker("- ⚠️ verify the invite"));
-        assert!(!has_loop_marker("Status: onsite done; ⚠️ reminder lists only two rounds, but the plan holds."));
+        assert!(!has_loop_marker(
+            "Status: onsite done; ⚠️ reminder lists only two rounds, but the plan holds."
+        ));
         assert!(!has_loop_marker("- Grace owes a band read"));
         let today = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
         let loops = vec![
@@ -2008,7 +2176,11 @@ mod tests {
                 .env("GIT_COMMITTER_DATE", "2026-09-08T12:00:00")
                 .output()
                 .unwrap();
-            assert!(output.status.success(), "{args:?}: {}", String::from_utf8_lossy(&output.stderr));
+            assert!(
+                output.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         };
         run(&["init", "-q", "-b", "main"]);
         run(&["config", "user.email", "t@example.com"]);
@@ -2047,16 +2219,28 @@ mod tests {
     #[test]
     fn noise_sources_and_momentum_cap() {
         let noise = BrainConfig::default().themes.noise_dirs;
-        assert!(is_noise_source(&["companies/acme/itinerary.md".into()], &noise));
         assert!(is_noise_source(
-            &["companies/acme/itinerary/day1.md".into(), "companies/acme/roster.md".into()],
+            &["companies/acme/itinerary.md".into()],
+            &noise
+        ));
+        assert!(is_noise_source(
+            &[
+                "companies/acme/itinerary/day1.md".into(),
+                "companies/acme/roster.md".into()
+            ],
             &noise
         ));
         assert!(!is_noise_source(
-            &["companies/acme/itinerary.md".into(), "companies/acme/CLAUDE.md".into()],
+            &[
+                "companies/acme/itinerary.md".into(),
+                "companies/acme/CLAUDE.md".into()
+            ],
             &noise
         ));
-        assert!(is_noise_source(&["companies/acme/CLAUDE.md".into()], &noise));
+        assert!(is_noise_source(
+            &["companies/acme/CLAUDE.md".into()],
+            &noise
+        ));
         let theme = Theme {
             momentum: Some(124.5),
             prior: 5,
@@ -2100,18 +2284,42 @@ mod real_brain {
                 theme.weeks_active,
                 sparkline(&theme.series),
                 momentum_label(theme),
-                theme.folders.iter().map(|f| f.name.as_str()).collect::<Vec<_>>()
+                theme
+                    .folders
+                    .iter()
+                    .map(|f| f.name.as_str())
+                    .collect::<Vec<_>>()
             );
         }
         println!("RISING {:?}", signals.rising);
         println!("FADING {:?}", signals.fading);
         for t in &signals.threads {
-            println!("THREAD {} {:?} gaps {}", t.theme, t.folders, t.links.iter().filter(|l| !l.linked).count());
+            println!(
+                "THREAD {} {:?} gaps {}",
+                t.theme,
+                t.folders,
+                t.links.iter().filter(|l| !l.linked).count()
+            );
         }
-        println!("LOOPS {:?}", signals.open_loop_counts.iter().map(|l| (l.folder.as_str(), l.now, l.week_ago)).collect::<Vec<_>>());
+        println!(
+            "LOOPS {:?}",
+            signals
+                .open_loop_counts
+                .iter()
+                .map(|l| (l.folder.as_str(), l.now, l.week_ago))
+                .collect::<Vec<_>>()
+        );
         println!("OPEN LOOPS {}", signals.open_loops.len());
         for l in signals.open_loops.iter().take(10) {
-            println!("  {} {:>3}d {:<24} {}:{} {}", l.marker, l.age_days(Local::now().date_naive()), l.counterparty.as_deref().unwrap_or("-"), l.file, l.line, l.text.chars().take(60).collect::<String>());
+            println!(
+                "  {} {:>3}d {:<24} {}:{} {}",
+                l.marker,
+                l.age_days(Local::now().date_naive()),
+                l.counterparty.as_deref().unwrap_or("-"),
+                l.file,
+                l.line,
+                l.text.chars().take(60).collect::<String>()
+            );
         }
         for want in ["pls", "product-led sales"] {
             if let Some(t) = signals.themes.iter().find(|t| t.id == want) {

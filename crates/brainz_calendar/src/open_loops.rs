@@ -60,7 +60,11 @@ impl OpenLoopsView {
             existing.update(cx, |view, cx| view.reload(cx));
             return;
         }
-        let Some(repo) = workspace.root_paths(cx).first().map(|path| path.to_path_buf()) else {
+        let Some(repo) = workspace
+            .root_paths(cx)
+            .first()
+            .map(|path| path.to_path_buf())
+        else {
             return;
         };
         let weak = cx.entity().downgrade();
@@ -267,10 +271,13 @@ impl OpenLoopsView {
                 1 => "1 day".to_owned(),
                 days => format!("{days} days"),
             };
-            let who = open_loop
-                .counterparty
-                .clone()
-                .unwrap_or_else(|| if open_loop.owed_by_owner() { "you".to_owned() } else { "someone".to_owned() });
+            let who = open_loop.counterparty.clone().unwrap_or_else(|| {
+                if open_loop.owed_by_owner() {
+                    "you".to_owned()
+                } else {
+                    "someone".to_owned()
+                }
+            });
             let folder = signals::file_label(&open_loop.file);
             let location = format!("{}:{}", open_loop.file, open_loop.line);
             let text = markdown::markdown_to_plain_text(&open_loop.text)
@@ -466,7 +473,13 @@ impl Render for OpenLoopsView {
                 .cloned()
                 .collect();
             body.push(self.render_group(format!("⏰ Owed by {owner}"), &owed, 0, today, cx));
-            body.push(self.render_group("⏳ Waiting on someone else".to_owned(), &waiting, 10_000, today, cx));
+            body.push(self.render_group(
+                "⏳ Waiting on someone else".to_owned(),
+                &waiting,
+                10_000,
+                today,
+                cx,
+            ));
         }
 
         v_flex()
@@ -514,7 +527,11 @@ impl Render for OpenLoopsButton {
             IconButton::new("brainz-open-loops-button", IconName::BrainzLoops)
                 .icon_size(IconSize::Small)
                 .toggle_state(active)
-                .icon_color(if active { Color::Accent } else { Color::Default })
+                .icon_color(if active {
+                    Color::Accent
+                } else {
+                    Color::Default
+                })
                 .tooltip(move |_window, cx| {
                     if let Some(focus_handle) = &focus_handle {
                         Tooltip::for_action_in("Open loops", &OpenOpenLoops, focus_handle, cx)

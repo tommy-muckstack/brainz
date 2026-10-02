@@ -153,7 +153,10 @@ pub fn init(cx: &mut App) {
             .detach();
         }
         workspace.register_action(|workspace, _: &RunThemesPass, _window, cx| {
-            let Some(root) = workspace.root_paths(cx).first().map(|path| path.to_path_buf())
+            let Some(root) = workspace
+                .root_paths(cx)
+                .first()
+                .map(|path| path.to_path_buf())
             else {
                 return;
             };
@@ -170,7 +173,8 @@ struct GlobalRunner(Entity<ThemesRunner>);
 impl Global for GlobalRunner {}
 
 pub fn runner(cx: &App) -> Option<Entity<ThemesRunner>> {
-    cx.try_global::<GlobalRunner>().map(|global| global.0.clone())
+    cx.try_global::<GlobalRunner>()
+        .map(|global| global.0.clone())
 }
 
 /// Owns the "a pass is running" state so the tab and the daily schedule
@@ -205,8 +209,8 @@ impl ThemesRunner {
         if self.running {
             return;
         }
-        let Some(repo) = crate::github_sync::state(cx)
-            .and_then(|state| state.read(cx).repo().cloned())
+        let Some(repo) =
+            crate::github_sync::state(cx).and_then(|state| state.read(cx).repo().cloned())
         else {
             return;
         };
@@ -276,7 +280,10 @@ impl ThemesView {
         }
         // No folder open yet: the tab still opens, as a landing card that
         // offers to open one.
-        let root = workspace.root_paths(cx).first().map(|path| path.to_path_buf());
+        let root = workspace
+            .root_paths(cx)
+            .first()
+            .map(|path| path.to_path_buf());
         let weak = cx.entity().downgrade();
         let view = cx.new(|cx| ThemesView::new(weak, root, cx));
         workspace.add_item_to_active_pane(Box::new(view), None, true, window, cx);
@@ -443,9 +450,9 @@ impl ThemesView {
             self._load = Some(cx.spawn(async move |this, cx| {
                 let result = {
                     let repo = repo.clone();
-                    cx.background_spawn(async move {
-                        signals::remove_pin_line(&repo, &config, &line)
-                    })
+                    cx.background_spawn(
+                        async move { signals::remove_pin_line(&repo, &config, &line) },
+                    )
                     .await
                 };
                 this.update(cx, |this, cx| match result {
@@ -647,31 +654,32 @@ impl ThemesView {
             Color::Default
         };
 
-        let name: AnyElement = match renaming_editor {
-            Some(editor) => div()
-                .min_w(px(160.))
-                .on_action(cx.listener(|this, _: &menu::Confirm, window, cx| {
-                    this.commit_rename(window, cx)
-                }))
-                .on_action(cx.listener(|this, _: &menu::Cancel, window, cx| {
-                    this.cancel_rename(window, cx)
-                }))
-                .child(editor)
-                .into_any_element(),
-            None => Button::new(("brainz-theme-name", ix), theme.name.clone())
-                .label_size(LabelSize::Default)
-                .tooltip(Tooltip::text("Show files and people"))
-                .on_click(cx.listener({
-                    let id = id.clone();
-                    move |this, _, _, cx| {
-                        if !this.expanded.remove(&id) {
-                            this.expanded.insert(id.clone());
+        let name: AnyElement =
+            match renaming_editor {
+                Some(editor) => div()
+                    .min_w(px(160.))
+                    .on_action(cx.listener(|this, _: &menu::Confirm, window, cx| {
+                        this.commit_rename(window, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &menu::Cancel, window, cx| {
+                        this.cancel_rename(window, cx)
+                    }))
+                    .child(editor)
+                    .into_any_element(),
+                None => Button::new(("brainz-theme-name", ix), theme.name.clone())
+                    .label_size(LabelSize::Default)
+                    .tooltip(Tooltip::text("Show files and people"))
+                    .on_click(cx.listener({
+                        let id = id.clone();
+                        move |this, _, _, cx| {
+                            if !this.expanded.remove(&id) {
+                                this.expanded.insert(id.clone());
+                            }
+                            cx.notify();
                         }
-                        cx.notify();
-                    }
-                }))
-                .into_any_element(),
-        };
+                    }))
+                    .into_any_element(),
+            };
 
         let pin_theme = theme.clone();
         let menu_theme = theme.clone();
@@ -763,13 +771,20 @@ impl ThemesView {
                                         .ok();
                                 })
                                 .separator()
-                                .entry("Hide", None, move |_, cx| {
-                                    hide_view
-                                        .update(cx, |view, cx| {
-                                            view.curate(format!("- hide: {}", hide_theme.id), cx)
-                                        })
-                                        .ok();
-                                })
+                                .entry(
+                                    "Hide",
+                                    None,
+                                    move |_, cx| {
+                                        hide_view
+                                            .update(cx, |view, cx| {
+                                                view.curate(
+                                                    format!("- hide: {}", hide_theme.id),
+                                                    cx,
+                                                )
+                                            })
+                                            .ok();
+                                    },
+                                )
                             }))
                         }
                     }),
@@ -800,11 +815,14 @@ impl ThemesView {
                 let source = id.clone();
                 let target = candidate_name.clone();
                 picker = picker.child(
-                    Button::new(("brainz-merge-target", ix * 1000 + candidate_ix), candidate_name)
-                        .label_size(LabelSize::XSmall)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.curate(format!("- merge: {source} => {target}"), cx);
-                        })),
+                    Button::new(
+                        ("brainz-merge-target", ix * 1000 + candidate_ix),
+                        candidate_name,
+                    )
+                    .label_size(LabelSize::XSmall)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.curate(format!("- merge: {source} => {target}"), cx);
+                    })),
                 );
             }
             picker = picker.child(
@@ -836,11 +854,7 @@ impl ThemesView {
                         .items_center()
                         .gap_2()
                         .child(trend_line_sized(&theme.months, px(240.)))
-                        .child(
-                            Label::new(span)
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted),
-                        ),
+                        .child(Label::new(span).size(LabelSize::XSmall).color(Color::Muted)),
                 );
             }
             let mut files = h_flex().flex_wrap().gap_1().child(
@@ -854,7 +868,11 @@ impl ThemesView {
                 files = files.child(
                     Button::new(("brainz-theme-file", ix * 100 + file_ix), label)
                         .label_size(LabelSize::XSmall)
-                        .start_icon(Icon::new(IconName::File).size(IconSize::XSmall).color(Color::Muted))
+                        .start_icon(
+                            Icon::new(IconName::File)
+                                .size(IconSize::XSmall)
+                                .color(Color::Muted),
+                        )
                         .tooltip(Tooltip::text(format!("{} · {}", file.name, file.weight)))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_relative(&path, window, cx);
@@ -871,12 +889,20 @@ impl ThemesView {
                 for (person_ix, person) in theme.people.iter().enumerate() {
                     let name = person.name.clone();
                     people = people.child(
-                        Button::new(("brainz-theme-person", ix * 100 + person_ix), person.name.clone())
-                            .label_size(LabelSize::XSmall)
-                            .tooltip(Tooltip::text(format!("Co-mentioned {} times", person.weight)))
-                            .on_click(cx.listener(move |this, _, window, cx| {
+                        Button::new(
+                            ("brainz-theme-person", ix * 100 + person_ix),
+                            person.name.clone(),
+                        )
+                        .label_size(LabelSize::XSmall)
+                        .tooltip(Tooltip::text(format!(
+                            "Co-mentioned {} times",
+                            person.weight
+                        )))
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
                                 this.open_person(&name, window, cx);
-                            })),
+                            },
+                        )),
                     );
                 }
                 details = details.child(people);
@@ -936,7 +962,6 @@ impl ThemesView {
         }
         block.into_any_element()
     }
-
 }
 
 impl EventEmitter<()> for ThemesView {}
@@ -1010,10 +1035,7 @@ impl Render for ThemesView {
                         Button::new("brainz-open-folder", "Open a folder…")
                             .style(ButtonStyle::Filled)
                             .on_click(|_, window, cx| {
-                                window.dispatch_action(
-                                    Box::new(workspace::Open::default()),
-                                    cx,
-                                );
+                                window.dispatch_action(Box::new(workspace::Open::default()), cx);
                             }),
                     )
                     .child(
@@ -1051,11 +1073,8 @@ impl Render for ThemesView {
         }
         if let Some(signals) = self.signals.clone() {
             let today = chrono::Local::now().date_naive();
-            let loops = signals::open_loops_summary(
-                &signals.open_loops,
-                &self.config.owner_label(),
-                today,
-            );
+            let loops =
+                signals::open_loops_summary(&signals.open_loops, &self.config.owner_label(), today);
             body.push(
                 h_flex()
                     .px_1()
@@ -1156,7 +1175,11 @@ impl Render for ThemesButton {
             IconButton::new("brainz-themes-button", IconName::BrainzTheme)
                 .icon_size(IconSize::Small)
                 .toggle_state(active)
-                .icon_color(if active { Color::Accent } else { Color::Default })
+                .icon_color(if active {
+                    Color::Accent
+                } else {
+                    Color::Default
+                })
                 .tooltip(move |_window, cx| {
                     if let Some(focus_handle) = &focus_handle {
                         Tooltip::for_action_in("Themes", &OpenThemes, focus_handle, cx)
@@ -1179,8 +1202,7 @@ impl StatusItemView for ThemesButton {
         cx: &mut Context<Self>,
     ) {
         self.pane_item_focus_handle = active_pane_item.map(|item| item.item_focus_handle(cx));
-        self.active =
-            active_pane_item.is_some_and(|item| item.downcast::<ThemesView>().is_some());
+        self.active = active_pane_item.is_some_and(|item| item.downcast::<ThemesView>().is_some());
         cx.notify();
     }
 

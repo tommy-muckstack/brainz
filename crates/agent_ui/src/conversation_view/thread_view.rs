@@ -12256,6 +12256,104 @@ impl ThreadView {
     /// Brainz: a card offering to sign in again when a connector has lost
     /// its authorization, instead of leaving the agent's "needs to be
     /// reconnected" sentence as the only clue.
+    /// A hosted connector the conversation is trying to connect that no
+    /// client has yet: the agent cannot set it up itself, so Brainz offers to.
+    fn brainz_mcp_needing_connect(
+        &self,
+        cx: &App,
+    ) -> Option<&'static brainz_calendar::mcp::HostedConnector> {
+        if !self.agent_id.0.ends_with("-acp") {
+            return None;
+        }
+        let thread = self.thread.read(cx);
+        let mut text = String::new();
+        for entry in thread.entries().iter().rev().take(12) {
+            match entry {
+                AgentThreadEntry::AssistantMessage(message) => {
+                    text.push_str(&message.to_markdown(cx));
+                    text.push('\n');
+                }
+                AgentThreadEntry::UserMessage(message) => {
+                    text.push_str(&message.content.to_markdown(cx));
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let lower = text.to_lowercase();
+        if !lower.contains("connect") && !lower.contains("integrat") && !lower.contains("mcp") {
+            return None;
+        }
+        brainz_calendar::mcp::HostedConnector::mentioned_unconfigured(&text)
+    }
+
+    fn brainz_connect_hosted_mcp(
+        &mut self,
+        hosted: &'static brainz_calendar::mcp::HostedConnector,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let client = if self.agent_id.0.starts_with("codex") {
+            brainz_calendar::mcp::McpClient::Codex
+        } else {
+            brainz_calendar::mcp::McpClient::Claude
+        };
+        if let Err(error) = hosted.add(client) {
+            log::error!("brainz mcp connect {}: {error:#}", hosted.name);
+            return;
+        }
+        self.brainz_reconnect_mcp(hosted.name.to_owned(), window, cx);
+    }
+
+    fn render_mcp_connect_card(&mut self, cx: &mut Context<Self>) -> Option<Callout> {
+        let hosted = self.brainz_mcp_needing_connect(cx)?;
+        if self.brainz_mcp_dismissed.contains(hosted.name) {
+            return None;
+        }
+        let agent = brainz_short_agent_name(&self.agent_display_name);
+        let title = hosted.title();
+        let connecting = self.brainz_mcp_reconnecting.as_deref() == Some(hosted.name);
+        let action: AnyElement = if connecting {
+            h_flex()
+                .h(px(24.))
+                .px_2()
+                .items_center()
+                .child(ui::bouncing_dots(
+                    "brainz-mcp-connect-dots",
+                    cx.theme().colors().text_accent,
+                ))
+                .into_any_element()
+        } else {
+            Button::new("brainz-mcp-connect", format!("Connect {title}"))
+                .style(ButtonStyle::Filled)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.brainz_connect_hosted_mcp(hosted, window, cx);
+                }))
+                .into_any_element()
+        };
+        Some(
+            Callout::new()
+                .severity(Severity::Info)
+                .icon(IconName::BrainzMcp)
+                .title(format!("{title} isn't connected yet"))
+                .description(format!(
+                    "{agent} can't add connectors on its own. Connect adds {title}'s hosted \
+                     connector to {agent} and opens a short sign-in in this panel that finishes \
+                     in your browser; afterwards your message is sent again."
+                ))
+                .actions_slot(action)
+                .dismiss_action(
+                    IconButton::new("brainz-mcp-connect-dismiss", IconName::Close)
+                        .icon_size(IconSize::Small)
+                        .tooltip(Tooltip::text("Dismiss"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.brainz_mcp_dismissed.insert(hosted.name.to_owned());
+                            cx.notify();
+                        })),
+                ),
+        )
+    }
+
     fn render_mcp_reconnect_card(&mut self, cx: &mut Context<Self>) -> Option<Callout> {
         let server = self.brainz_mcp_needing_reconnect(cx)?;
         if self.brainz_mcp_dismissed.contains(&server) {
@@ -13679,6 +13777,7 @@ impl Render for ThreadView {
             .children(self.render_thread_retry_status_callout(cx))
             .children(self.render_thread_error(window, cx))
             .children(self.render_mcp_reconnect_card(cx))
+            .children(self.render_mcp_connect_card(cx))
             .children(self.render_permissions_card(cx))
             .when_some(
                 match has_messages {

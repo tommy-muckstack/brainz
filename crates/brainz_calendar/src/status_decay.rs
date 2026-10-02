@@ -69,14 +69,24 @@ pub fn status_date(text: &str, today: NaiveDate) -> Option<NaiveDate> {
 /// as often fractions as dates.
 pub fn first_date(text: &str, today: NaiveDate) -> Option<NaiveDate> {
     let tokens: Vec<&str> = text
-        .split(|c: char| c.is_whitespace() || matches!(c, '*' | ':' | ',' | ';' | '(' | ')' | '[' | ']' | '`' | '\u{201c}' | '\u{201d}'))
+        .split(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '*' | ':' | ',' | ';' | '(' | ')' | '[' | ']' | '`' | '\u{201c}' | '\u{201d}'
+                )
+        })
         .map(|token| token.trim_matches(|c: char| !(c.is_ascii_digit())))
         .filter(|token| !token.is_empty())
         .collect();
     tokens
         .iter()
         .find_map(|token| parse_date_token(token, today, false))
-        .or_else(|| tokens.iter().find_map(|token| parse_date_token(token, today, true)))
+        .or_else(|| {
+            tokens
+                .iter()
+                .find_map(|token| parse_date_token(token, today, true))
+        })
 }
 
 fn parse_date_token(token: &str, today: NaiveDate, allow_month_day: bool) -> Option<NaiveDate> {
@@ -203,7 +213,8 @@ pub fn init(cx: &mut App) {
 }
 
 pub fn state(cx: &App) -> Option<Entity<DecayState>> {
-    cx.try_global::<GlobalDecayState>().map(|global| global.0.clone())
+    cx.try_global::<GlobalDecayState>()
+        .map(|global| global.0.clone())
 }
 
 /// Starts watching `repo`; a no-op once it is being watched.
@@ -268,7 +279,11 @@ impl DecayState {
                     let mut names: Vec<&str> =
                         stale.values().map(|decay| decay.folder.as_str()).collect();
                     names.sort_unstable();
-                    log::info!("brainz status decay: {} stale folder(s): {}", names.len(), names.join(", "));
+                    log::info!(
+                        "brainz status decay: {} stale folder(s): {}",
+                        names.len(),
+                        names.join(", ")
+                    );
                     this.stale = stale;
                     cx.notify();
                 }
@@ -291,11 +306,17 @@ mod tests {
     fn status_date_reads_both_callout_styles() {
         let today = day(2026, 10, 1);
         assert_eq!(
-            status_date("# Acme\n\n> **Status 2026-09-22:** loop live.\n\nBody 2026-09-30.\n", today),
+            status_date(
+                "# Acme\n\n> **Status 2026-09-22:** loop live.\n\nBody 2026-09-30.\n",
+                today
+            ),
             Some(day(2026, 9, 22))
         );
         assert_eq!(
-            status_date("# Acme\n> ## 🟢 HOUSTON ONSITE DAY ONE DONE 9/28. Debrief later.\n>\n> more 9/30\n", today),
+            status_date(
+                "# Acme\n> ## 🟢 HOUSTON ONSITE DAY ONE DONE 9/28. Debrief later.\n>\n> more 9/30\n",
+                today
+            ),
             Some(day(2026, 9, 28))
         );
         assert_eq!(
@@ -307,10 +328,16 @@ mod tests {
             Some(day(2026, 6, 5))
         );
         assert_eq!(
-            status_date("> **Status:** 1/2 the team is out; onsite was 2026-09-28 and 3/4 of the loop is done.\n", today),
+            status_date(
+                "> **Status:** 1/2 the team is out; onsite was 2026-09-28 and 3/4 of the loop is done.\n",
+                today
+            ),
             Some(day(2026, 9, 28))
         );
-        assert_eq!(status_date("# No quote\n\nJust text 2026-09-30.\n", today), None);
+        assert_eq!(
+            status_date("# No quote\n\nJust text 2026-09-30.\n", today),
+            None
+        );
         assert_eq!(status_date("> Hi Team,\n> no dates here\n", today), None);
     }
 
@@ -328,7 +355,10 @@ mod tests {
         );
         assert_eq!(compare(day(2026, 9, 30), &siblings), None);
         assert_eq!(compare(day(2026, 10, 1), &siblings), None);
-        assert_eq!(date_in_name("hopper-2026-10-01-prep.md"), Some(day(2026, 10, 1)));
+        assert_eq!(
+            date_in_name("hopper-2026-10-01-prep.md"),
+            Some(day(2026, 10, 1))
+        );
         assert_eq!(date_in_name("CLAUDE.md"), None);
     }
 
@@ -340,10 +370,22 @@ mod tests {
         std::fs::create_dir_all(repo.join("companies/acme/2026-09-30")).unwrap();
         std::fs::create_dir_all(repo.join("companies/globex")).unwrap();
         std::fs::create_dir_all(repo.join("companies/archive/old/2026-09-30")).unwrap();
-        std::fs::write(repo.join("companies/acme/CLAUDE.md"), "> **Status 2026-09-22:** x\n").unwrap();
-        std::fs::write(repo.join("companies/globex/CLAUDE.md"), "> **Status 2026-09-30:** x\n").unwrap();
+        std::fs::write(
+            repo.join("companies/acme/CLAUDE.md"),
+            "> **Status 2026-09-22:** x\n",
+        )
+        .unwrap();
+        std::fs::write(
+            repo.join("companies/globex/CLAUDE.md"),
+            "> **Status 2026-09-30:** x\n",
+        )
+        .unwrap();
         std::fs::write(repo.join("companies/globex/2026-09-29-notes.md"), "").unwrap();
-        std::fs::write(repo.join("companies/archive/old/CLAUDE.md"), "> **Status 2026-01-01:** x\n").unwrap();
+        std::fs::write(
+            repo.join("companies/archive/old/CLAUDE.md"),
+            "> **Status 2026-01-01:** x\n",
+        )
+        .unwrap();
         let config = BrainConfig {
             vocabulary_folders: vec!["companies".into()],
             ..BrainConfig::default()
@@ -352,7 +394,11 @@ mod tests {
         assert_eq!(stale.len(), 1, "{stale:?}");
         let decay = stale.get(&repo.join("companies/acme")).unwrap();
         assert_eq!(decay.tooltip(), "Status 9/22, newest note 9/30.");
-        std::fs::write(repo.join("companies/acme/CLAUDE.md"), "> **Status 2026-09-30:** x\n").unwrap();
+        std::fs::write(
+            repo.join("companies/acme/CLAUDE.md"),
+            "> **Status 2026-09-30:** x\n",
+        )
+        .unwrap();
         assert!(scan(repo, &config, today).is_empty());
     }
 }

@@ -5,13 +5,13 @@ pub mod brain_config;
 pub mod brain_match;
 pub mod brief;
 pub mod github_sync;
+pub mod launcher;
+pub mod mcp;
+pub mod memory_share;
 pub mod ocr;
 pub mod open_loops;
 pub mod permissions;
 pub mod prep;
-pub mod launcher;
-pub mod mcp;
-pub mod memory_share;
 pub mod status_decay;
 pub mod themes;
 pub mod themes_signals;
@@ -438,7 +438,9 @@ impl CalendarView {
                 .overflow_hidden()
                 .child(card)
                 .with_animation(
-                    gpui::ElementId::Name(format!("brainz-calendar-detail-out-{}", event.id).into()),
+                    gpui::ElementId::Name(
+                        format!("brainz-calendar-detail-out-{}", event.id).into(),
+                    ),
                     Animation::new(Duration::from_millis(DETAIL_SLIDE_MS))
                         .with_easing(ease_out_quint()),
                     move |wrapper, delta| {
@@ -464,7 +466,11 @@ impl CalendarView {
         Some(animated)
     }
 
-    fn render_detail_card(&self, event: &CalendarEvent, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_detail_card(
+        &self,
+        event: &CalendarEvent,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let accent = event
             .color
             .unwrap_or_else(|| cx.theme().colors().icon_accent);
@@ -528,41 +534,50 @@ impl CalendarView {
             );
         }
         v_flex()
-                .id("brainz-calendar-detail")
-                .flex_none()
-                .w(px(DETAIL_WIDTH))
-                .h_full()
-                .ml(px(DETAIL_GAP))
-                .p_3()
-                .gap_3()
-                .rounded_lg()
-                .border_1()
-                .border_color(cx.theme().colors().border)
-                .bg(cx.theme().colors().surface_background)
-                .overflow_y_scroll()
-                .child(
-                    h_flex()
-                        .items_start()
-                        .justify_between()
-                        .gap_2()
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .min_w_0()
-                                .child(div().flex_none().size_2p5().rounded_full().bg(accent).mt_1p5())
-                                .child(Label::new(event.title.clone()).weight(gpui::FontWeight::SEMIBOLD)),
-                        )
-                        .child(
-                            IconButton::new("brainz-calendar-detail-close", IconName::Close)
-                                .icon_size(IconSize::XSmall)
-                                .tooltip(Tooltip::text("Close"))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.select_event(None, cx);
-                                })),
-                        ),
-                )
-                .child(body)
-                .into_any_element()
+            .id("brainz-calendar-detail")
+            .flex_none()
+            .w(px(DETAIL_WIDTH))
+            .h_full()
+            .ml(px(DETAIL_GAP))
+            .p_3()
+            .gap_3()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().colors().border)
+            .bg(cx.theme().colors().surface_background)
+            .overflow_y_scroll()
+            .child(
+                h_flex()
+                    .items_start()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .size_2p5()
+                                    .rounded_full()
+                                    .bg(accent)
+                                    .mt_1p5(),
+                            )
+                            .child(
+                                Label::new(event.title.clone()).weight(gpui::FontWeight::SEMIBOLD),
+                            ),
+                    )
+                    .child(
+                        IconButton::new("brainz-calendar-detail-close", IconName::Close)
+                            .icon_size(IconSize::XSmall)
+                            .tooltip(Tooltip::text("Close"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.select_event(None, cx);
+                            })),
+                    ),
+            )
+            .child(body)
+            .into_any_element()
     }
 
     /// Seven columns, one per day, like a week view without the hour grid.
@@ -804,7 +819,11 @@ impl Render for CalendarButton {
             IconButton::new("brainz-calendar-button", IconName::BrainzCalendar)
                 .icon_size(IconSize::Small)
                 .toggle_state(active)
-                .icon_color(if active { Color::Accent } else { Color::Default })
+                .icon_color(if active {
+                    Color::Accent
+                } else {
+                    Color::Default
+                })
                 .tooltip(move |_window, cx| {
                     if let Some(focus_handle) = &focus_handle {
                         Tooltip::for_action_in("Calendar", &OpenCalendar, focus_handle, cx)

@@ -44,7 +44,10 @@ pub fn memory_dirs(brain: &Path, home: &Path, brainz_claude_dir: &Path) -> [Path
     let slug = project_slug(brain);
     [
         home.join(".claude/projects").join(&slug).join("memory"),
-        brainz_claude_dir.join("projects").join(&slug).join("memory"),
+        brainz_claude_dir
+            .join("projects")
+            .join(&slug)
+            .join("memory"),
     ]
 }
 
@@ -122,7 +125,9 @@ pub fn ensure_shared(brain: &Path, home: &Path, brainz_claude_dir: &Path) -> Res
             Ok(metadata) if metadata.is_dir() => real_dirs.push(source.clone()),
             Ok(_) => bail!("{} is a file, not a folder", source.display()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error).with_context(|| format!("checking {}", source.display())),
+            Err(error) => {
+                return Err(error).with_context(|| format!("checking {}", source.display()));
+            }
         }
     }
     if real_dirs.is_empty() {
@@ -141,7 +146,12 @@ pub fn ensure_shared(brain: &Path, home: &Path, brainz_claude_dir: &Path) -> Res
         return Ok(Outcome::Nothing);
     }
     let target_has_files = std::fs::symlink_metadata(&target)
-        .map(|m| m.is_dir() && memory_files(&target).map(|f| !f.is_empty()).unwrap_or(false))
+        .map(|m| {
+            m.is_dir()
+                && memory_files(&target)
+                    .map(|f| !f.is_empty())
+                    .unwrap_or(false)
+        })
         .unwrap_or(false);
     if target_has_files && linked == 0 {
         bail!(
@@ -189,7 +199,9 @@ pub fn ensure_shared(brain: &Path, home: &Path, brainz_claude_dir: &Path) -> Res
     }
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     if target.is_dir() {
-        let backup = brain.join(".claude").join(format!("memory.pre-share-{stamp}"));
+        let backup = brain
+            .join(".claude")
+            .join(format!("memory.pre-share-{stamp}"));
         std::fs::rename(&target, &backup)?;
     }
     std::fs::rename(&staging, &target)?;
@@ -293,11 +305,19 @@ mod tests {
         std::fs::create_dir_all(&inside).unwrap();
         std::fs::write(cli.join("a.md"), "old a").unwrap();
         std::fs::write(cli.join("only-cli.md"), "cli").unwrap();
-        std::fs::write(cli.join(INDEX), "# Memory\n- [A](a.md)\n- [Only](only-cli.md)\n").unwrap();
+        std::fs::write(
+            cli.join(INDEX),
+            "# Memory\n- [A](a.md)\n- [Only](only-cli.md)\n",
+        )
+        .unwrap();
         std::thread::sleep(Duration::from_millis(20));
         std::fs::write(inside.join("a.md"), "new a").unwrap();
         std::fs::write(inside.join("only-brainz.md"), "brainz").unwrap();
-        std::fs::write(inside.join(INDEX), "# Memory\n- [A](a.md)\n- [B](only-brainz.md)\n").unwrap();
+        std::fs::write(
+            inside.join(INDEX),
+            "# Memory\n- [A](a.md)\n- [B](only-brainz.md)\n",
+        )
+        .unwrap();
         let newer = std::time::SystemTime::now();
         filetime_touch(&inside.join("a.md"), newer);
 
@@ -308,17 +328,36 @@ mod tests {
         assert_eq!(files, 4);
         assert_eq!(backups.len(), 2);
         let target = brain.join(TARGET);
-        assert_eq!(std::fs::read_to_string(target.join("a.md")).unwrap(), "new a");
+        assert_eq!(
+            std::fs::read_to_string(target.join("a.md")).unwrap(),
+            "new a"
+        );
         assert!(target.join("only-cli.md").exists());
         assert!(target.join("only-brainz.md").exists());
         assert_eq!(
             std::fs::read_to_string(target.join(INDEX)).unwrap(),
             "# Memory\n- [A](a.md)\n- [Only](only-cli.md)\n- [B](only-brainz.md)\n"
         );
-        assert!(std::fs::symlink_metadata(&cli).unwrap().file_type().is_symlink());
-        assert!(std::fs::symlink_metadata(&inside).unwrap().file_type().is_symlink());
-        assert_eq!(std::fs::read_to_string(cli.join("only-brainz.md")).unwrap(), "brainz");
-        assert_eq!(ensure_shared(&brain, &home, &brainz).unwrap(), Outcome::AlreadyShared);
+        assert!(
+            std::fs::symlink_metadata(&cli)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            std::fs::symlink_metadata(&inside)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_to_string(cli.join("only-brainz.md")).unwrap(),
+            "brainz"
+        );
+        assert_eq!(
+            ensure_shared(&brain, &home, &brainz).unwrap(),
+            Outcome::AlreadyShared
+        );
     }
 
     #[test]
@@ -328,7 +367,10 @@ mod tests {
         let home = root.path().join("home");
         let brainz = root.path().join("brainz-config/claude");
         std::fs::create_dir_all(&brain).unwrap();
-        assert_eq!(ensure_shared(&brain, &home, &brainz).unwrap(), Outcome::Nothing);
+        assert_eq!(
+            ensure_shared(&brain, &home, &brainz).unwrap(),
+            Outcome::Nothing
+        );
         let [cli, _] = memory_dirs(&brain, &home, &brainz);
         std::fs::create_dir_all(&cli).unwrap();
         std::fs::write(cli.join("a.md"), "a").unwrap();
@@ -337,7 +379,12 @@ mod tests {
         let error = ensure_shared(&brain, &home, &brainz).unwrap_err();
         assert!(error.to_string().contains("merge by hand"), "{error}");
         assert!(cli.join("a.md").exists());
-        assert!(!std::fs::symlink_metadata(&cli).unwrap().file_type().is_symlink());
+        assert!(
+            !std::fs::symlink_metadata(&cli)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]
