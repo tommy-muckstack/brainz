@@ -3,6 +3,7 @@
 
 pub mod brain_config;
 pub mod brain_match;
+pub mod brief;
 pub mod github_sync;
 pub mod ocr;
 pub mod open_loops;
@@ -50,6 +51,7 @@ pub fn init(cx: &mut App) {
     github_sync::init(cx);
     prep::init(cx);
     open_loops::init(cx);
+    brief::init(cx);
     status_decay::init(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenCalendar, window, cx| {

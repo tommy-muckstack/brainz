@@ -697,6 +697,8 @@
     "use_key_equivalents": true,
     "bindings": {
       "alt-/": "which_key::ShowPendingBindings",
+      // Brainz: capture the clipboard into the conversation from anywhere.
+      "cmd-ctrl-v": "agent::BrainzCaptureClipboard",
       // Move focus between the major regions of the window (editor, open
       // panels, status bar). Accessibility navigation; mirrors VS Code's
       // "Focus Next/Previous Part". `cmd-f6` mirrors `f6` so region navigation

@@ -50,6 +50,19 @@ the file name that opens it on click; the agent still gets the path.
 Named links in chat replies also render as rounded, clickable pills, preserving
 their displayed titles and original file or web destinations.
 
+The sun button at the far left of the status bar opens the **Brief** tab: today's
+calendar events with who they match in the brain and an **Open prep** or **Open
+folder** button, every folder whose status callout is older than its newest note,
+and the ten oldest open loops, with a link to the full Open loops tab. It refreshes
+on open and every five minutes. **⌘⌃V** anywhere in the window pastes the
+clipboard (a screenshot, a link, a path) into the active conversation's message box
+and focuses it, opening a Claude conversation first if none is up. Right-click an
+amber folder in the tree for **Refresh status from newest notes**, which opens a
+Claude tab pre-filled to rewrite the callout. The first Claude conversation offers
+**Set standing permissions**, which writes Brainz's own Claude rules (edits in the
+brain accepted; read, search, git, and connectors never ask; destructive shapes
+still prompt) so routine work stops asking.
+
 The calendar button in the status bar (bottom left) opens a **Calendar** tab
 with the next seven days, read from every account macOS Calendar knows about.
 It uses a small bundled helper built from `script/brainz-calendar.swift`, the
