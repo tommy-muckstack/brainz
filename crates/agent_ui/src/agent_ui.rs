@@ -219,6 +219,10 @@ actions!(
         /// Brainz: starts a fresh conversation with the same agent in the
         /// current tab, dropping the accumulated context.
         BrainzResetThread,
+        /// Brainz: focuses the active conversation's message box and pastes
+        /// the clipboard into it (a screenshot, a link, a path), so capture
+        /// is one keystroke from anywhere in the window.
+        BrainzCaptureClipboard,
         /// Toggles the options menu for agent settings and preferences.
         ToggleOptionsMenu,
         /// Toggles the profile or mode selector for switching between agent profiles.
