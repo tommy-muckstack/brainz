@@ -197,6 +197,8 @@ pub enum IconName {
     BrainzTheme,
     /// Brainz: Open loops tab button (hourglass).
     BrainzLoops,
+    /// Brainz: Brief tab button (sun).
+    BrainzBrief,
     /// Brainz: sliders used for the composer's model/mode options toggle.
     BrainzSliders,
     /// Brainz: open to-do item (rounded square).
@@ -345,6 +347,7 @@ impl IconName {
             Self::BrainzMcp => return "icons/brainz/mcp.svg".into(),
             Self::BrainzTheme => return "icons/brainz/theme.svg".into(),
             Self::BrainzLoops => return "icons/brainz/loops.svg".into(),
+            Self::BrainzBrief => return "icons/brainz/brief.svg".into(),
             Self::BrainzClaude => return "icons/brainz/claude.svg".into(),
             Self::BrainzCodex => return "icons/brainz/codex.svg".into(),
             Self::Split => return "icons/brainz/split.svg".into(),
