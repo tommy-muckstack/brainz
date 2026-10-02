@@ -2045,6 +2045,33 @@ impl MessageEditor {
             }
         }
 
+        // Brainz: bare shared-note links and paths to files on this Mac in
+        // older messages become pills too, display only; the text the agent
+        // saw is unchanged.
+        {
+            let covered = |range: &Range<usize>, mentions: &[(Range<usize>, MentionUri, Mention)]| {
+                mentions
+                    .iter()
+                    .any(|(existing, _, _)| existing.start <= range.start && range.end <= existing.end)
+                    || text[..range.start].ends_with("](")
+            };
+            let mut extra = Vec::new();
+            for (range, url) in crate::google_doc_link::pasted_document_links(&text) {
+                if !covered(&range, &mentions) {
+                    extra.push((range, MentionUri::Fetch { url }, Mention::Link));
+                }
+            }
+            for (range, path) in crate::google_doc_link::pasted_local_files(&text) {
+                if !covered(&range, &mentions) {
+                    extra.push((range, MentionUri::File { abs_path: path }, Mention::Link));
+                }
+            }
+            if !extra.is_empty() {
+                mentions.extend(extra);
+                mentions.sort_by_key(|(range, _, _)| range.start);
+            }
+        }
+
         if text.is_empty() && mentions.is_empty() {
             return;
         }
