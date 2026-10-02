@@ -159,13 +159,22 @@ impl OpenLoopsView {
         }
     }
 
-    /// Opens the loop's file with the cursor on its line.
-    fn open_loop(&self, open_loop: &OpenLoop, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens the loop's file with the cursor on its line. With
+    /// `select_marker`, the ⏳ or ⏰ glyph is selected so one keystroke
+    /// replaces it; the edit itself stays the user's.
+    fn open_loop(
+        &self,
+        open_loop: &OpenLoop,
+        select_marker: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let path = self.repo.join(&open_loop.file);
         if !path.is_file() {
             return;
         }
         let row = open_loop.line.saturating_sub(1);
+        let marker = open_loop.marker.clone();
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
@@ -185,11 +194,29 @@ impl OpenLoopsView {
             if let Some(editor) = item.downcast::<Editor>() {
                 editor.update_in(cx, |editor, window, cx| {
                     if let Some(buffer) = editor.buffer().read(cx).as_singleton() {
-                        let point = buffer
-                            .read(cx)
-                            .snapshot()
-                            .point_from_external_input(row, 0);
+                        let snapshot = buffer.read(cx).snapshot();
+                        let point = snapshot.point_from_external_input(row, 0);
                         editor.go_to_singleton_buffer_point(point, window, cx);
+                        if select_marker {
+                            let line: String = snapshot
+                                .text_for_range(
+                                    snapshot.point_to_offset(point)
+                                        ..snapshot.point_to_offset(
+                                            snapshot.point_from_external_input(row + 1, 0),
+                                        ),
+                                )
+                                .collect();
+                            if let Some(at) = line.find(marker.as_str()) {
+                                let start = snapshot.point_to_offset(point) + at;
+                                let end = start + marker.len();
+                                let multi = editor.buffer().read(cx).snapshot(cx);
+                                let start = multi.anchor_before(editor::MultiBufferOffset(start));
+                                let end = multi.anchor_after(editor::MultiBufferOffset(end));
+                                editor.change_selections(Default::default(), window, cx, |s| {
+                                    s.select_anchor_ranges([start..end]);
+                                });
+                            }
+                        }
                     }
                 })?;
             }
@@ -265,7 +292,7 @@ impl OpenLoopsView {
                     .cursor_pointer()
                     .tooltip(Tooltip::text(location))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_loop(&row_loop, window, cx);
+                        this.open_loop(&row_loop, false, window, cx);
                     }))
                     .child(
                         div()
@@ -312,11 +339,11 @@ impl OpenLoopsView {
                             .label_size(LabelSize::XSmall)
                             .color(Color::Muted)
                             .tooltip(Tooltip::text(
-                                "Opens the file at this line so you can strike it yourself",
+                                "Opens the note with the marker selected; type ✅ or delete to strike it",
                             ))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
-                                this.open_loop(&done_loop, window, cx);
+                                this.open_loop(&done_loop, true, window, cx);
                             })),
                     ),
             );

@@ -12067,7 +12067,7 @@ impl ThreadView {
                 .update_in(cx, |workspace, window, cx| {
                     workspace.focus_panel::<crate::AgentPanel>(window, cx);
                     let message = match &result {
-                        Ok(()) => format!("{server} reconnected. Send your message again and it will go through."),
+                        Ok(()) => format!("{server} reconnected. Your message is being sent again."),
                         Err(error) => format!("Could not reconnect {server}: {error:#}"),
                     };
                     let id = workspace::notifications::NotificationId::unique::<ThreadView>();
@@ -12087,11 +12087,22 @@ impl ThreadView {
                     .detach();
                 })
                 .ok();
-            this.update(cx, |this, cx| {
+            this.update_in(cx, |this, window, cx| {
                 if result.is_ok()
                     && let Some(server) = this.brainz_mcp_reconnecting.take()
                 {
                     this.brainz_mcp_dismissed.insert(server);
+                    // The connector is back: send the message that hit the
+                    // wall again, the way sign-in already does.
+                    let last_user_entry = this
+                        .thread
+                        .read(cx)
+                        .entries()
+                        .iter()
+                        .rposition(|entry| matches!(entry, AgentThreadEntry::UserMessage(_)));
+                    if let Some(entry_ix) = last_user_entry {
+                        this.resend_user_message(entry_ix, window, cx);
+                    }
                 } else {
                     this.brainz_mcp_reconnecting = None;
                 }
