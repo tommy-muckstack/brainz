@@ -29,6 +29,7 @@ util.workspace = true
 terminal_view.workspace = true
 task.workspace = true
 collections.workspace = true
+project.workspace = true
 ui.workspace = true
 workspace.workspace = true
 

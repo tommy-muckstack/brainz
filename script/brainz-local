@@ -103,6 +103,13 @@ if [[ ! -x "$repository/target/brainz-ocr" || "script/brainz-ocr.swift" -nt "$re
 fi
 cp "$repository/target/brainz-ocr" "$application/Contents/MacOS/brainz-ocr"
 
+# PDF helper (CoreGraphics). Renders pages to PNG for the PDF tab.
+if [[ ! -x "$repository/target/brainz-pdf" || "script/brainz-pdf.swift" -nt "$repository/target/brainz-pdf" ]]; then
+    swiftc -O -module-cache-path "$repository/target/brainz-swift-cache" \
+        -o "$repository/target/brainz-pdf" script/brainz-pdf.swift
+fi
+cp "$repository/target/brainz-pdf" "$application/Contents/MacOS/brainz-pdf"
+
 swift -module-cache-path "$repository/target/brainz-swift-cache" \
     script/brainz-icon.swift "$repository" "$repository/target/Brainz.iconset"
 iconutil -c icns "$repository/target/Brainz.iconset" \

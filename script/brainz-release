@@ -99,6 +99,8 @@ codesign --force --timestamp --options runtime --sign "$DEV_ID_IDENTITY" \
 codesign --force --timestamp --options runtime --sign "$DEV_ID_IDENTITY" \
     "$APP_DIR/Contents/MacOS/brainz-ocr"
 codesign --force --timestamp --options runtime --sign "$DEV_ID_IDENTITY" \
+    "$APP_DIR/Contents/MacOS/brainz-pdf"
+codesign --force --timestamp --options runtime --sign "$DEV_ID_IDENTITY" \
     "$APP_DIR/Contents/MacOS/cli"
 codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" \
     --sign "$DEV_ID_IDENTITY" "$APP_DIR/Contents/MacOS/brainz"
