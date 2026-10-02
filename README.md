@@ -112,18 +112,16 @@ single file, caps momentum at `x20+`, and, when a theme is expanded, shows an
 all-time line bucketed by month under the windowed one (`themes.window_weeks`,
 default 12).
 
-**Calendar-aware prep and capture.** Ten minutes before an event whose full
-attendee names, attendee email domains, or title match a company, client, or
-project folder (the children of `calendar.match_dirs`, matched against the
-folder's own notes and the people files), an amber banner above the file tree
-says "Lisa Simpson, 3:00pm." with **Open prep** (opens the day's
-`*-prep.md` from the matching dated subfolder and any Google Doc it links),
-**Open folder**, and **Dismiss**. A first name alone never matches, and two
-folders tied on the same evidence match nothing. Five minutes after the event
-ends the banner flips to "Call with Lisa ended. Log it?"; **Log this call**
-opens a Claude conversation with the message box pre-filled with the
-`granola-to-brain` skill path, the folder, the prep file, and today's
-transcripts from `~/MyManBrain/meetings/`. The agent writes the notes.
+**Calendar-aware prep.** Ten minutes before an event whose full attendee
+names, attendee email domains, or title match a company, client, or project
+folder (the children of `calendar.match_dirs`, matched against the folder's own
+notes and the people files), an amber banner above the file tree says "Lisa
+Simpson, 3:00pm." with **Open prep** (opens the day's `*-prep.md` from the
+matching dated subfolder and any Google Doc it links), **Open folder**, and
+**Dismiss**. A first name alone never matches, and two folders tied on the same
+evidence match nothing. The banner stays until the event ends. Logging the call
+afterwards is the agent's job: paste the Granola, Wispr Flow, and My Man sources
+into a conversation and the brain's granola-to-brain skill takes it from there.
 
 **Screenshots are read for you.** Every image you attach is run through the
 bundled Vision OCR helper (`script/brainz-ocr.swift`) on your Mac as soon as it
@@ -191,7 +189,7 @@ config lives under `~/.config/brainz/`. The brain's layout comes from an
 optional `brainz.toml` at the brain's root, every key optional: `todo` (the
 To-Do file), `themes_dir`, `people_dir`, `places_dir`, `vocabulary_folders`,
 `exclude_prefixes`, `dated_exclude_dirs`, `stop_words`, `sync`, a `[calendar]`
-table (`prep_lead_minutes`, `log_delay_minutes`, `match_dirs`), and a
+table (`prep_lead_minutes`, `match_dirs`), and a
 `[themes]` table (`noise_dirs`, `window_weeks`). The defaults and what each
 key changes are listed at the top of `crates/brainz_calendar/src/brain_config.rs`;
 a brain can keep its own copy of that reference next to its `brainz.toml`
