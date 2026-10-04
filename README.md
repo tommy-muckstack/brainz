@@ -194,7 +194,12 @@ lapsed (read from Claude's own auth cache), its Claude tile turns amber and read
 menu, runs the CLI's `mcp login`
 in the terminal panel and brings your panel back when it finishes. When an agent
 reply or a failed connector tool call says a connector needs reconnecting, the same
-card appears in the conversation with a one-click Reconnect. Hosted connectors
+card appears in the conversation with a one-click Reconnect. Claude Code asks an OAuth connector only for the scopes its protected-resource
+metadata lists, so servers that offer `offline_access` elsewhere (Amplitude, Granola)
+never hand Claude a refresh token and the sign-in lapses daily. Once per launch
+Brainz checks each Claude HTTP connector without an `oauth` block and, when the
+authorization server advertises `offline_access`, pins `oauth.scopes` on the entry
+so the next sign-in sticks. Hosted connectors
 Brainz knows how to set up (Notion, Vercel, Wispr Flow, and My Man via the filesystem
 server over `~/MyManBrain`) appear under **Available** in the tab,
 and when a conversation tries to connect one that isn't configured yet, a card

@@ -2436,6 +2436,7 @@ dependencies = [
  "terminal_view",
  "toml 0.8.23",
  "ui",
+ "url",
  "util",
  "workspace",
 ]
