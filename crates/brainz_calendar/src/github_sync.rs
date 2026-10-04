@@ -45,7 +45,9 @@ pub struct SyncState {
     _leave: Option<Task<()>>,
 }
 
-const BANNER_HEIGHT: f32 = 74.;
+// Text row + gap + button + card padding + outer padding; too small and
+// the button clips into whatever sits below.
+const BANNER_HEIGHT: f32 = 88.;
 const SLIDE_MS: u64 = 320;
 
 fn wants_banner(status: &SyncStatus) -> bool {

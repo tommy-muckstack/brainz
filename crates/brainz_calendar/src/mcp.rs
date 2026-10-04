@@ -517,6 +517,7 @@ impl McpHealth {
                         load_connectors()
                             .into_iter()
                             .map(|connector| {
+                                pin_refresh_scopes_once(&connector);
                                 let reason = probe(&connector);
                                 (connector.name, reason)
                             })
@@ -538,6 +539,132 @@ impl McpHealth {
             }
         }));
     }
+}
+
+/// Claude Code only requests the scopes a server's protected-resource
+/// metadata lists, so when `offline_access` is advertised by the
+/// authorization server but not there (Amplitude, Granola), it never gets
+/// a refresh token and the sign-in lapses when the access token expires,
+/// usually daily. Pinning `oauth.scopes` on the server entry makes Claude
+/// add `offline_access`, so the next sign-in sticks. Once per server per
+/// launch; servers with their own `oauth` block are left alone.
+/// Blocking on purpose: only ever runs on the background executor.
+#[allow(clippy::disallowed_methods)]
+fn pin_refresh_scopes_once(connector: &Connector) {
+    static DONE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    let done = DONE.get_or_init(Default::default);
+    if !done
+        .lock()
+        .map(|mut set| set.insert(connector.name.clone()))
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let Some(config) = &connector.claude else {
+        return;
+    };
+    if !matches!(
+        config.get("type").and_then(|value| value.as_str()),
+        Some("http") | Some("sse")
+    ) || config.get("oauth").is_some()
+    {
+        return;
+    }
+    let Some(url) = config.get("url").and_then(|value| value.as_str()) else {
+        return;
+    };
+    let Ok(parsed) = url::Url::parse(url) else {
+        return;
+    };
+    let origin = parsed.origin().ascii_serialization();
+    let fetch_json = |url: &str| -> Option<serde_json::Value> {
+        let output = std::process::Command::new("/usr/bin/curl")
+            .args([
+                "-sS",
+                "--max-time",
+                "8",
+                "-H",
+                "accept: application/json",
+                url,
+            ])
+            .output()
+            .ok()?;
+        serde_json::from_slice(&output.stdout).ok()
+    };
+    let resource =
+        fetch_json(&format!("{origin}/.well-known/oauth-protected-resource")).or_else(|| {
+            fetch_json(&format!(
+                "{origin}/.well-known/oauth-protected-resource{}",
+                parsed.path()
+            ))
+        });
+    let Some(resource) = resource else {
+        return;
+    };
+    let strings = |value: Option<&serde_json::Value>| -> Vec<String> {
+        value
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let resource_scopes = strings(resource.get("scopes_supported"));
+    let auth_server = strings(resource.get("authorization_servers"))
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| origin.clone());
+    let auth_server = auth_server.trim_end_matches('/').to_owned();
+    let metadata = fetch_json(&format!(
+        "{auth_server}/.well-known/oauth-authorization-server"
+    ))
+    .or_else(|| fetch_json(&format!("{auth_server}/.well-known/openid-configuration")));
+    let Some(metadata) = metadata else {
+        return;
+    };
+    let server_scopes = strings(metadata.get("scopes_supported"));
+    if resource_scopes.is_empty()
+        || resource_scopes
+            .iter()
+            .any(|scope| scope == "offline_access")
+        || !server_scopes.iter().any(|scope| scope == "offline_access")
+    {
+        return;
+    }
+    let mut scopes = resource_scopes;
+    scopes.push("offline_access".to_owned());
+    let scopes = scopes.join(" ");
+    match set_claude_server_oauth_scopes(&connector.name, &scopes) {
+        Ok(()) => log::info!(
+            "brainz mcp: pinned oauth scopes for {} so Claude keeps a refresh token: {scopes}",
+            connector.name
+        ),
+        Err(error) => log::warn!(
+            "brainz mcp: could not pin scopes for {}: {error:#}",
+            connector.name
+        ),
+    }
+}
+
+/// Writes `oauth.scopes` on one server in Brainz's Claude config, leaving
+/// the rest of the entry as it is.
+fn set_claude_server_oauth_scopes(name: &str, scopes: &str) -> Result<()> {
+    let path = claude_config_path();
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let mut json: serde_json::Value = serde_json::from_str(&text)?;
+    let server = json
+        .get_mut("mcpServers")
+        .and_then(|servers| servers.get_mut(name))
+        .and_then(|server| server.as_object_mut())
+        .ok_or_else(|| anyhow!("{name} is not in mcpServers"))?;
+    server.insert("oauth".into(), serde_json::json!({ "scopes": scopes }));
+    std::fs::write(&path, serde_json::to_string_pretty(&json)?)?;
+    Ok(())
 }
 
 /// Checks one connector without touching its auth: an HTTP server counts as

@@ -8128,41 +8128,22 @@ impl ThreadView {
                     .iter()
                     .any(|entry| matches!(entry, AgentThreadEntry::UserMessage(_)))
         };
-        let accent = cx.theme().colors().text_accent;
         let bulb: AnyElement = if is_live {
+            // A slow breath on the glyph alone; no halo, so nothing can clip
+            // against the row's bounds.
             div()
-                .relative()
                 .flex_none()
                 .child(
-                    div()
-                        .absolute()
-                        .inset(px(-3.))
-                        .rounded_full()
-                        .bg(accent.opacity(0.55))
-                        .with_animation(
-                            ("brainz-thinking-glow", entry_ix),
-                            Animation::new(Duration::from_millis(900))
-                                .repeat()
-                                .with_easing(pulsating_between(0.0, 1.0)),
-                            // The halo swells as it brightens, so the pulse
-                            // reads from across the room, not just up close.
-                            |glow, delta| glow.inset(px(-3. - 4. * delta)).opacity(delta),
-                        ),
+                    Icon::new(IconName::ToolThink)
+                        .size(IconSize::Small)
+                        .color(Color::Accent),
                 )
-                .child(
-                    div()
-                        .child(
-                            Icon::new(IconName::ToolThink)
-                                .size(IconSize::Small)
-                                .color(Color::Accent),
-                        )
-                        .with_animation(
-                            ("brainz-thinking-pulse", entry_ix),
-                            Animation::new(Duration::from_millis(900))
-                                .repeat()
-                                .with_easing(pulsating_between(0.2, 1.0)),
-                            |icon, delta| icon.opacity(delta),
-                        ),
+                .with_animation(
+                    ("brainz-thinking-pulse", entry_ix),
+                    Animation::new(Duration::from_millis(1600))
+                        .repeat()
+                        .with_easing(pulsating_between(0.55, 1.0)),
+                    |icon, delta| icon.opacity(delta),
                 )
                 .into_any_element()
         } else {
