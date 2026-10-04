@@ -12364,53 +12364,37 @@ impl ThreadView {
         )
     }
 
+    /// Brainz: a lapsed connector is surfaced by the banner above the file
+    /// tree (with the connector's logo), not by a card in the chat. The
+    /// banner gets a callback that resends the message that hit the wall.
     fn render_mcp_reconnect_card(&mut self, cx: &mut Context<Self>) -> Option<Callout> {
         let server = self.brainz_mcp_needing_reconnect(cx)?;
         if self.brainz_mcp_dismissed.contains(&server) {
             return None;
         }
-        let agent = brainz_short_agent_name(&self.agent_display_name);
-        let reconnecting = self.brainz_mcp_reconnecting.as_deref() == Some(server.as_str());
-        let action: AnyElement = if reconnecting {
-            h_flex()
-                .h(px(24.))
-                .px_2()
-                .items_center()
-                .child(ui::bouncing_dots(
-                    "brainz-mcp-card-dots",
-                    cx.theme().colors().text_accent,
-                ))
-                .into_any_element()
+        self.brainz_mcp_dismissed.insert(server.clone());
+        let client = if self.agent_id.0.starts_with("codex") {
+            brainz_calendar::mcp::McpClient::Codex
         } else {
-            let server_for_click = server.clone();
-            Button::new("brainz-mcp-reconnect", format!("Reconnect {server}"))
-                .style(ButtonStyle::Filled)
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.brainz_reconnect_mcp(server_for_click.clone(), window, cx);
-                }))
-                .into_any_element()
+            brainz_calendar::mcp::McpClient::Claude
         };
-        let server_for_dismiss = server.clone();
-        Some(
-            Callout::new()
-                .severity(Severity::Info)
-                .icon(IconName::BrainzMcp)
-                .title(format!("{server} needs to be reconnected"))
-                .description(format!(
-                    "{agent}'s sign-in to {server} has lapsed. Reconnect opens a short sign-in \
-                     in this panel and finishes in your browser; afterwards, send your message again."
-                ))
-                .actions_slot(action)
-                .dismiss_action(
-                    IconButton::new("brainz-mcp-dismiss", IconName::Close)
-                        .icon_size(IconSize::Small)
-                        .tooltip(Tooltip::text("Dismiss"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.brainz_mcp_dismissed.insert(server_for_dismiss.clone());
-                            cx.notify();
-                        })),
-                ),
-        )
+        let this = cx.weak_entity();
+        let after: Box<dyn FnOnce(&mut Window, &mut App)> = Box::new(move |window, cx| {
+            this.update(cx, |this, cx| {
+                let last_user_entry = this
+                    .thread
+                    .read(cx)
+                    .entries()
+                    .iter()
+                    .rposition(|entry| matches!(entry, AgentThreadEntry::UserMessage(_)));
+                if let Some(entry_ix) = last_user_entry {
+                    this.resend_user_message(entry_ix, window, cx);
+                }
+            })
+            .ok();
+        });
+        brainz_calendar::mcp::flag_reconnect(server, client, Some(after), cx);
+        None
     }
 
     fn render_authentication_required_error(
