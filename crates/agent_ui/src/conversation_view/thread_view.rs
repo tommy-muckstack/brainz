@@ -8118,9 +8118,15 @@ impl ThreadView {
 
         // Brainz: while the agent is still thinking in this block, the bulb
         // glows amber and breathes; once the thought is done it goes quiet.
+        // Live means the turn is still running and this thought belongs to
+        // it: tool calls after the block do not put the bulb out, only the
+        // turn finishing or a new user message does.
         let is_live = {
             let thread = self.thread.read(cx);
-            thread.status() != ThreadStatus::Idle && entry_ix + 1 == thread.entries().len()
+            thread.status() != ThreadStatus::Idle
+                && !thread.entries()[entry_ix + 1..]
+                    .iter()
+                    .any(|entry| matches!(entry, AgentThreadEntry::UserMessage(_)))
         };
         let accent = cx.theme().colors().text_accent;
         let bulb: AnyElement = if is_live {
@@ -8132,13 +8138,15 @@ impl ThreadView {
                         .absolute()
                         .inset(px(-3.))
                         .rounded_full()
-                        .bg(accent.opacity(0.35))
+                        .bg(accent.opacity(0.55))
                         .with_animation(
                             ("brainz-thinking-glow", entry_ix),
-                            Animation::new(Duration::from_millis(1400))
+                            Animation::new(Duration::from_millis(900))
                                 .repeat()
                                 .with_easing(pulsating_between(0.0, 1.0)),
-                            |glow, delta| glow.opacity(delta),
+                            // The halo swells as it brightens, so the pulse
+                            // reads from across the room, not just up close.
+                            |glow, delta| glow.inset(px(-3. - 4. * delta)).opacity(delta),
                         ),
                 )
                 .child(
@@ -8150,9 +8158,9 @@ impl ThreadView {
                         )
                         .with_animation(
                             ("brainz-thinking-pulse", entry_ix),
-                            Animation::new(Duration::from_millis(1400))
+                            Animation::new(Duration::from_millis(900))
                                 .repeat()
-                                .with_easing(pulsating_between(0.45, 1.0)),
+                                .with_easing(pulsating_between(0.2, 1.0)),
                             |icon, delta| icon.opacity(delta),
                         ),
                 )
