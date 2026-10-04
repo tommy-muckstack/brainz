@@ -222,6 +222,264 @@ pub fn spawn_mcp_login(
     })
 }
 
+/// Brainz: the "needs reconnecting" banner above the file tree, styled like
+/// the Sync and prep banners. Fed by a chat that hits a lapsed connector
+/// (which also hands over what to do once it is back) and by Claude's own
+/// needs-auth cache, so it shows for any connector, chat or not.
+pub struct McpBanner {
+    pending: Option<PendingReconnect>,
+    reconnecting: bool,
+    dismissed: std::collections::HashSet<String>,
+    _task: Option<Task<()>>,
+}
+
+struct PendingReconnect {
+    server: String,
+    client: McpClient,
+    /// Runs after a successful sign-in: the chat resends the message that
+    /// hit the wall.
+    after: Option<Box<dyn FnOnce(&mut Window, &mut App)>>,
+}
+
+struct GlobalMcpBanner(Entity<McpBanner>);
+
+impl Global for GlobalMcpBanner {}
+
+pub fn banner_state(cx: &App) -> Option<Entity<McpBanner>> {
+    cx.try_global::<GlobalMcpBanner>().map(|g| g.0.clone())
+}
+
+/// A conversation found a connector whose sign-in has lapsed.
+pub fn flag_reconnect(
+    server: String,
+    client: McpClient,
+    after: Option<Box<dyn FnOnce(&mut Window, &mut App)>>,
+    cx: &mut App,
+) {
+    let Some(state) = banner_state(cx) else {
+        return;
+    };
+    state.update(cx, |state, cx| {
+        if state.reconnecting {
+            return;
+        }
+        let same = state
+            .pending
+            .as_ref()
+            .is_some_and(|pending| Connector::key(&pending.server) == Connector::key(&server));
+        if same && after.is_none() {
+            return;
+        }
+        state.dismissed.remove(&Connector::key(&server));
+        state.pending = Some(PendingReconnect {
+            server,
+            client,
+            after,
+        });
+        cx.notify();
+    });
+}
+
+impl McpBanner {
+    /// Nothing pending from a chat: fall back to Claude's needs-auth cache.
+    fn adopt_from_cache(&mut self) {
+        if self.pending.is_some() || self.reconnecting {
+            return;
+        }
+        let lapsed = claude_server_names().into_iter().find(|server| {
+            needs_sign_in(McpClient::Claude, server)
+                && !self.dismissed.contains(&Connector::key(server))
+        });
+        if let Some(server) = lapsed {
+            self.pending = Some(PendingReconnect {
+                server,
+                client: McpClient::Claude,
+                after: None,
+            });
+        }
+    }
+
+    fn dismiss(&mut self, cx: &mut Context<Self>) {
+        if let Some(pending) = self.pending.take() {
+            self.dismissed.insert(Connector::key(&pending.server));
+        }
+        cx.notify();
+    }
+
+    fn reconnect(
+        &mut self,
+        workspace: WeakEntity<Workspace>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pending) = self.pending.as_ref() else {
+            return;
+        };
+        if self.reconnecting {
+            return;
+        }
+        let server = pending.server.clone();
+        let client = pending.client;
+        self.reconnecting = true;
+        cx.notify();
+        let task = spawn_mcp_login(workspace.clone(), client, server.clone(), window, cx);
+        self._task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let after = this
+                .update(cx, |this, cx| {
+                    this.reconnecting = false;
+                    let after = match &result {
+                        Ok(()) => this.pending.take().and_then(|pending| pending.after),
+                        Err(_) => None,
+                    };
+                    cx.notify();
+                    after
+                })
+                .ok()
+                .flatten();
+            let message = match &result {
+                Ok(()) if after.is_some() => format!("{server} reconnected. Your message is being sent again."),
+                Ok(()) => format!("{server} reconnected."),
+                Err(error) => format!("Could not reconnect {server}: {error:#}"),
+            };
+            workspace
+                .update_in(cx, |workspace, window, cx| {
+                    if let Some(after) = after {
+                        after(window, cx);
+                    }
+                    let id = workspace::notifications::NotificationId::unique::<McpBanner>();
+                    workspace.show_notification(id.clone(), cx, |cx| {
+                        cx.new(|cx| {
+                            workspace::notifications::simple_message_notification::MessageNotification::new(message, cx)
+                        })
+                    });
+                    cx.spawn(async move |workspace, cx| {
+                        cx.background_executor().timer(Duration::from_secs(8)).await;
+                        workspace
+                            .update(cx, |workspace, cx| workspace.dismiss_notification(&id, cx))
+                            .ok();
+                    })
+                    .detach();
+                })
+                .ok();
+        }));
+    }
+}
+
+/// The banner element for the project panel, or nothing when no connector
+/// needs attention.
+pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<gpui::AnyElement> {
+    let state = banner_state(cx)?;
+    state.update(cx, |state, _| state.adopt_from_cache());
+    let (server, client_name, reconnecting) = {
+        let state = state.read(cx);
+        let pending = state.pending.as_ref()?;
+        (
+            pending.server.clone(),
+            pending.client.name(),
+            state.reconnecting,
+        )
+    };
+    let colors = cx.theme().colors();
+    let amber = colors.text_accent;
+    let ink = gpui::hsla(0., 0., 0.08, 1.);
+    let glyph: gpui::AnyElement = match logo_for(&server) {
+        Some(path) => gpui::img(path.to_owned())
+            .size_4()
+            .object_fit(gpui::ObjectFit::Contain)
+            .into_any_element(),
+        None => Icon::new(IconName::BrainzMcp)
+            .size(IconSize::Small)
+            .color(Color::Custom(ink))
+            .into_any_element(),
+    };
+    let text = format!("{server} needs reconnecting in {client_name}.");
+    let action: gpui::AnyElement = if reconnecting {
+        h_flex()
+            .h(px(22.))
+            .px_2()
+            .items_center()
+            .child(ui::bouncing_dots("brainz-mcp-banner-dots", ink))
+            .into_any_element()
+    } else {
+        Button::new("brainz-mcp-banner-reconnect", "Reconnect")
+            .style(ButtonStyle::Filled)
+            .tooltip(Tooltip::text(
+                "Opens a short sign-in in the panel and finishes in your browser",
+            ))
+            .on_click({
+                let state = state.clone();
+                let workspace = workspace.clone();
+                move |_, window, cx| {
+                    state.update(cx, |state, cx| {
+                        state.reconnect(workspace.clone(), window, cx)
+                    });
+                }
+            })
+            .into_any_element()
+    };
+    let buttons = h_flex()
+        .gap_1p5()
+        .w_full()
+        .child(action)
+        .child(div().flex_1())
+        .child(
+            IconButton::new("brainz-mcp-banner-dismiss", IconName::Close)
+                .icon_size(IconSize::XSmall)
+                .icon_color(Color::Custom(ink))
+                .tooltip(Tooltip::text("Dismiss"))
+                .on_click({
+                    let state = state.clone();
+                    move |_, _, cx| {
+                        state.update(cx, |state, cx| state.dismiss(cx));
+                    }
+                }),
+        );
+    Some(
+        v_flex()
+            .id("brainz-mcp-banner")
+            .w_full()
+            .px_2()
+            .pt_1()
+            .pb_2()
+            .child(
+                v_flex()
+                    .w_full()
+                    .px_2()
+                    .py_1p5()
+                    .gap_1p5()
+                    .rounded_lg()
+                    .bg(amber)
+                    .child(
+                        h_flex()
+                            .items_start()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .mt_0p5()
+                                    .size_5()
+                                    .rounded_sm()
+                                    .bg(ink.opacity(0.85))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(glyph),
+                            )
+                            .child(
+                                div().min_w_0().flex_1().child(
+                                    Label::new(text)
+                                        .size(LabelSize::Small)
+                                        .color(Color::Custom(ink)),
+                                ),
+                            ),
+                    )
+                    .child(buttons),
+            )
+            .into_any_element(),
+    )
+}
+
 const HEALTH_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Brainz: reachability of each connector, refreshed every minute. Keyed by
@@ -358,6 +616,15 @@ actions!(
 );
 
 pub fn init(cx: &mut App) {
+    if cx.try_global::<GlobalMcpBanner>().is_none() {
+        let banner = cx.new(|_| McpBanner {
+            pending: None,
+            reconnecting: false,
+            dismissed: Default::default(),
+            _task: None,
+        });
+        cx.set_global(GlobalMcpBanner(banner));
+    }
     let health = cx.new(|cx| {
         let mut health = McpHealth {
             results: BTreeMap::new(),

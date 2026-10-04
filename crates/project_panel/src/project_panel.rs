@@ -146,6 +146,7 @@ pub struct ProjectPanel {
     /// Brainz: re-render when the GitHub sync state changes.
     _brainz_sync_subscription: Option<Subscription>,
     _brainz_prep_subscription: Option<Subscription>,
+    _brainz_mcp_subscription: Option<Subscription>,
     _brainz_decay_subscription: Option<Subscription>,
     rendered_entries_len: usize,
     folded_directory_drag_target: Option<FoldedDirectoryDragTarget>,
@@ -889,6 +890,7 @@ impl ProjectPanel {
                 hover_scroll_task: None,
                 _brainz_sync_subscription: None,
                 _brainz_prep_subscription: None,
+                _brainz_mcp_subscription: None,
                 _brainz_decay_subscription: None,
                 fs: workspace.app_state().fs.clone(),
                 focus_handle,
@@ -1211,20 +1213,23 @@ impl ProjectPanel {
                         .when(is_dir, |menu| {
                             menu.action("Search Inside", Box::new(NewSearchInDirectory))
                         })
-                        .when_some(brainz_refresh_status_prompt.clone(), |menu, text| {
-                            menu.separator().entry(
-                                "Refresh status from newest notes",
-                                None,
-                                move |window, cx| {
-                                    window.dispatch_action(
-                                        Box::new(brainz_calendar::prep::OpenClaudePrefilled {
-                                            text: text.clone(),
-                                        }),
-                                        cx,
-                                    );
-                                },
-                            )
-                        })
+                        .when_some(
+                            brainz_refresh_status_prompt.clone(),
+                            |menu, text| {
+                                menu.separator().entry(
+                                    "Refresh status from newest notes",
+                                    None,
+                                    move |window, cx| {
+                                        window.dispatch_action(
+                                            Box::new(brainz_calendar::prep::OpenClaudePrefilled {
+                                                text: text.clone(),
+                                            }),
+                                            cx,
+                                        );
+                                    },
+                                )
+                            },
+                        )
                     } else {
                         menu.action("New File", Box::new(NewFile))
                             .action("New Folder", Box::new(NewDirectory))
@@ -7372,22 +7377,25 @@ impl Render for ProjectPanel {
         if self._brainz_sync_subscription.is_none()
             && let Some(state) = brainz_calendar::github_sync::state(cx)
         {
-            self._brainz_sync_subscription =
-                Some(cx.observe(&state, |_, _, cx| cx.notify()));
+            self._brainz_sync_subscription = Some(cx.observe(&state, |_, _, cx| cx.notify()));
         }
         let brainz_banner = brainz_calendar::github_sync::render_banner(&self.workspace, cx);
         if self._brainz_prep_subscription.is_none()
             && let Some(state) = brainz_calendar::prep::state(cx)
         {
-            self._brainz_prep_subscription =
-                Some(cx.observe(&state, |_, _, cx| cx.notify()));
+            self._brainz_prep_subscription = Some(cx.observe(&state, |_, _, cx| cx.notify()));
         }
         let brainz_prep_banner = brainz_calendar::prep::render_banner(&self.workspace, cx);
+        if self._brainz_mcp_subscription.is_none()
+            && let Some(state) = brainz_calendar::mcp::banner_state(cx)
+        {
+            self._brainz_mcp_subscription = Some(cx.observe(&state, |_, _, cx| cx.notify()));
+        }
+        let brainz_mcp_banner = brainz_calendar::mcp::render_banner(&self.workspace, cx);
         if self._brainz_decay_subscription.is_none()
             && let Some(state) = brainz_calendar::status_decay::state(cx)
         {
-            self._brainz_decay_subscription =
-                Some(cx.observe(&state, |_, _, cx| cx.notify()));
+            self._brainz_decay_subscription = Some(cx.observe(&state, |_, _, cx| cx.notify()));
         }
         if let Some(root) = self
             .workspace
@@ -7503,6 +7511,7 @@ impl Render for ProjectPanel {
                 .size_full()
                 .children(brainz_banner)
                 .children(brainz_prep_banner)
+                .children(brainz_mcp_banner)
                 .child(
             h_flex()
                 .id("project-panel")
