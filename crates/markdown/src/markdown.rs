@@ -361,7 +361,7 @@ impl MarkdownStyle {
         self.paragraph_spacing = px(16.);
         self.paragraph_line_height = relative(1.5);
         self.list_spacing = px(12.);
-        self.table_cell_padding = point(px(10.), px(4.));
+        self.table_cell_padding = point(px(14.), px(8.));
 
         self.inline_code.color = Some(colors.text);
         self.inline_code.font_size = Some(rems(0.875).into());
@@ -1747,6 +1747,52 @@ pub struct MarkdownElement {
 /// Brainz: turns Markdown source into plain text for the clipboard: bold and
 /// code markers go, headings lose their hashes, links keep their text (and
 /// the URL in parentheses when it differs). Meant for emails and notes.
+/// A GitHub-flavoured Markdown table as tab-separated rows (header first,
+/// separator row dropped, inline formatting stripped), which spreadsheets
+/// paste as cells.
+pub fn table_to_tsv(source: &str) -> String {
+    let mut rows: Vec<String> = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.contains('|') {
+            continue;
+        }
+        let is_separator = trimmed.chars().all(|c| matches!(c, '|' | '-' | ':' | ' '));
+        if is_separator {
+            continue;
+        }
+        let inner = trimmed
+            .strip_prefix('|')
+            .unwrap_or(trimmed)
+            .strip_suffix('|')
+            .unwrap_or(trimmed.strip_prefix('|').unwrap_or(trimmed));
+        let cells: Vec<String> = split_unescaped_pipes(inner)
+            .into_iter()
+            .map(|cell| markdown_to_plain_text(cell.trim()).replace(['\t', '\n'], " "))
+            .collect();
+        rows.push(cells.join("\t"));
+    }
+    rows.join("\n")
+}
+
+fn split_unescaped_pipes(text: &str) -> Vec<String> {
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&'|') => {
+                current.push('|');
+                chars.next();
+            }
+            '|' => cells.push(std::mem::take(&mut current)),
+            _ => current.push(c),
+        }
+    }
+    cells.push(current);
+    cells
+}
+
 pub fn markdown_to_plain_text(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     for line in source.lines() {
@@ -3277,7 +3323,31 @@ impl Element for MarkdownElement {
                             builder.table.start(alignments.clone());
 
                             let column_count = alignments.len();
-                            builder.push_div(div().flex(), range, markdown_end);
+                            // Brainz: hovering a table shows a Copy button that
+                            // puts it on the clipboard as tab-separated rows, so
+                            // it pastes into Sheets or Excel as cells.
+                            let tsv = table_to_tsv(&parsed_markdown.source()[range.clone()]);
+                            let group_name =
+                                SharedString::from(format!("markdown-table-{}", range.start));
+                            let copy_button = StickyTopRight::new(
+                                px(6.),
+                                div().when(tsv.is_empty(), |this| this.invisible()).child(
+                                    CopyButton::new(("markdown-table-copy", range.start), tsv)
+                                        .icon_size(IconSize::XSmall)
+                                        .tooltip_label("Copy table for Sheets or Excel")
+                                        .visible_on_hover(group_name.clone()),
+                                ),
+                            );
+                            builder.push_div(
+                                div()
+                                    .flex()
+                                    .relative()
+                                    .group(group_name)
+                                    .max_w_full()
+                                    .child(copy_button),
+                                range,
+                                markdown_end,
+                            );
                             builder.push_div(
                                 div()
                                     .id(("table", range.start))
@@ -3291,9 +3361,10 @@ impl Element for MarkdownElement {
                                         this.grid_cols_max_content(column_count as u16)
                                     })
                                     .mb_2()
-                                    .border(px(1.5))
-                                    .border_color(cx.theme().colors().border)
-                                    .rounded_sm()
+                                    .border_1()
+                                    .border_color(cx.theme().colors().border_variant)
+                                    .rounded_lg()
+                                    .overflow_x_scroll()
                                     .restrict_scroll_to_axis()
                                     .custom_scrollbars(
                                         Scrollbars::new(ScrollAxes::Horizontal)
@@ -3325,20 +3396,19 @@ impl Element for MarkdownElement {
                                 .and_then(alignment_to_text_align)
                                 .unwrap_or(self.style.base_text_style.text_align);
 
+                            // Brainz: Paper-style rows, with horizontal dividers only,
+                            // a quiet header band, and room to breathe.
+                            let _ = col_index;
                             let mut cell_div = div()
                                 .flex()
                                 .flex_col()
                                 .h_full()
-                                .when(col_index > 0, |this| this.border_l_1())
                                 .when(row_index > 0, |this| this.border_t_1())
-                                .border_color(cx.theme().colors().border)
+                                .border_color(cx.theme().colors().border_variant)
                                 .px(self.style.table_cell_padding.x)
                                 .py(self.style.table_cell_padding.y)
                                 .when(is_header, |this| {
-                                    this.bg(cx.theme().colors().title_bar_background)
-                                })
-                                .when(!is_header && row_index % 2 == 1, |this| {
-                                    this.bg(cx.theme().colors().panel_background)
+                                    this.bg(cx.theme().colors().surface_background)
                                 });
 
                             cell_div = match alignment {
@@ -6756,6 +6826,16 @@ mod tests {
         let word_range = rendered.surrounding_word_range(51); // Inside "code"
         let selected_text = rendered.text_for_range(word_range);
         assert_eq!(selected_text, "code");
+    }
+
+    #[test]
+    fn table_to_tsv_drops_separator_and_strips_formatting() {
+        let source = "| Over four years | Acme | Globex |\n|---|---:|:---:|\n| **Equity** | ~$1.044M | $2M payout |\n| Target cash | $1.55M | a \\| b |\n";
+        assert_eq!(
+            table_to_tsv(source),
+            "Over four years\tAcme\tGlobex\nEquity\t~$1.044M\t$2M payout\nTarget cash\t$1.55M\ta | b"
+        );
+        assert_eq!(table_to_tsv("not a table"), "");
     }
 
     #[gpui::test]
