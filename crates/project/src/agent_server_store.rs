@@ -1122,8 +1122,7 @@ async fn remove_stale_versioned_archive_cache_dirs(
 /// never are.
 fn brainz_agent_isolation_env(registry_id: &str) -> HashMap<String, String> {
     let mut env = HashMap::default();
-    let (variable, dir_name, cli_dir, seed_files): (&str, &str, &str, &[&str]) = match registry_id
-    {
+    let (variable, dir_name, cli_dir, seed_files): (&str, &str, &str, &[&str]) = match registry_id {
         "claude-acp" => (
             "CLAUDE_CONFIG_DIR",
             "claude",
@@ -1135,7 +1134,10 @@ fn brainz_agent_isolation_env(registry_id: &str) -> HashMap<String, String> {
     };
     let dir = paths::config_dir().join(dir_name);
     if let Err(error) = std::fs::create_dir_all(&dir) {
-        log::warn!("failed to create {} for {registry_id}: {error}", dir.display());
+        log::warn!(
+            "failed to create {} for {registry_id}: {error}",
+            dir.display()
+        );
         return env;
     }
     let source = util::paths::home_dir().join(cli_dir);
@@ -1144,15 +1146,74 @@ fn brainz_agent_isolation_env(registry_id: &str) -> HashMap<String, String> {
         let origin = source.join(file);
         if !target.exists() && origin.is_file() {
             if let Err(error) = std::fs::copy(&origin, &target) {
-                log::warn!("failed to seed {} from {}: {error}", target.display(), origin.display());
+                log::warn!(
+                    "failed to seed {} from {}: {error}",
+                    target.display(),
+                    origin.display()
+                );
             }
         }
     }
     if registry_id == "claude-acp" {
         brainz_seed_claude_mcp_servers(&source, &dir);
     }
+    let instructions_file = match registry_id {
+        "claude-acp" => "CLAUDE.md",
+        _ => "AGENTS.md",
+    };
+    brainz_write_house_rules(&dir.join(instructions_file));
     env.insert(variable.to_owned(), dir.to_string_lossy().into_owned());
     env
+}
+
+const BRAINZ_HOUSE_RULES_START: &str = "<!-- brainz:house-rules:start -->";
+const BRAINZ_HOUSE_RULES_END: &str = "<!-- brainz:house-rules:end -->";
+
+/// What Brainz asks of every agent it runs, independent of the brain.
+/// Lives in a marked block in the agent's user-level instructions file so
+/// anything the user adds around it survives updates.
+const BRAINZ_HOUSE_RULES: &str = "\
+## Brainz house rules
+
+- When you draft an email, text, DM, or any message the user will paste somewhere \
+else, put the complete draft in a fenced block tagged `email` (```email on its own \
+line, the message, then ``` on its own line). Only the message goes inside the fence: \
+no commentary, no quoting markers, no subject line unless asked. Say anything else \
+outside the fence. Brainz shows that block as a draft card with a Copy button.";
+
+/// Brainz: upserts the house-rules block in the agent's instructions file,
+/// keeping whatever else is there.
+fn brainz_write_house_rules(path: &Path) {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let block =
+        format!("{BRAINZ_HOUSE_RULES_START}\n{BRAINZ_HOUSE_RULES}\n{BRAINZ_HOUSE_RULES_END}");
+    let updated = match (
+        existing.find(BRAINZ_HOUSE_RULES_START),
+        existing.find(BRAINZ_HOUSE_RULES_END),
+    ) {
+        (Some(start), Some(end)) if end > start => {
+            let end = end + BRAINZ_HOUSE_RULES_END.len();
+            format!("{}{block}{}", &existing[..start], &existing[end..])
+        }
+        _ => {
+            let separator = if existing.is_empty() || existing.ends_with("\n\n") {
+                ""
+            } else if existing.ends_with('\n') {
+                "\n"
+            } else {
+                "\n\n"
+            };
+            format!("{existing}{separator}{block}\n")
+        }
+    };
+    if updated != existing
+        && let Err(error) = std::fs::write(path, updated)
+    {
+        log::warn!(
+            "failed to write Brainz house rules to {}: {error}",
+            path.display()
+        );
+    }
 }
 
 /// Brainz: copy the user's MCP servers (only that key) from `~/.claude.json`
@@ -1168,11 +1229,10 @@ fn brainz_seed_claude_mcp_servers(cli_dir: &Path, brainz_dir: &Path) {
     let Ok(source_json) = serde_json::from_str::<serde_json::Value>(&source_text) else {
         return;
     };
-    let Some(servers) = source_json.get("mcpServers").filter(|value| {
-        value
-            .as_object()
-            .is_some_and(|servers| !servers.is_empty())
-    }) else {
+    let Some(servers) = source_json
+        .get("mcpServers")
+        .filter(|value| value.as_object().is_some_and(|servers| !servers.is_empty()))
+    else {
         return;
     };
     let mut target_json = std::fs::read_to_string(&target)
@@ -1193,7 +1253,10 @@ fn brainz_seed_claude_mcp_servers(cli_dir: &Path, brainz_dir: &Path) {
     }
     if let Ok(text) = serde_json::to_string_pretty(&target_json) {
         if let Err(error) = std::fs::write(&target, text) {
-            log::warn!("failed to seed MCP servers into {}: {error}", target.display());
+            log::warn!(
+                "failed to seed MCP servers into {}: {error}",
+                target.display()
+            );
         } else {
             log::info!("seeded MCP servers into {}", target.display());
         }
@@ -2314,6 +2377,24 @@ mod tests {
 
         // The watch channel should have received the new version.
         assert_eq!(rx.borrow().as_deref(), Some("2.0.0"));
+    }
+
+    #[test]
+    fn brainz_house_rules_are_upserted_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("CLAUDE.md");
+        brainz_write_house_rules(&path);
+        let first = std::fs::read_to_string(&path).unwrap();
+        assert!(first.contains("## Brainz house rules"));
+        assert_eq!(first.matches(BRAINZ_HOUSE_RULES_START).count(), 1);
+
+        std::fs::write(&path, format!("# Mine\n\nkeep me\n\n{first}\nand me\n")).unwrap();
+        brainz_write_house_rules(&path);
+        let second = std::fs::read_to_string(&path).unwrap();
+        assert!(second.starts_with("# Mine\n\nkeep me\n"));
+        assert!(second.ends_with("and me\n"));
+        assert_eq!(second.matches(BRAINZ_HOUSE_RULES_START).count(), 1);
+        assert_eq!(second.matches("## Brainz house rules").count(), 1);
     }
 
     #[gpui::test]

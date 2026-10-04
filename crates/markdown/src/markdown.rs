@@ -52,7 +52,8 @@ use pulldown_cmark::{Alignment, BlockQuoteKind};
 use sum_tree::TreeMap;
 use theme::SyntaxTheme;
 use ui::{
-    Checkbox, CopyButton, ScrollAxes, Scrollbars, StickyTopRight, Tooltip, WithScrollbar, prelude::*,
+    Checkbox, CopyButton, ScrollAxes, Scrollbars, StickyTopRight, Tooltip, WithScrollbar,
+    prelude::*,
 };
 use util::ResultExt;
 
@@ -1757,7 +1758,10 @@ pub fn markdown_to_plain_text(source: &str) -> String {
         } else {
             trimmed
         };
-        let body = body.strip_prefix("* ").map(|rest| format!("- {rest}")).unwrap_or_else(|| body.to_owned());
+        let body = body
+            .strip_prefix("* ")
+            .map(|rest| format!("- {rest}"))
+            .unwrap_or_else(|| body.to_owned());
         let mut cleaned = String::with_capacity(body.len());
         let mut chars = body.chars().peekable();
         while let Some(c) = chars.next() {
@@ -2833,6 +2837,9 @@ impl Element for MarkdownElement {
             0
         };
         let mut code_block_ids = HashSet::default();
+        // Brainz: fenced blocks tagged `email`/`draft`/`message` render as a
+        // draft card (reading font, always-visible Copy) rather than code.
+        let mut draft_block_starts: HashSet<usize> = HashSet::default();
 
         let mut current_img_block_range: Option<Range<usize>> = None;
         let mut handled_html_block = false;
@@ -3008,6 +3015,50 @@ impl Element for MarkdownElement {
                             };
                             if scroll_handle.is_some() {
                                 code_block_ids.insert(range.start);
+                            }
+
+                            let is_draft = matches!(
+                                &self.code_block_renderer,
+                                CodeBlockRenderer::Default { .. }
+                            ) && matches!(kind, CodeBlockKind::FencedLang(lang) if is_draft_language(lang));
+                            if is_draft {
+                                draft_block_starts.insert(range.start);
+                                let card = div()
+                                    .group("code_block")
+                                    .relative()
+                                    .w_full()
+                                    .my_2()
+                                    .rounded_lg()
+                                    .border_1()
+                                    .border_color(cx.theme().colors().border)
+                                    .bg(cx.theme().colors().surface_background)
+                                    .px_4()
+                                    .pt_2()
+                                    .pb_3()
+                                    .child(
+                                        h_flex()
+                                            .gap_1p5()
+                                            .items_center()
+                                            .mb_2()
+                                            .pr_8()
+                                            .child(
+                                                Icon::new(IconName::Envelope)
+                                                    .size(IconSize::XSmall)
+                                                    .color(Color::Muted),
+                                            )
+                                            .child(
+                                                Label::new(draft_label(kind))
+                                                    .size(LabelSize::XSmall)
+                                                    .color(Color::Muted),
+                                            ),
+                                    );
+                                builder.push_div(card, range, markdown_end);
+                                // The body keeps the reading font; the code-block
+                                // stack entry only preserves line breaks.
+                                builder.push_text_style(TextStyleRefinement::default());
+                                builder.push_code_block(None);
+                                builder.push_div(div().w_full(), range, markdown_end);
+                                continue;
                             }
 
                             match (&self.code_block_renderer, is_indented) {
@@ -3335,6 +3386,25 @@ impl Element for MarkdownElement {
                         builder.pop_div();
                         builder.pop_code_block();
                         builder.pop_text_style();
+
+                        if draft_block_starts.contains(&range.start) {
+                            builder.modify_current_div(|el| {
+                                let content_range = parser::extract_code_block_content_range(
+                                    &parsed_markdown.source()[range.clone()],
+                                );
+                                let content_range = content_range.start + range.start
+                                    ..content_range.end + range.start;
+                                let text =
+                                    parsed_markdown.source()[content_range].trim().to_string();
+                                el.child(StickyTopRight::new(
+                                    px(6.),
+                                    CopyButton::new(("markdown-draft-copy", range.start), text)
+                                        .tooltip_label("Copy draft"),
+                                ))
+                            });
+                            builder.pop_div();
+                            continue;
+                        }
 
                         if let CodeBlockRenderer::Default {
                             copy_button_visibility,
@@ -3772,6 +3842,28 @@ fn render_wrap_code_block_button(
         })
 }
 
+/// Brainz: fence languages that mean "this is a message to paste", not code.
+pub fn is_draft_language(language: &str) -> bool {
+    matches!(
+        language.trim().to_ascii_lowercase().as_str(),
+        "email" | "draft" | "message" | "letter" | "text-draft" | "dm" | "sms"
+    )
+}
+
+fn draft_label(kind: &CodeBlockKind) -> &'static str {
+    match kind {
+        CodeBlockKind::FencedLang(language) => {
+            match language.trim().to_ascii_lowercase().as_str() {
+                "email" => "Email draft",
+                "dm" | "sms" | "message" => "Message draft",
+                "letter" => "Letter draft",
+                _ => "Draft",
+            }
+        }
+        _ => "Draft",
+    }
+}
+
 fn render_copy_code_block_button(
     id: usize,
     code: String,
@@ -3786,9 +3878,7 @@ fn render_copy_code_block_button(
         id.to_string().into(),
     );
 
-    CopyButton::new(id, code).when(visible_on_hover, |this| {
-        this.visible_on_hover("code_block")
-    })
+    CopyButton::new(id, code).when(visible_on_hover, |this| this.visible_on_hover("code_block"))
 }
 
 impl IntoElement for MarkdownElement {
@@ -4590,7 +4680,6 @@ struct RenderedLine {
 impl RenderedLine {
     /// Painted before the glyphs so the text renders on top of the chips
     fn paint_code_chips(&self, window: &mut Window) {
-
         if self.code_chips.is_empty() {
             return;
         }

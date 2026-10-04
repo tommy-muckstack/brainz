@@ -47,6 +47,13 @@ by path, size, and modification time, and the tab shows them as a scrollable sta
 with an **Open in Default App** button for anything more (password-protected files
 go straight to that button).
 
+Brainz keeps a short, marked **house rules** block in each agent's user-level
+instructions file (`CLAUDE.md` for Claude, `AGENTS.md` for Codex, inside Brainz's own
+config dir), rewritten on every launch and leaving anything around it alone. The
+first rule asks for drafted emails and messages in a fenced block tagged `email`,
+which the conversation renders as a draft card: reading font, a label, and an
+always-visible Copy button that copies just the message.
+
 In the composer, `/` opens the file and folder type-ahead for the brain (type
 `companies/` to narrow it); picking an entry inserts a pill. Commands sit behind a
 double slash (`//plan`).
