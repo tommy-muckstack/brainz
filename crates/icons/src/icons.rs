@@ -356,6 +356,7 @@ impl IconName {
             Self::Close => return "icons/brainz/close.svg".into(),
             Self::Trash => return "icons/brainz/trash.svg".into(),
             Self::Send => return "icons/brainz/send.svg".into(),
+            Self::ToolHammer => return "icons/brainz/wrench.svg".into(),
             Self::Ellipsis => return "icons/brainz/ellipsis.svg".into(),
             Self::BrainzSliders => return "icons/brainz/sliders.svg".into(),
             Self::BrainzCheckboxEmpty => return "icons/brainz/checkbox-empty.svg".into(),

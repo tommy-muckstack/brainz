@@ -140,6 +140,45 @@ impl AgentConnectionStore {
         self.request_connection(key, server, cx)
     }
 
+    /// Brainz: seeds the store with a connection that is already live (for
+    /// example the one a thread being reset is using) when the store has no
+    /// entry for `key` any more. The store drops an entry whenever the ACP
+    /// registry publishes a new adapter version, so without this a reset
+    /// would install and launch a fresh server instead of reusing the
+    /// running one. Returns the seeded entry so the caller can
+    /// [`forget_connection`](Self::forget_connection) it again afterwards,
+    /// or `None` when the store already had an entry.
+    pub fn adopt_connection(
+        &mut self,
+        key: Agent,
+        connection: Rc<dyn AgentConnection>,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<AgentConnectionEntry>> {
+        if self.entries.contains_key(&key) {
+            return None;
+        }
+        let entry =
+            cx.new(|_cx| AgentConnectionEntry::Connected(AgentConnectedState { connection }));
+        self.entries.insert(key, entry.clone());
+        cx.notify();
+        Some(entry)
+    }
+
+    /// Brainz: drops `entry` from the store if it is still the entry for
+    /// `key`. Threads that already hold the connection keep working; the
+    /// next brand-new thread spawns a fresh server.
+    pub fn forget_connection(
+        &mut self,
+        key: &Agent,
+        entry: &Entity<AgentConnectionEntry>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.entries.get(key) == Some(entry) {
+            self.entries.remove(key);
+            cx.notify();
+        }
+    }
+
     pub fn request_connection(
         &mut self,
         key: Agent,

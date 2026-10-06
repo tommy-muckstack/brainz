@@ -6951,8 +6951,30 @@ impl AgentPanel {
         let position = self.panel_tabs.iter().position(|tab| *tab == old_tab);
         let color = self.tab_colors.get(&old_tab).copied();
 
-        self.selected_agent = agent;
+        // Keep the connection the old thread is using. The store forgets a
+        // connection when the ACP registry publishes a new adapter version;
+        // without this the reset would sit on "Loading…" while the new
+        // version installs and a fresh server starts (2026-10-05).
+        let live_connection = conversation_view
+            .read(cx)
+            .as_connected()
+            .map(|connected| connected.connection().clone());
+        let adopted = live_connection.and_then(|connection| {
+            self.connection_store.update(cx, |store, cx| {
+                store.adopt_connection(agent.clone(), connection, cx)
+            })
+        });
+
+        self.selected_agent = agent.clone();
         self.activate_new_thread(true, AgentThreadSource::AgentPanel, window, cx);
+
+        if let Some(entry) = adopted {
+            // Only the reset reuses the old server; later new threads still
+            // pick up the published version.
+            self.connection_store.update(cx, |store, cx| {
+                store.forget_connection(&agent, &entry, cx);
+            });
+        }
 
         let Some(new_tab) = self.active_panel_tab(cx) else {
             return;
@@ -7146,7 +7168,8 @@ impl AgentPanel {
         }
     }
 
-    /// Brainz: full-screen toggle and the options menu, at the end of the tab strip.
+    /// Brainz: the full-screen toggle at the end of the tab strip. The "…"
+    /// options menu was removed 2026-10-06 (Tommy: none of those options are used).
     fn render_tab_strip_controls(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let is_full_screen = self.is_zoomed(window, cx);
         let (icon_name, tooltip_text) = if is_full_screen {
@@ -7168,7 +7191,6 @@ impl AgentPanel {
                         this.toggle_zoom(&ToggleZoom, window, cx);
                     })),
             )
-            .child(self.render_panel_options_menu(window, cx))
             .into_any_element()
     }
 
@@ -14714,6 +14736,130 @@ mod tests {
                 "conversation should not have a thread error"
             );
         });
+    }
+
+    /// Brainz: the composer drawer's Reset control. The replacement
+    /// thread must come up Connected, both when the cached agent
+    /// connection is still in the store and after the store has evicted
+    /// it (which the hourly ACP registry refresh does whenever a new
+    /// adapter version is published).
+    async fn reset_active_thread_case(cx: &mut TestAppContext, evict_connection: bool) {
+        let (_workspace, panel, mut cx) = setup_workspace_panel(cx).await;
+        cx.run_until_parked();
+
+        let connection = DisassociationTrackingConnection::new();
+        panel.update(&mut cx, |panel, cx| {
+            panel.connection_store.update(cx, |store, cx| {
+                store.restart_connection(
+                    Agent::Stub,
+                    Rc::new(StubAgentServer::new(connection.clone())),
+                    cx,
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.external_thread(
+                Some(Agent::Stub),
+                None,
+                None,
+                None,
+                None,
+                true,
+                AgentThreadSource::AgentPanel,
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        send_message(&panel, &mut cx);
+
+        let session_id_a = active_session_id(&panel, &cx);
+        let thread_id_a = active_thread_id(&panel, &cx);
+
+        let old_connection = panel.read_with(&cx, |panel, cx| {
+            panel
+                .active_conversation_view()
+                .and_then(|view| view.read(cx).as_connected().map(|c| c.connection().clone()))
+                .expect("thread A should be connected")
+        });
+
+        if evict_connection {
+            // Mirror `AgentConnectionStore`'s NewVersionAvailable path: the
+            // cached entry disappears while the running thread keeps its
+            // connection.
+            panel.update(&mut cx, |panel, cx| {
+                panel.connection_store.update(cx, |store, cx| {
+                    let entry = store.entry(&Agent::Stub).cloned().expect("entry");
+                    store.forget_connection(&Agent::Stub, &entry, cx);
+                });
+            });
+            cx.run_until_parked();
+        }
+
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.reset_active_thread(window, cx);
+        });
+        cx.run_until_parked();
+
+        panel.read_with(&cx, |panel, cx| {
+            let active_view = panel
+                .active_conversation_view()
+                .expect("reset should leave a conversation open");
+            let view = active_view.read(cx);
+            assert!(
+                view.as_connected().is_some(),
+                "reset thread should be Connected, got {}",
+                if view.is_loading() { "Loading" } else { "LoadError" }
+            );
+            assert!(
+                !panel.retained_threads.contains_key(&thread_id_a),
+                "old thread should be dropped by reset"
+            );
+            assert_ne!(
+                panel.active_thread_id(cx),
+                Some(thread_id_a),
+                "reset should produce a fresh thread id"
+            );
+        });
+
+        let session_id_b = active_session_id(&panel, &cx);
+        assert_ne!(session_id_a, session_id_b, "reset should start a new session");
+        panel.read_with(&cx, |panel, cx| {
+            let new_connection = panel
+                .active_conversation_view()
+                .and_then(|view| view.read(cx).as_connected().map(|c| c.connection().clone()))
+                .expect("reset thread should be connected");
+            assert!(
+                Rc::ptr_eq(&old_connection, &new_connection),
+                "reset should keep using the running agent connection"
+            );
+            assert!(
+                panel.connection_store.read(cx).entry(&Agent::Stub).is_some()
+                    != evict_connection,
+                "reset must not leave an adopted entry behind (evicted={evict_connection})"
+            );
+        });
+
+        send_message(&panel, &mut cx);
+        let missing = connection.missing_prompt_sessions.lock().clone();
+        assert!(
+            missing.is_empty(),
+            "sending on the reset thread should not hit a missing session: {missing:?}"
+        );
+    }
+
+    #[gpui::test]
+    async fn test_reset_active_thread_reconnects(cx: &mut TestAppContext) {
+        reset_active_thread_case(cx, false).await;
+    }
+
+    #[gpui::test]
+    async fn test_reset_active_thread_reconnects_after_connection_evicted(
+        cx: &mut TestAppContext,
+    ) {
+        reset_active_thread_case(cx, true).await;
     }
 
     #[gpui::test]

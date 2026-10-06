@@ -4498,7 +4498,6 @@ impl ThreadView {
                                     .min_w_0()
                                     .flex_wrap()
                                     .gap_1()
-                                    .child(self.render_chat_font_size_buttons(cx))
                                     .child(self.render_send_button(cx)),
                             ),
                     ),
@@ -5468,9 +5467,13 @@ impl ThreadView {
         });
     }
 
-    /// Brainz: the minus and plus next to Send.
+    /// Brainz: the minus and plus, floating in the panel's bottom-right
+    /// corner just above the status bar's agent button.
     fn render_chat_font_size_buttons(&self, cx: &mut Context<Self>) -> AnyElement {
         h_flex()
+            .absolute()
+            .bottom(px(6.))
+            .right(px(8.))
             .gap_0p5()
             .child(
                 IconButton::new("brainz-chat-font-smaller", IconName::Dash)
@@ -13772,6 +13775,10 @@ impl Render for ThreadView {
             .children(self.render_token_limit_callout(cx))
             .children(self.render_request_elicitations(cx))
             .child(self.render_message_editor(window, cx))
+            .relative()
+            .when(self.parent_session_id.is_none(), |this| {
+                this.child(self.render_chat_font_size_buttons(cx))
+            })
     }
 }
 
