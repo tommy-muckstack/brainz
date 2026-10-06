@@ -72,11 +72,15 @@ the file name that opens it on click; the agent still gets the path.
 Named links in chat replies also render as rounded, clickable pills, preserving
 their displayed titles and original file or web destinations.
 
-The sun button at the far left of the status bar opens the **Brief** tab: today's
-calendar events with who they match in the brain and an **Open prep** or **Open
-folder** button, every folder whose status callout is older than its newest note,
-and the ten oldest open loops, with a link to the full Open loops tab. It refreshes
-on open and every five minutes. **⌘⌃V** anywhere in the window pastes the
+The briefcase button at the far left of the status bar opens the **Brief** tab.
+At the top is the day's read: the narrative block of the brain's brief file
+(`brief` in `brainz.toml`), written by whatever bot you point at the prompt file
+next to it, with how old it is. Below that: today's calendar events with who
+they match in the brain and an **Open prep** or **Open folder** button, the open
+owes from the To-Do board, the Blocked and Decisions lists from the desk file
+(`ops` in `brainz.toml`), every folder whose status callout is older than its
+newest note, and the oldest lines flagged `⏳`/`⏰` in notes with an **Add to
+To-Do** button. It refreshes on open and every five minutes. **⌘⌃V** anywhere in the window pastes the
 clipboard (a screenshot, a link, a path) into the active conversation's message box
 and focuses it, opening a Claude conversation first if none is up. Right-click an
 amber folder in the tree for **Refresh status from newest notes**, which opens a
@@ -134,14 +138,17 @@ the themes folder's `pins.md` and re-run the pass, so nothing is ever
 deleted from `signals.json`. Output lands in the themes folder of the working tree and the
 Sync banner carries it to GitHub like any other change.
 
-The hourglass button next to Themes opens an **Open loops** tab: every current
-`⏳` and `⏰` line in the brain, grouped by owner (`⏰` is owed by you, `⏳` is
-waiting on someone else), oldest first, with the counterparty when a known
-person is named on the line and the age from `git blame`. Click a row to open
-the file at that line; **Mark done** turns the line's marker into `✅` in the
-note and drops the row (the next signals pass confirms it). Lines carrying those glyphs (or `⚠️`) are kept out of theme
-extraction, and the Themes status callout carries the "N owed, M waiting,
-oldest" summary. The same signals pass drops terms whose only sources are
+Lines in notes that *start* with `⏳` (waiting on someone else) or `⏰` (owed
+by you), after a bullet, quote mark, ordinal, or one bold label, and that carry
+no `✅` or `🟢`, are **flagged lines**: things that never made it onto the To-Do
+board. The signals pass collects them with the counterparty when a known person
+is named and the age from `git blame`. The To-Do tab lists them under the board
+as **Flagged in notes** and the Brief shows the oldest; **Add to To-Do** copies
+one onto the board (under Today for `⏰`, Delayed / Waiting for `⏳`, tagged
+`from-note`) and ticks the note's marker to `✅`, **Dismiss** only ticks the
+note. A sentence that merely mentions the glyph is not a flagged line. Lines
+carrying those glyphs (or `⚠️`) are kept out of theme extraction, and the
+Themes status callout carries the "N owed, M waiting, oldest" summary. The same signals pass drops terms whose only sources are
 itinerary, roster, logistics, or prompt folders (`themes.noise_dirs`) or a
 single file, caps momentum at `x20+`, and, when a theme is expanded, shows an
 all-time line bucketed by month under the windowed one (`themes.window_weeks`,
@@ -232,15 +239,16 @@ default `~/brain`), both of which can live in an untracked
 `assets/fonts/gellix/` over. Sign in to Claude and Codex once there; their
 config lives under `~/.config/brainz/`. The brain's layout comes from an
 optional `brainz.toml` at the brain's root, every key optional: `todo` (the
-To-Do file), `themes_dir`, `people_dir`, `places_dir`, `vocabulary_folders`,
+To-Do file), `brief` (the file whose narrative block tops the Brief tab),
+`ops` (a desk file whose Blocked and Decisions lists the Brief shows), `themes_dir`, `people_dir`, `places_dir`, `vocabulary_folders`,
 `exclude_prefixes`, `dated_exclude_dirs`, `stop_words`, `sync`, a `[calendar]`
 table (`prep_lead_minutes`, `match_dirs`), and a
 `[themes]` table (`noise_dirs`, `window_weeks`). The defaults and what each
 key changes are listed at the top of `crates/brainz_calendar/src/brain_config.rs`;
 a brain can keep its own copy of that reference next to its `brainz.toml`. A brain with no
 `origin` remote, or with `sync = false`, never shows the Sync banner. The
-Themes narrative is written by whatever bot you point at the prompt file in
-`themes_dir`; Brainz only renders the block. MCP connectors come from that
+Themes narrative and the Brief's daily read are written by whatever bot you
+point at the prompt files next to them; Brainz only renders the blocks. MCP connectors come from that
 machine's own Claude and Codex configs, with logos for the ones Brainz knows
 and a generic icon for the rest.
 

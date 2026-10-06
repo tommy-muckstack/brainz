@@ -4,6 +4,8 @@
 //! ```toml
 //! # brainz.toml at the brain's root; every key is optional
 //! todo = "TODO.md"
+//! brief = "BRIEF.md"        # the Brief tab's narrative block (written by a bot)
+//! ops = "OPS.md"            # optional desk file with "## Blocked" and "## Decisions" lists
 //! themes_dir = "themes"
 //! people_dir = "people"
 //! places_dir = "places"
@@ -33,6 +35,12 @@ pub const CONFIG_FILE: &str = "brainz.toml";
 pub struct BrainConfig {
     /// The check-off board the To-Do tab edits.
     pub todo: String,
+    /// The file whose `<!-- narrative:start -->` block the Brief tab shows
+    /// at the top; a bot writes it, Brainz only renders it.
+    pub brief: String,
+    /// Optional desk file whose "## Blocked" and "## Decisions …" sections
+    /// the Brief tab lists.
+    pub ops: Option<String>,
     /// Where the themes pass writes `signals.json`, `themes.md`, `pins.md`,
     /// and `vocabulary.md`.
     pub themes_dir: String,
@@ -103,6 +111,8 @@ impl Default for BrainConfig {
     fn default() -> Self {
         Self {
             todo: "TODO.md".into(),
+            brief: "BRIEF.md".into(),
+            ops: None,
             themes_dir: "themes".into(),
             people_dir: "people".into(),
             places_dir: "places".into(),

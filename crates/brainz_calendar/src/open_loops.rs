@@ -1,416 +1,23 @@
-//! Brainz: the Open loops tab. Every current ⏳ and ⏰ line in the brain,
-//! grouped by who owes it, oldest first, from the signals pass. Brainz
-//! opens the file at the line; striking a loop is the owner's edit.
+//! Brainz: open loops are the ⏳ (waiting on someone else) and ⏰ (owed by
+//! the brain's owner) lines the signals pass finds at the start of bullets
+//! in notes. They have no tab of their own: the To-Do tab and the Brief show
+//! them as "Flagged in notes", where each one can be moved onto the To-Do
+//! board or dismissed. Both edits tick the note's marker to ✅, so the note
+//! records that the board now owns it (or that it was let go).
 
-use std::{path::PathBuf, time::Duration};
+use std::path::Path;
 
-use chrono::Local;
-use editor::Editor;
-use gpui::{App, EventEmitter, FocusHandle, Focusable, Task, WeakEntity, Window, actions};
-use ui::{Tooltip, prelude::*};
-use workspace::{
-    HideStatusItem, Item, ItemHandle, OpenOptions, OpenVisible, StatusItemView, Workspace,
-};
+use anyhow::Context as _;
 
-use crate::{
-    brain_config::BrainConfig,
-    themes::runner,
-    themes_signals::{self as signals, OpenLoop, Signals},
-};
+use crate::themes_signals::OpenLoop;
 
-actions!(
-    brainz_open_loops,
-    [
-        /// Opens the Open loops tab.
-        OpenOpenLoops
-    ]
-);
+/// The tag every item moved from a note carries on the board.
+pub const FROM_NOTE_TAG: &str = "from-note";
 
-const DISK_POLL: Duration = Duration::from_secs(10);
-const MAX_RELOAD_ATTEMPTS: u32 = 2;
-
-pub fn init(cx: &mut App) {
-    cx.observe_new(|workspace: &mut Workspace, _, _| {
-        workspace.register_action(|workspace, _: &OpenOpenLoops, window, cx| {
-            OpenLoopsView::open(workspace, window, cx);
-        });
-    })
-    .detach();
-}
-
-pub struct OpenLoopsView {
-    focus_handle: FocusHandle,
-    workspace: WeakEntity<Workspace>,
-    repo: PathBuf,
-    config: BrainConfig,
-    signals: Option<Signals>,
-    error: Option<String>,
-    /// Passes re-run after a failed load before the error is shown.
-    reload_attempts: u32,
-    signals_modified: Option<std::time::SystemTime>,
-    _disk_poll: Task<()>,
-    _load: Option<Task<()>>,
-}
-
-impl OpenLoopsView {
-    pub fn open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-        let existing = workspace.items_of_type::<OpenLoopsView>(cx).next();
-        if let Some(existing) = existing {
-            workspace.activate_item(&existing, true, true, window, cx);
-            existing.update(cx, |view, cx| view.reload(cx));
-            return;
-        }
-        let Some(repo) = workspace
-            .root_paths(cx)
-            .first()
-            .map(|path| path.to_path_buf())
-        else {
-            return;
-        };
-        let weak = cx.entity().downgrade();
-        let view = cx.new(|cx| OpenLoopsView::new(weak, repo, cx));
-        workspace.add_item_to_active_pane(Box::new(view), None, true, window, cx);
-    }
-
-    fn new(workspace: WeakEntity<Workspace>, repo: PathBuf, cx: &mut Context<Self>) -> Self {
-        let disk_poll = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(DISK_POLL).await;
-                let alive = this.update(cx, |this, cx| {
-                    let modified = this.signals_file_modified();
-                    if modified != this.signals_modified {
-                        this.signals_modified = modified;
-                        this.reload(cx);
-                    }
-                });
-                if alive.is_err() {
-                    break;
-                }
-            }
-        });
-        let config = BrainConfig::load(&repo);
-        let mut this = Self {
-            focus_handle: cx.focus_handle(),
-            workspace,
-            signals_modified: None,
-            repo,
-            config,
-            signals: None,
-            error: None,
-            reload_attempts: 0,
-            _disk_poll: disk_poll,
-            _load: None,
-        };
-        this.signals_modified = this.signals_file_modified();
-        this.reload(cx);
-        this
-    }
-
-    fn signals_file_modified(&self) -> Option<std::time::SystemTime> {
-        std::fs::metadata(self.config.themes_path(&self.repo, signals::SIGNALS_NAME))
-            .ok()?
-            .modified()
-            .ok()
-    }
-
-    fn reload(&mut self, cx: &mut Context<Self>) {
-        let repo = self.repo.clone();
-        let config = self.config.clone();
-        self._load = Some(cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move { signals::load_signals(&repo, &config) })
-                .await;
-            this.update(cx, |this, cx| {
-                match result {
-                    Ok(signals) => {
-                        // A file from an older Brainz lacks the newer fields;
-                        // refresh it once rather than show stale shapes.
-                        if signals.schema < signals::SCHEMA {
-                            this.run_now(cx);
-                        }
-                        this.signals = Some(signals);
-                        this.error = None;
-                        this.reload_attempts = 0;
-                    }
-                    Err(error) => {
-                        // A file another Brainz wrote, or a half-written one,
-                        // is cured by re-running the pass; only a repeat
-                        // failure is worth showing.
-                        if this.signals.is_none() {
-                            if this.reload_attempts < MAX_RELOAD_ATTEMPTS {
-                                this.reload_attempts += 1;
-                                log::warn!(
-                                    "signals reload failed (attempt {}): {error:#}",
-                                    this.reload_attempts
-                                );
-                                this.run_now(cx);
-                            } else {
-                                this.error = Some(format!("{error:#}"));
-                            }
-                        }
-                    }
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
-    }
-
-    fn run_now(&mut self, cx: &mut Context<Self>) {
-        let repo = self.repo.clone();
-        if let Some(runner) = runner(cx) {
-            runner.update(cx, |runner, cx| runner.run(repo, cx));
-        }
-    }
-
-    /// Marks the loop done in its note (the ⏳ or ⏰ becomes ✅ on that
-    /// line) and drops the row here. The next signals pass confirms it.
-    fn mark_done(&mut self, open_loop: &OpenLoop, cx: &mut Context<Self>) {
-        let path = self.repo.join(&open_loop.file);
-        let target = open_loop.clone();
-        if let Some(signals) = &mut self.signals {
-            signals.open_loops.retain(|candidate| {
-                !(candidate.file == target.file
-                    && candidate.line == target.line
-                    && candidate.text == target.text)
-            });
-        }
-        cx.notify();
-        let workspace = self.workspace.clone();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move { strike_marker(&path, &target) })
-                .await;
-            match result {
-                Ok(()) => {
-                    this.update(cx, |this, cx| this.run_now(cx)).ok();
-                }
-                Err(error) => {
-                    log::error!("brainz mark done: {error:#}");
-                    workspace
-                        .update(cx, |workspace, cx| {
-                            let id = workspace::notifications::NotificationId::unique::<OpenLoopsView>();
-                            workspace.show_notification(id, cx, |cx| {
-                                cx.new(|cx| {
-                                    workspace::notifications::simple_message_notification::MessageNotification::new(
-                                        format!("Could not mark the loop done: {error:#}"),
-                                        cx,
-                                    )
-                                })
-                            });
-                        })
-                        .ok();
-                    this.update(cx, |this, cx| this.reload(cx)).ok();
-                }
-            }
-        })
-        .detach();
-    }
-
-    /// Opens the loop's file with the cursor on its line. With
-    /// `select_marker`, the ⏳ or ⏰ glyph is selected so one keystroke
-    /// replaces it; the edit itself stays the user's.
-    fn open_loop(
-        &self,
-        open_loop: &OpenLoop,
-        select_marker: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let path = self.repo.join(&open_loop.file);
-        if !path.is_file() {
-            return;
-        }
-        let row = open_loop.line.saturating_sub(1);
-        let marker = open_loop.marker.clone();
-        let Some(workspace) = self.workspace.upgrade() else {
-            return;
-        };
-        let task = workspace.update(cx, |workspace, cx| {
-            workspace.open_abs_path(
-                path,
-                OpenOptions {
-                    visible: Some(OpenVisible::None),
-                    ..Default::default()
-                },
-                window,
-                cx,
-            )
-        });
-        cx.spawn_in(window, async move |_, cx| {
-            let item = task.await?;
-            if let Some(editor) = item.downcast::<Editor>() {
-                editor.update_in(cx, |editor, window, cx| {
-                    if let Some(buffer) = editor.buffer().read(cx).as_singleton() {
-                        let snapshot = buffer.read(cx).snapshot();
-                        let point = snapshot.point_from_external_input(row, 0);
-                        editor.go_to_singleton_buffer_point(point, window, cx);
-                        if select_marker {
-                            let line: String = snapshot
-                                .text_for_range(
-                                    snapshot.point_to_offset(point)
-                                        ..snapshot.point_to_offset(
-                                            snapshot.point_from_external_input(row + 1, 0),
-                                        ),
-                                )
-                                .collect();
-                            if let Some(at) = line.find(marker.as_str()) {
-                                let start = snapshot.point_to_offset(point) + at;
-                                let end = start + marker.len();
-                                let multi = editor.buffer().read(cx).snapshot(cx);
-                                let start = multi.anchor_before(editor::MultiBufferOffset(start));
-                                let end = multi.anchor_after(editor::MultiBufferOffset(end));
-                                editor.change_selections(Default::default(), window, cx, |s| {
-                                    s.select_anchor_ranges([start..end]);
-                                });
-                            }
-                        }
-                    }
-                })?;
-            }
-            anyhow::Ok(())
-        })
-        .detach_and_log_err(cx);
-    }
-
-    fn render_group(
-        &self,
-        title: String,
-        loops: &[OpenLoop],
-        ix_base: usize,
-        today: chrono::NaiveDate,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut block = v_flex().w_full().child(
-            h_flex()
-                .px_1()
-                .pt_4()
-                .pb_1()
-                .gap_2()
-                .child(
-                    Label::new(title)
-                        .size(LabelSize::Small)
-                        .weight(gpui::FontWeight::SEMIBOLD)
-                        .color(Color::Accent),
-                )
-                .child(
-                    Label::new(loops.len().to_string())
-                        .size(LabelSize::XSmall)
-                        .color(Color::Placeholder),
-                ),
-        );
-        if loops.is_empty() {
-            block = block.child(
-                div().px_2().py_1().child(
-                    Label::new("Nothing open here")
-                        .size(LabelSize::Small)
-                        .color(Color::Placeholder),
-                ),
-            );
-        }
-        for (ix, open_loop) in loops.iter().enumerate() {
-            let age = open_loop.age_days(today);
-            let age_label = match age {
-                0 => "today".to_owned(),
-                1 => "1 day".to_owned(),
-                days => format!("{days} days"),
-            };
-            let who = open_loop.counterparty.clone().unwrap_or_else(|| {
-                if open_loop.owed_by_owner() {
-                    "you".to_owned()
-                } else {
-                    "someone".to_owned()
-                }
-            });
-            let folder = signals::file_label(&open_loop.file);
-            let location = format!("{}:{}", open_loop.file, open_loop.line);
-            let text = markdown::markdown_to_plain_text(&open_loop.text)
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
-            let row_loop = open_loop.clone();
-            let done_loop = open_loop.clone();
-            block = block.child(
-                h_flex()
-                    .id(("brainz-open-loop", ix_base + ix))
-                    .w_full()
-                    .items_center()
-                    .gap_2()
-                    .px_1()
-                    .py_1()
-                    .rounded_md()
-                    .hover(|this| this.bg(cx.theme().colors().element_hover))
-                    .cursor_pointer()
-                    .tooltip(Tooltip::text(location))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_loop(&row_loop, false, window, cx);
-                    }))
-                    .child(
-                        div()
-                            .w(px(22.))
-                            .flex_none()
-                            .child(Label::new(open_loop.marker.clone()).size(LabelSize::Small)),
-                    )
-                    .child(
-                        div().w(px(150.)).flex_none().overflow_hidden().child(
-                            Label::new(who)
-                                .size(LabelSize::Small)
-                                .color(if open_loop.counterparty.is_some() {
-                                    Color::Default
-                                } else {
-                                    Color::Placeholder
-                                })
-                                .truncate(),
-                        ),
-                    )
-                    .child(
-                        div().w(px(200.)).flex_none().overflow_hidden().child(
-                            Label::new(folder)
-                                .size(LabelSize::XSmall)
-                                .color(Color::Muted)
-                                .truncate(),
-                        ),
-                    )
-                    .child(
-                        div().w(px(64.)).flex_none().child(
-                            Label::new(age_label)
-                                .size(LabelSize::XSmall)
-                                .color(if age >= 14 {
-                                    Color::Accent
-                                } else {
-                                    Color::Muted
-                                }),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Label::new(text).size(LabelSize::Small).truncate()),
-                    )
-                    .child(
-                        Button::new(("brainz-open-loop-done", ix_base + ix), "Mark done")
-                            .label_size(LabelSize::XSmall)
-                            .color(Color::Muted)
-                            .tooltip(Tooltip::text(
-                                "Turns the marker into ✅ in the note and removes this row",
-                            ))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.mark_done(&done_loop, cx);
-                            })),
-                    ),
-            );
-        }
-        block.into_any_element()
-    }
-}
-
-/// Replaces the loop's marker with ✅ on its line. The line number comes
-/// from the last signals pass, so when the file has since shifted, the
-/// nearest line carrying the same marker and text is used instead.
-fn strike_marker(path: &std::path::Path, open_loop: &OpenLoop) -> anyhow::Result<()> {
-    use anyhow::Context as _;
+/// Turns the loop's ⏳ or ⏰ into ✅ on its line in the note. The line is
+/// found by number first, then by the nearest line with the same marker and
+/// opening words, since the note may have shifted since the pass ran.
+pub fn strike_marker(path: &Path, open_loop: &OpenLoop) -> anyhow::Result<()> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let mut lines: Vec<&str> = text.split_inclusive('\n').collect();
@@ -439,207 +46,180 @@ fn strike_marker(path: &std::path::Path, open_loop: &OpenLoop) -> anyhow::Result
     Ok(())
 }
 
-impl EventEmitter<()> for OpenLoopsView {}
-
-impl Focusable for OpenLoopsView {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
+/// The board item for a loop: what the note says, who it waits on, and
+/// where it came from, in the board's "what to do + why" wording.
+pub fn board_line(open_loop: &OpenLoop, owner: &str) -> String {
+    let text = markdown::markdown_to_plain_text(&open_loop.text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text = text.trim_end_matches(['.', ' ']);
+    let who = match (&open_loop.counterparty, open_loop.owed_by_owner()) {
+        (Some(person), false) => format!("Waiting on {person}: "),
+        (None, false) => "Waiting: ".to_owned(),
+        (_, true) => format!("{owner} owes: "),
+    };
+    let source = open_loop
+        .file
+        .rsplit('/')
+        .next()
+        .unwrap_or(&open_loop.file)
+        .trim_end_matches(".md");
+    format!("- [ ] {who}{text} (from {source}) `{FROM_NOTE_TAG}`")
 }
 
-impl Item for OpenLoopsView {
-    type Event = ();
-
-    fn to_item_events(_: &Self::Event, _: &mut dyn FnMut(workspace::item::ItemEvent)) {}
-
-    fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
-        "Open loops".into()
-    }
-
-    fn tab_icon(&self, _window: &Window, _cx: &App) -> Option<Icon> {
-        Some(Icon::new(IconName::BrainzLoops))
-    }
-
-    fn telemetry_event_text(&self) -> Option<&'static str> {
-        None
-    }
+/// Appends the loop to the board: ⏰ lines go under the first section whose
+/// name starts with "Today", ⏳ lines under the first starting with
+/// "Delayed" or "Waiting". A missing section is added above "## Done" (or
+/// at the end).
+pub fn add_to_board(todo_path: &Path, open_loop: &OpenLoop, owner: &str) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(todo_path)
+        .with_context(|| format!("reading {}", todo_path.display()))?;
+    let output = insert_board_line(&text, &board_line(open_loop, owner), open_loop.owed_by_owner());
+    std::fs::write(todo_path, output).with_context(|| format!("writing {}", todo_path.display()))?;
+    Ok(())
 }
 
-impl Render for OpenLoopsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let today = Local::now().date_naive();
-        let owner = self.config.owner_label();
-        let running = runner(cx).is_some_and(|runner| runner.read(cx).is_running());
-        let summary = self
-            .signals
-            .as_ref()
-            .map(|signals| signals::open_loops_summary(&signals.open_loops, &owner, today))
-            .unwrap_or_default();
-        let header = h_flex()
-            .w_full()
-            .items_center()
-            .justify_between()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(Icon::new(IconName::BrainzLoops).color(Color::Accent))
-                    .child(Label::new("Open loops").size(LabelSize::Large))
-                    .child(
-                        Label::new(summary)
-                            .size(LabelSize::Small)
-                            .color(Color::Muted),
-                    ),
-            )
-            .child(if running {
-                h_flex()
-                    .h(px(24.))
-                    .px_3()
-                    .items_center()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().colors().border)
-                    .child(ui::bouncing_dots(
-                        "brainz-open-loops-running",
-                        cx.theme().colors().text_accent,
-                    ))
-                    .into_any_element()
-            } else {
-                IconButton::new("brainz-open-loops-refresh", IconName::ArrowCircle)
-                    .icon_size(IconSize::Small)
-                    .tooltip(Tooltip::text("Re-scan the brain for ⏳ and ⏰ lines"))
-                    .on_click(cx.listener(|this, _, _, cx| this.run_now(cx)))
-                    .into_any_element()
-            });
-
-        let mut body: Vec<AnyElement> = vec![
-            Label::new(format!(
-                "Unfinished items your notes mark with ⏰ (something {owner} owes) or ⏳ (waiting on someone else), \
-                 oldest first. Click a row to open the note at that line; Mark done turns its marker into ✅ for you."
-            ))
-            .size(LabelSize::Small)
-            .color(Color::Muted)
-            .into_any_element(),
-        ];
-        if let Some(error) = &self.error {
-            body.push(
-                v_flex()
-                    .mt_3()
-                    .p_4()
-                    .gap_2()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(cx.theme().colors().border)
-                    .bg(cx.theme().colors().surface_background)
-                    .child(Label::new(error.clone()))
-                    .child(
-                        Label::new("Run the Themes sync once to produce the signals file.")
-                            .size(LabelSize::Small)
-                            .color(Color::Muted),
-                    )
-                    .into_any_element(),
-            );
-        }
-        if let Some(signals) = self.signals.clone() {
-            let owed: Vec<OpenLoop> = signals
-                .open_loops
-                .iter()
-                .filter(|l| l.owed_by_owner())
-                .cloned()
-                .collect();
-            let waiting: Vec<OpenLoop> = signals
-                .open_loops
-                .iter()
-                .filter(|l| !l.owed_by_owner())
-                .cloned()
-                .collect();
-            body.push(self.render_group(format!("⏰ Owed by {owner}"), &owed, 0, today, cx));
-            body.push(self.render_group(
-                "⏳ Waiting on someone else".to_owned(),
-                &waiting,
-                10_000,
-                today,
-                cx,
-            ));
-        }
-
-        v_flex()
-            .id("brainz-open-loops")
-            .key_context("BrainzOpenLoops")
-            .track_focus(&self.focus_handle)
-            .size_full()
-            .overflow_y_scroll()
-            .bg(cx.theme().colors().editor_background)
-            .child(
-                v_flex()
-                    .w_full()
-                    .max_w(px(1240.))
-                    .mx_auto()
-                    .pt_6()
-                    .pb_10()
-                    .px_4()
-                    .gap_1()
-                    .child(header)
-                    .children(body),
-            )
-    }
-}
-
-/// Status bar button that opens the Open loops tab.
-pub struct OpenLoopsButton {
-    pane_item_focus_handle: Option<FocusHandle>,
-    active: bool,
-}
-
-impl OpenLoopsButton {
-    pub fn new() -> Self {
-        Self {
-            pane_item_focus_handle: None,
-            active: false,
-        }
-    }
-}
-
-impl Render for OpenLoopsButton {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let focus_handle = self.pane_item_focus_handle.clone();
-        let active = self.active;
-        div().child(
-            IconButton::new("brainz-open-loops-button", IconName::BrainzLoops)
-                .icon_size(IconSize::Small)
-                .toggle_state(active)
-                .icon_color(if active {
-                    Color::Accent
+fn insert_board_line(text: &str, line: &str, owed_by_owner: bool) -> String {
+    let wanted: &[&str] = if owed_by_owner {
+        &["today"]
+    } else {
+        &["delayed", "waiting"]
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let heading_at = |ix: usize| lines[ix].strip_prefix("## ").map(|name| name.trim().to_ascii_lowercase());
+    let section = (0..lines.len()).find(|&ix| {
+        heading_at(ix).is_some_and(|name| wanted.iter().any(|prefix| name.starts_with(prefix)))
+    });
+    let mut out: Vec<String> = lines.iter().map(|line| (*line).to_owned()).collect();
+    match section {
+        Some(start) => {
+            // The last item line of the section, or its heading when empty.
+            let end = (start + 1..lines.len())
+                .find(|&ix| heading_at(ix).is_some())
+                .unwrap_or(lines.len());
+            let mut insert_at = start + 1;
+            for ix in start + 1..end {
+                if lines[ix].trim_start().starts_with("- [") {
+                    insert_at = ix + 1;
+                }
+            }
+            if insert_at == start + 1 {
+                // Skip a blank line and an italic "nothing here" note right after the heading.
+                let mut ix = start + 1;
+                while ix < end && lines[ix].trim().is_empty() {
+                    ix += 1;
+                }
+                if ix < end && lines[ix].trim().starts_with('_') {
+                    out.remove(ix);
+                    insert_at = ix;
                 } else {
-                    Color::Default
-                })
-                .tooltip(move |_window, cx| {
-                    if let Some(focus_handle) = &focus_handle {
-                        Tooltip::for_action_in("Open loops", &OpenOpenLoops, focus_handle, cx)
-                    } else {
-                        Tooltip::for_action("Open loops", &OpenOpenLoops, cx)
+                    insert_at = ix.min(end);
+                }
+            }
+            out.insert(insert_at, line.to_owned());
+        }
+        None => {
+            let heading = if owed_by_owner {
+                "## Today"
+            } else {
+                "## Delayed / Waiting"
+            };
+            let done = (0..lines.len())
+                .find(|&ix| heading_at(ix).is_some_and(|name| name.starts_with("done")));
+            let mut block = vec![heading.to_owned(), String::new(), line.to_owned(), String::new()];
+            match done {
+                Some(ix) => {
+                    if ix > 0 && !lines[ix - 1].trim().is_empty() {
+                        block.insert(0, String::new());
                     }
-                })
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(Box::new(OpenOpenLoops), cx);
-                }),
-        )
+                    for (offset, item) in block.into_iter().enumerate() {
+                        out.insert(ix + offset, item);
+                    }
+                }
+                None => {
+                    if lines.last().is_some_and(|last| !last.trim().is_empty()) {
+                        block.insert(0, String::new());
+                    }
+                    block.pop();
+                    out.extend(block);
+                }
+            }
+        }
     }
+    let mut joined = out.join("\n");
+    if text.ends_with('\n') || !joined.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
 }
 
-impl StatusItemView for OpenLoopsButton {
-    fn set_active_pane_item(
-        &mut self,
-        active_pane_item: Option<&dyn ItemHandle>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.pane_item_focus_handle = active_pane_item.map(|item| item.item_focus_handle(cx));
-        self.active =
-            active_pane_item.is_some_and(|item| item.downcast::<OpenLoopsView>().is_some());
-        cx.notify();
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn waiting(text: &str, who: Option<&str>) -> OpenLoop {
+        OpenLoop {
+            file: "career/employers/tekmetric/CLAUDE.md".into(),
+            line: 3,
+            text: text.into(),
+            marker: "⏳".into(),
+            first_seen: "2026-10-01".into(),
+            folder: "career".into(),
+            counterparty: who.map(str::to_owned),
+        }
     }
 
-    fn hide_setting(&self, _: &App) -> Option<HideStatusItem> {
-        None
+    #[test]
+    fn board_line_says_who_and_where_from() {
+        let lp = waiting("Lea to come back with the **counter**.", Some("Lea"));
+        assert_eq!(
+            board_line(&lp, "Tommy"),
+            "- [ ] Waiting on Lea: Lea to come back with the counter (from CLAUDE) `from-note`"
+        );
+        let mut owed = waiting("send the Armature link", None);
+        owed.marker = "⏰".into();
+        assert_eq!(
+            board_line(&owed, "Tommy"),
+            "- [ ] Tommy owes: send the Armature link (from CLAUDE) `from-note`"
+        );
+    }
+
+    #[test]
+    fn insert_board_line_lands_after_the_last_item_of_the_right_section() {
+        let board = "# TODO\n\n## Today\n\n- [ ] jersey `a`\n\n## Delayed / Waiting\n\n- [ ] rolls `b`\n- [ ] sticker `c`\n\n## Done\n\n- [x] old `d`\n";
+        let out = insert_board_line(board, "- [ ] new `n`", false);
+        assert_eq!(
+            out,
+            "# TODO\n\n## Today\n\n- [ ] jersey `a`\n\n## Delayed / Waiting\n\n- [ ] rolls `b`\n- [ ] sticker `c`\n- [ ] new `n`\n\n## Done\n\n- [x] old `d`\n"
+        );
+        let out = insert_board_line(board, "- [ ] owed `o`", true);
+        assert!(out.contains("## Today\n\n- [ ] jersey `a`\n- [ ] owed `o`\n\n## Delayed"));
+    }
+
+    #[test]
+    fn insert_board_line_replaces_an_empty_note_and_adds_missing_sections() {
+        let board = "## Today\n\n_(nothing today)_\n\n## Done\n";
+        let out = insert_board_line(board, "- [ ] owed `o`", true);
+        assert_eq!(out, "## Today\n\n- [ ] owed `o`\n\n## Done\n");
+        let out = insert_board_line(board, "- [ ] waiting `w`", false);
+        assert_eq!(
+            out,
+            "## Today\n\n_(nothing today)_\n\n## Delayed / Waiting\n\n- [ ] waiting `w`\n\n## Done\n"
+        );
+    }
+
+    #[test]
+    fn strike_marker_ticks_the_nearest_matching_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        std::fs::write(&path, "# Note\n\n- ⏳ Lea to come back with the counter\n- ⏳ other\n").unwrap();
+        let mut lp = waiting("Lea to come back with the counter", Some("Lea"));
+        lp.line = 9;
+        strike_marker(&path, &lp).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "# Note\n\n- ✅ Lea to come back with the counter\n- ⏳ other\n"
+        );
     }
 }

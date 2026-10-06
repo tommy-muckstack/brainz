@@ -51,7 +51,6 @@ pub fn init(cx: &mut App) {
     themes::init(cx);
     github_sync::init(cx);
     prep::init(cx);
-    open_loops::init(cx);
     brief::init(cx);
     status_decay::init(cx);
     pdf::init(cx);
