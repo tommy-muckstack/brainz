@@ -1090,13 +1090,11 @@ impl Render for ThemesView {
                         .color(Color::Muted),
                     )
                     .child(
-                        Button::new("brainz-themes-open-loops", "Open loops")
+                        Button::new("brainz-themes-open-loops", "Flagged in notes")
                             .label_size(LabelSize::XSmall)
+                            .tooltip(Tooltip::text("Open the To-Do tab, where flagged lines can be moved onto the board"))
                             .on_click(|_, window, cx| {
-                                window.dispatch_action(
-                                    Box::new(crate::open_loops::OpenOpenLoops),
-                                    cx,
-                                );
+                                window.dispatch_action(Box::new(crate::todo::OpenTodo), cx);
                             }),
                     )
                     .into_any_element(),

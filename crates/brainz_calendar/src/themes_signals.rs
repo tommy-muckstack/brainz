@@ -1477,6 +1477,63 @@ fn blame_dates(repo: &Path, file: &str) -> HashMap<u32, NaiveDate> {
     dates
 }
 
+/// A line is an open loop only when its ⏳ or ⏰ is the first thing on it
+/// (after a list bullet, quote mark, ordinal, or one bold label), and the
+/// line is not already closed with ✅ or 🟢. A sentence that merely mentions
+/// the glyph, a heading, a table row, or a legend is not a loop to chase.
+/// Returns the marker and the text after it.
+pub fn loop_line(text: &str) -> Option<(&'static str, String)> {
+    let text = text.trim();
+    if text.starts_with('#') || text.starts_with('|') {
+        return None;
+    }
+    if text.contains('✅') || text.contains('🟢') {
+        return None;
+    }
+    // List bullets and quote marks, but not the `**` of a bold label.
+    let mut rest = text;
+    loop {
+        let trimmed = rest.trim_start_matches([' ', '\t', '>']);
+        let next = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .unwrap_or(trimmed);
+        if next == rest {
+            break;
+        }
+        rest = next;
+    }
+    // "3. " or "3) " ordinals.
+    let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits > 0
+        && let Some(after) = rest[digits..].strip_prefix(['.', ')'])
+    {
+        rest = after.trim_start();
+    }
+    // One bold label such as "**Status:**" or "**Next:**".
+    if let Some(after) = rest.strip_prefix("**")
+        && let Some(end) = after.find("**")
+        && !after[..end].contains(LOOP_MARKERS)
+    {
+        rest = after[end + 2..].trim_start_matches([':', ' ']);
+    }
+    let marker = if rest.starts_with('⏰') {
+        "⏰"
+    } else if rest.starts_with('⏳') {
+        "⏳"
+    } else {
+        return None;
+    };
+    let clean = rest[marker.len()..]
+        .trim_start_matches(['\u{fe0f}', ' ', ':', '-'])
+        .trim()
+        .to_owned();
+    if clean.is_empty() {
+        return None;
+    }
+    Some((marker, clean))
+}
+
 /// Every ⏳ and ⏰ line in the brain at HEAD, with when it was written.
 fn collect_open_loops(
     repo: &Path,
@@ -1489,7 +1546,7 @@ fn collect_open_loops(
         &["grep", "-n", "-e", "⏳", "-e", "⏰", "HEAD", "--", "*.md"],
     )
     .unwrap_or_default();
-    let mut by_file: BTreeMap<String, Vec<(u32, String)>> = BTreeMap::new();
+    let mut by_file: BTreeMap<String, Vec<(u32, &'static str, String)>> = BTreeMap::new();
     for line in grep.lines() {
         let Some(rest) = line.strip_prefix("HEAD:") else {
             continue;
@@ -1506,36 +1563,24 @@ fn collect_open_loops(
         if excluded(file, config) {
             continue;
         }
-        let text = text.trim();
-        // Headings and table rules use the glyph as decoration, not as a loop.
-        if text.starts_with('#') || text.starts_with('|') {
+        let Some((marker, clean)) = loop_line(text) else {
             continue;
-        }
+        };
         by_file
             .entry(file.to_owned())
             .or_default()
-            .push((number, text.to_owned()));
+            .push((number, marker, clean));
     }
     let mut loops = Vec::new();
     for (file, lines) in by_file {
         let dates = blame_dates(repo, &file);
-        for (number, text) in lines {
-            let marker = if text.contains('⏰') { "⏰" } else { "⏳" };
+        for (number, marker, clean) in lines {
             let first_seen = dates
                 .get(&number)
                 .copied()
                 .unwrap_or(today)
                 .format("%Y-%m-%d")
                 .to_string();
-            // The marker sits in its own column, so a leading one leaves the text.
-            let clean = text
-                .trim_start_matches(['-', '*', ' ', '>', '⏳', '⏰', '\u{fe0f}'])
-                .trim()
-                .to_owned();
-            // A bare glyph (a legend or a table cell) is not a loop to chase.
-            if clean.is_empty() {
-                continue;
-            }
             loops.push(OpenLoop {
                 counterparty: vocabulary.first_person_in(&clean),
                 folder: top_folder(&file),
@@ -2328,5 +2373,28 @@ mod real_brain {
                 println!("CHECK {want}: not a theme");
             }
         }
+    }
+
+    #[test]
+    fn loop_line_wants_the_marker_first_and_no_closing_glyph() {
+        assert_eq!(
+            loop_line("- ⏳ Lea to come back with the counter"),
+            Some(("⏳", "Lea to come back with the counter".to_owned()))
+        );
+        assert_eq!(
+            loop_line("> **Next:** ⏰ send Hilmar the Armature link"),
+            Some(("⏰", "send Hilmar the Armature link".to_owned()))
+        );
+        assert_eq!(
+            loop_line("3. ⏳ Rich to confirm the comp band"),
+            Some(("⏳", "Rich to confirm the comp band".to_owned()))
+        );
+        assert_eq!(loop_line("3. Open loops tab. Lines with ⏳, ✅, or ⚠️ are excluded."), None);
+        assert_eq!(loop_line("🟢🟢 ADIL CALL DONE 9/18. ⏳ notes to sync"), None);
+        assert_eq!(loop_line("- ✅ sent (2026-09-25) .. was ⏳"), None);
+        assert_eq!(loop_line("| ⏳ | waiting |"), None);
+        assert_eq!(loop_line("## ⏳ Waiting"), None);
+        assert_eq!(loop_line("- ⏳"), None);
+        assert_eq!(loop_line("Sent thank-yous; ⏳ Toni to reply"), None);
     }
 }

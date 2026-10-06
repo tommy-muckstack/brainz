@@ -1,15 +1,26 @@
 //! Brainz: a To-Do tab over the brain's check-off board (`todo` in
 //! `brainz.toml`, `TODO.md` by default). Brainz only flips checkboxes; a bot
-//! or the person keeps the wording and sections in order.
+//! or the person keeps the wording and sections in order. Below the board,
+//! "Flagged in notes" lists the ⏳ and ⏰ lines the signals pass found in
+//! notes, each with Add to To-Do (copies it onto the board and ticks the
+//! note) or Dismiss (ticks the note).
 
 use std::{path::PathBuf, time::Duration};
 
 use anyhow::{Context as _, Result};
-use gpui::{App, EventEmitter, FocusHandle, Focusable, Task, Window, actions};
+use chrono::Local;
+use gpui::{App, EventEmitter, FocusHandle, Focusable, Task, WeakEntity, Window, actions};
 use ui::{Tooltip, prelude::*};
-use workspace::{HideStatusItem, Item, ItemHandle, StatusItemView, Workspace};
+use workspace::{
+    HideStatusItem, Item, ItemHandle, OpenOptions, OpenVisible, StatusItemView, Workspace,
+};
 
-use crate::brain_config::BrainConfig;
+use crate::{
+    brain_config::BrainConfig,
+    open_loops,
+    themes::runner,
+    themes_signals::{self as signals, OpenLoop},
+};
 
 actions!(
     brainz_todo,
@@ -31,26 +42,26 @@ pub fn init(cx: &mut App) {
 }
 
 #[derive(Debug, Clone)]
-struct TodoItem {
+pub(crate) struct TodoItem {
     /// Line index in the file, so toggles edit the right line.
-    line: usize,
-    done: bool,
-    title: String,
-    tag: Option<String>,
-    note: Option<String>,
+    pub(crate) line: usize,
+    pub(crate) done: bool,
+    pub(crate) title: String,
+    pub(crate) tag: Option<String>,
+    pub(crate) note: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-struct TodoSection {
-    name: String,
-    items: Vec<TodoItem>,
-    empty_note: Option<String>,
+pub(crate) struct TodoSection {
+    pub(crate) name: String,
+    pub(crate) items: Vec<TodoItem>,
+    pub(crate) empty_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
-struct TodoBoard {
-    sections: Vec<TodoSection>,
-    updated: Option<String>,
+pub(crate) struct TodoBoard {
+    pub(crate) sections: Vec<TodoSection>,
+    pub(crate) updated: Option<String>,
 }
 
 /// `- [ ] Title with words `tag` (note)` → parts.
@@ -86,7 +97,7 @@ fn parse_item(line: &str, index: usize) -> Option<TodoItem> {
     })
 }
 
-fn parse_board(text: &str) -> TodoBoard {
+pub(crate) fn parse_board(text: &str) -> TodoBoard {
     let mut board = TodoBoard::default();
     for (index, line) in text.lines().enumerate() {
         if let Some(updated) = line.strip_prefix("**Last updated:**") {
@@ -116,6 +127,17 @@ fn load_board(path: &PathBuf) -> Result<TodoBoard> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     Ok(parse_board(&text))
+}
+
+/// The open loops of the last signals pass, oldest first; none when the
+/// pass has not run.
+fn load_loops(repo: &PathBuf) -> Vec<OpenLoop> {
+    let config = BrainConfig::load(repo);
+    let mut loops = signals::load_signals(repo, &config)
+        .map(|signals| signals.open_loops)
+        .unwrap_or_default();
+    loops.sort_by(|a, b| a.first_seen.cmp(&b.first_seen));
+    loops
 }
 
 /// Flips one checkbox in place. Checking appends today's date; the item
@@ -151,10 +173,15 @@ fn toggle_item(path: &PathBuf, line_index: usize) -> Result<()> {
 
 pub struct TodoView {
     focus_handle: FocusHandle,
+    workspace: WeakEntity<Workspace>,
+    repo: PathBuf,
     path: PathBuf,
     /// The configured path, for the error card.
     relative: String,
+    owner: String,
     board: TodoBoard,
+    /// ⏳ and ⏰ lines from notes, oldest first, from the last signals pass.
+    loops: Vec<OpenLoop>,
     error: Option<String>,
     show_done: bool,
     _load: Option<Task<()>>,
@@ -176,13 +203,23 @@ impl TodoView {
         else {
             return;
         };
-        let relative = BrainConfig::load(&root).todo;
+        let config = BrainConfig::load(&root);
+        let relative = config.todo.clone();
         let path = root.join(&relative);
-        let view = cx.new(|cx| TodoView::new(path, relative, cx));
+        let owner = config.owner_label();
+        let weak = cx.entity().downgrade();
+        let view = cx.new(|cx| TodoView::new(weak, root, path, relative, owner, cx));
         workspace.add_item_to_active_pane(Box::new(view), None, true, window, cx);
     }
 
-    fn new(path: PathBuf, relative: String, cx: &mut Context<Self>) -> Self {
+    fn new(
+        workspace: WeakEntity<Workspace>,
+        repo: PathBuf,
+        path: PathBuf,
+        relative: String,
+        owner: String,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let refresh_loop = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(REFRESH_INTERVAL).await;
@@ -193,9 +230,13 @@ impl TodoView {
         });
         let mut this = Self {
             focus_handle: cx.focus_handle(),
+            workspace,
+            repo,
             path,
             relative,
+            owner,
             board: TodoBoard::default(),
+            loops: Vec::new(),
             error: None,
             show_done: false,
             _load: None,
@@ -207,8 +248,11 @@ impl TodoView {
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let path = self.path.clone();
+        let repo = self.repo.clone();
         self._load = Some(cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { load_board(&path) }).await;
+            let (result, loops) = cx
+                .background_spawn(async move { (load_board(&path), load_loops(&repo)) })
+                .await;
             this.update(cx, |this, cx| {
                 match result {
                     Ok(board) => {
@@ -217,10 +261,211 @@ impl TodoView {
                     }
                     Err(error) => this.error = Some(format!("{error:#}")),
                 }
+                this.loops = loops;
                 cx.notify();
             })
             .ok();
         }));
+    }
+
+    /// Ticks the loop's marker in its note and, when `add` is set, copies
+    /// it onto the board first. The signals pass re-runs so the row stays
+    /// gone after the next refresh.
+    fn resolve_loop(&mut self, ix: usize, add: bool, cx: &mut Context<Self>) {
+        let Some(open_loop) = self.loops.get(ix).cloned() else {
+            return;
+        };
+        self.loops.remove(ix);
+        cx.notify();
+        let note = self.repo.join(&open_loop.file);
+        let board = self.path.clone();
+        let owner = self.owner.clone();
+        let repo = self.repo.clone();
+        let workspace = self.workspace.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    if add {
+                        open_loops::add_to_board(&board, &open_loop, &owner)?;
+                    }
+                    open_loops::strike_marker(&note, &open_loop)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => {
+                        if let Some(runner) = runner(cx) {
+                            runner.update(cx, |runner, cx| runner.run(repo, cx));
+                        }
+                    }
+                    Err(error) => {
+                        log::error!("brainz flagged line: {error:#}");
+                        workspace
+                            .update(cx, |workspace, cx| {
+                                let id = workspace::notifications::NotificationId::unique::<TodoView>();
+                                workspace.show_notification(id, cx, |cx| {
+                                    cx.new(|cx| {
+                                        workspace::notifications::simple_message_notification::MessageNotification::new(
+                                            format!("Could not update the note: {error:#}"),
+                                            cx,
+                                        )
+                                    })
+                                });
+                            })
+                            .ok();
+                    }
+                }
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn open_relative(&self, relative: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.repo.join(relative);
+        if !target.exists() {
+            return;
+        }
+        self.workspace
+            .update(cx, |workspace, cx| {
+                workspace
+                    .open_abs_path(
+                        target,
+                        OpenOptions {
+                            visible: Some(OpenVisible::None),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                    .detach_and_log_err(cx);
+            })
+            .ok();
+    }
+
+    fn render_loops(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let today = Local::now().date_naive();
+        let mut block = v_flex()
+            .w_full()
+            .gap_0p5()
+            .child(
+                h_flex()
+                    .px_2()
+                    .pt_5()
+                    .pb_0p5()
+                    .gap_2()
+                    .child(
+                        Label::new("Flagged in notes")
+                            .size(LabelSize::Small)
+                            .weight(gpui::FontWeight::SEMIBOLD)
+                            .color(Color::Accent),
+                    )
+                    .child(
+                        Label::new(self.loops.len().to_string())
+                            .size(LabelSize::XSmall)
+                            .color(Color::Placeholder),
+                    ),
+            )
+            .child(
+                div().px_2().pb_1().child(
+                    Label::new(
+                        "Lines in your notes that start with ⏳ (waiting on someone) or ⏰ (you owe it) and never made it onto the board. Add to To-Do copies one here and ticks the note; Dismiss just ticks the note.",
+                    )
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted),
+                ),
+            );
+        if self.loops.is_empty() {
+            return block
+                .child(
+                    div().px_2().py_1().child(
+                        Label::new("Nothing flagged. Every ⏳ and ⏰ in your notes is on the board or ticked.")
+                            .size(LabelSize::Small)
+                            .color(Color::Placeholder),
+                    ),
+                )
+                .into_any_element();
+        }
+        for (ix, open_loop) in self.loops.iter().enumerate() {
+            let text = markdown::markdown_to_plain_text(&open_loop.text)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let who = match (&open_loop.counterparty, open_loop.owed_by_owner()) {
+                (_, true) => format!("{} owes", self.owner),
+                (Some(person), false) => format!("Waiting on {person}"),
+                (None, false) => "Waiting".to_owned(),
+            };
+            let file = open_loop.file.clone();
+            let source = signals::file_label(&open_loop.file);
+            let age = open_loop.age_days(today);
+            block = block.child(
+                h_flex()
+                    .id(("brainz-todo-loop", ix))
+                    .w_full()
+                    .items_center()
+                    .gap_2p5()
+                    .px_2()
+                    .py_1p5()
+                    .rounded_md()
+                    .hover(|this| this.bg(cx.theme().colors().element_hover))
+                    .child(
+                        div().w(px(20.)).flex_none().child(
+                            Label::new(open_loop.marker.clone()).size(LabelSize::Small),
+                        ),
+                    )
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .flex_1()
+                            .child(Label::new(text).truncate())
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(
+                                        Label::new(who)
+                                            .size(LabelSize::XSmall)
+                                            .color(if open_loop.owed_by_owner() {
+                                                Color::Warning
+                                            } else {
+                                                Color::Muted
+                                            }),
+                                    )
+                                    .child(
+                                        Label::new(format!(
+                                            "{age} days · {source}"
+                                        ))
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Placeholder),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        Button::new(("brainz-todo-loop-open", ix), "Open note")
+                            .label_size(LabelSize::XSmall)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_relative(&file, window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(("brainz-todo-loop-add", ix), "Add to To-Do")
+                            .label_size(LabelSize::XSmall)
+                            .style(ButtonStyle::Filled)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.resolve_loop(ix, true, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(("brainz-todo-loop-dismiss", ix), "Dismiss")
+                            .label_size(LabelSize::XSmall)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.resolve_loop(ix, false, cx);
+                            })),
+                    ),
+            );
+        }
+        block.into_any_element()
     }
 
     fn toggle(&mut self, line: usize, cx: &mut Context<Self>) {
@@ -462,6 +707,7 @@ impl Render for TodoView {
             }
             body.push(block.into_any_element());
         }
+        body.push(self.render_loops(cx));
 
         v_flex()
             .id("brainz-todo")
