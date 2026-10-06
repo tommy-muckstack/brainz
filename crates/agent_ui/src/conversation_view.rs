@@ -830,6 +830,11 @@ impl ConnectedServerState {
         }
     }
 
+    /// Brainz: the live agent connection, so a reset can keep using it.
+    pub fn connection(&self) -> &Rc<dyn AgentConnection> {
+        &self.connection
+    }
+
     pub fn close_all_sessions(&self, cx: &mut App) -> Task<()> {
         let tasks = self.threads.values().filter_map(|view| {
             if self.connection.supports_close_session() {
