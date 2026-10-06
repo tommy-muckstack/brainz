@@ -4548,6 +4548,13 @@ impl AgentPanel {
         self.serialize(cx);
     }
 
+    /// Brainz: whether the panel is showing a thread or a terminal (as
+    /// opposed to nothing restored yet), so the window can start with the
+    /// cursor in it.
+    pub fn has_open_surface(&self) -> bool {
+        !matches!(self.visible_surface(), VisibleSurface::Uninitialized)
+    }
+
     fn visible_surface(&self) -> VisibleSurface<'_> {
         match &self.base_view {
             BaseView::Uninitialized => VisibleSurface::Uninitialized,
