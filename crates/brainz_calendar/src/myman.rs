@@ -574,12 +574,33 @@ fn token_path() -> PathBuf {
     paths::config_dir().join("myman-agent-token")
 }
 
-/// The credential pasted from My Man's Settings → Agents, if any.
+/// The credential My Man issues for Brainz itself at launch (1.1.108+),
+/// in a file only this login can read; no paste needed.
+fn issued_credential_path() -> PathBuf {
+    util::paths::home_dir().join("Library/Application Support/MyMan/AgentIdentity/brainz.env")
+}
+
+/// The credential: the one My Man issued for Brainz when it has, else the
+/// one pasted from My Man's Settings → Agents, if any.
 pub fn saved_token() -> Option<String> {
-    std::fs::read_to_string(token_path())
+    let issued = std::fs::read_to_string(issued_credential_path())
         .ok()
-        .map(|text| text.trim().to_owned())
-        .filter(|text| !text.is_empty())
+        .and_then(|text| token_from_env_file(&text));
+    issued.or_else(|| {
+        std::fs::read_to_string(token_path())
+            .ok()
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty())
+    })
+}
+
+/// `MYMAN_AGENT_TOKEN=…` out of a `KEY=VALUE` file.
+fn token_from_env_file(text: &str) -> Option<String> {
+    text.lines()
+        .filter_map(|line| line.trim().split_once('='))
+        .find(|(key, _)| key.trim() == TOKEN_ENV)
+        .map(|(_, value)| value.trim().trim_matches('"').to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 /// Stores the credential, owner-readable only.
@@ -733,6 +754,16 @@ mod tests {
             std::fs::read_to_string(&vocabulary).unwrap(),
             "# Vocabulary\nAcme\nGrace Hopper\n"
         );
+    }
+
+    #[test]
+    fn issued_credential_file_yields_the_token() {
+        assert_eq!(
+            token_from_env_file("MYMAN_AGENT_TOKEN=abc123==\nMYMAN_MACHINE_ID=X\n").as_deref(),
+            Some("abc123==")
+        );
+        assert!(token_from_env_file("MYMAN_MACHINE_ID=X\n").is_none());
+        assert!(token_from_env_file("MYMAN_AGENT_TOKEN=\n").is_none());
     }
 
     use chrono::TimeZone as _;

@@ -241,10 +241,11 @@ notes, screenshots, and dictations, **My Man actions** for taking screenshots,
 starting recordings, and saving notes through the running app) appear under
 **Available** in the tab, and when a conversation tries to connect one that isn't
 configured yet, a card offers to add it and sign in, since the agent cannot do
-that itself. My Man only acts for a named agent: after adding My Man actions, a
-card under its row asks for the credential from My Man's Settings → Agents, which
-Brainz stores owner-only in its config folder and passes to both servers along
-with the folder and the machine id. The tab bar's
+that itself. My Man only acts for a named agent. My Man 1.1.108 and later issue
+one for Brainz at launch and leave its credential in a file only this login can
+read, which Brainz passes to both servers along with the folder and the machine
+id, so nothing needs pasting. With an older My Man, a card under the My Man
+actions row asks for a credential from its Settings → Agents instead. The tab bar's
 split button is a plain toggle: on splits right, off joins everything back.
 
 **Brainz → Install CLI** links `/usr/local/bin/brainz` to the bundled `cli` helper
