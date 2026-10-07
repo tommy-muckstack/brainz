@@ -64,9 +64,11 @@ pub fn render(workspace: &WeakEntity<Workspace>, cx: &mut App) -> gpui::AnyEleme
     let colors = cx.theme().colors();
     let accent = colors.text_accent;
 
+    // Row padding puts the icons on the same left edge as the file tree's
+    // folder icons below.
     v_flex()
         .w_full()
-        .px_2()
+        .px_1()
         .pt_2()
         .pb_1()
         .gap_0p5()
@@ -80,7 +82,7 @@ pub fn render(workspace: &WeakEntity<Workspace>, cx: &mut App) -> gpui::AnyEleme
                 .relative()
                 .w_full()
                 .h(px(30.))
-                .px_2()
+                .px(px(5.))
                 .gap_2()
                 .items_center()
                 .rounded_md()
@@ -120,7 +122,6 @@ pub fn render(workspace: &WeakEntity<Workspace>, cx: &mut App) -> gpui::AnyEleme
                 }))
                 .child(
                     Label::new(item.label)
-                        .size(LabelSize::Small)
                         .color(if active { Color::Default } else { Color::Muted }),
                 )
                 .when(trouble, |this| {
@@ -144,7 +145,7 @@ pub fn render_tree_heading(cx: &mut App) -> gpui::AnyElement {
     let _ = cx;
     div()
         .w_full()
-        .px_4()
+        .px(px(9.))
         .pt_3()
         .pb_1()
         .child(
