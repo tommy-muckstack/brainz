@@ -161,9 +161,27 @@ notes and the people files), an amber banner above the file tree says "Grace
 Hopper, 3:00pm." with **Open prep** (opens the day's `*-prep.md` from the
 matching dated subfolder and any Google Doc it links), **Open folder**, and
 **Dismiss**. A first name alone never matches, and two folders tied on the same
-evidence match nothing. The banner stays until the event ends. Logging the call
-afterwards is the agent's job: paste the Granola, Wispr Flow, and My Man sources
-into a conversation and the brain's granola-to-brain skill takes it from there.
+evidence match nothing. The banner stays until the event ends. When My Man has
+recorded an earlier instance of the event (same title, or an attendee among the
+recording's participants), a **Last transcript** button opens that transcript.
+Logging the call afterwards is the agent's job: paste the Granola, Wispr Flow,
+and My Man sources into a conversation and the brain's granola-to-brain skill
+takes it from there.
+
+**My Man, read alongside the brain.** When My Man's export folder
+(`~/MyManBrain`, or `root` in the `[myman]` table of `brainz.toml`) exists, the
+Brief gains a **Recordings to log** section: calls My Man recorded in the last
+`log_after_days` (default 14) that no note in the brain cites by file name, each
+with **Transcript** and **Log this call**, which opens Claude with the transcript
+path and the ask already in the box. The To-Do tab gains a **From My Man**
+section with the open tasks My Man heard in meetings, each with **Add to To-Do**
+(under Today, tagged `from-myman`) and **Dismiss**; My Man's own list is never
+edited. After every themes pass, the brain's proper nouns (people, companies,
+projects, acronyms, as the brain spells them) are appended to My Man's
+`vocabulary.md`, so dictation into Brainz spells names right; a term you delete
+there is never re-added. Claude launched from Brainz gets the folder listed in
+its `permissions.additionalDirectories` and a house rule explaining what lives
+there.
 
 **Screenshots are read for you.** Every image you attach is run through the
 bundled Vision OCR helper (`script/brainz-ocr.swift`) on your Mac as soon as it
@@ -207,10 +225,16 @@ never hand Claude a refresh token and the sign-in lapses daily. Once per launch
 Brainz checks each Claude HTTP connector without an `oauth` block and, when the
 authorization server advertises `offline_access`, pins `oauth.scopes` on the entry
 so the next sign-in sticks. Hosted connectors
-Brainz knows how to set up (Notion, Vercel, Wispr Flow, and My Man via the filesystem
-server over `~/MyManBrain`) appear under **Available** in the tab,
-and when a conversation tries to connect one that isn't configured yet, a card
-offers to add it and sign in, since the agent cannot do that itself. The tab bar's
+Brainz knows how to set up (Notion, Vercel, Wispr Flow, and the two My Man
+companions bundled in `~/MyManBrain/tools`: **My Man** for searching meetings,
+notes, screenshots, and dictations, **My Man actions** for taking screenshots,
+starting recordings, and saving notes through the running app) appear under
+**Available** in the tab, and when a conversation tries to connect one that isn't
+configured yet, a card offers to add it and sign in, since the agent cannot do
+that itself. My Man only acts for a named agent: after adding My Man actions, a
+card under its row asks for the credential from My Man's Settings → Agents, which
+Brainz stores owner-only in its config folder and passes to both servers along
+with the folder and the machine id. The tab bar's
 split button is a plain toggle: on splits right, off joins everything back.
 
 **Brainz → Install CLI** links `/usr/local/bin/brainz` to the bundled `cli` helper
@@ -242,8 +266,9 @@ optional `brainz.toml` at the brain's root, every key optional: `todo` (the
 To-Do file), `brief` (the file whose narrative block tops the Brief tab),
 `ops` (a desk file whose Blocked and Decisions lists the Brief shows), `themes_dir`, `people_dir`, `places_dir`, `vocabulary_folders`,
 `exclude_prefixes`, `dated_exclude_dirs`, `stop_words`, `sync`, a `[calendar]`
-table (`prep_lead_minutes`, `match_dirs`), and a
-`[themes]` table (`noise_dirs`, `window_weeks`). The defaults and what each
+table (`prep_lead_minutes`, `match_dirs`), a
+`[themes]` table (`noise_dirs`, `window_weeks`), and a `[myman]` table
+(`root`, `log_after_days`). The defaults and what each
 key changes are listed at the top of `crates/brainz_calendar/src/brain_config.rs`;
 a brain can keep its own copy of that reference next to its `brainz.toml`. A brain with no
 `origin` remote, or with `sync = false`, never shows the Sync banner. The

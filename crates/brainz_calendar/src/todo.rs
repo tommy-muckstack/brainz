@@ -17,7 +17,7 @@ use workspace::{
 
 use crate::{
     brain_config::BrainConfig,
-    open_loops,
+    myman, open_loops,
     themes::runner,
     themes_signals::{self as signals, OpenLoop},
 };
@@ -182,6 +182,9 @@ pub struct TodoView {
     board: TodoBoard,
     /// ⏳ and ⏰ lines from notes, oldest first, from the last signals pass.
     loops: Vec<OpenLoop>,
+    /// Open tasks My Man pulled out of meetings and notes, not yet on the
+    /// board or dismissed.
+    myman_tasks: Vec<myman::MyManTask>,
     error: Option<String>,
     show_done: bool,
     _load: Option<Task<()>>,
@@ -237,6 +240,7 @@ impl TodoView {
             owner,
             board: TodoBoard::default(),
             loops: Vec::new(),
+            myman_tasks: Vec::new(),
             error: None,
             show_done: false,
             _load: None,
@@ -250,8 +254,13 @@ impl TodoView {
         let path = self.path.clone();
         let repo = self.repo.clone();
         self._load = Some(cx.spawn(async move |this, cx| {
-            let (result, loops) = cx
-                .background_spawn(async move { (load_board(&path), load_loops(&repo)) })
+            let (result, loops, myman_tasks) = cx
+                .background_spawn(async move {
+                    let myman_tasks = myman::MyMan::detect(&BrainConfig::load(&repo))
+                        .map(|myman| myman::pending_tasks(&myman))
+                        .unwrap_or_default();
+                    (load_board(&path), load_loops(&repo), myman_tasks)
+                })
                 .await;
             this.update(cx, |this, cx| {
                 match result {
@@ -262,10 +271,125 @@ impl TodoView {
                     Err(error) => this.error = Some(format!("{error:#}")),
                 }
                 this.loops = loops;
+                this.myman_tasks = myman_tasks;
                 cx.notify();
             })
             .ok();
         }));
+    }
+
+    /// Copies a My Man task onto the board under Today (or just remembers
+    /// it as dismissed), so it stops showing here.
+    fn resolve_myman_task(&mut self, ix: usize, add: bool, cx: &mut Context<Self>) {
+        if ix >= self.myman_tasks.len() {
+            return;
+        }
+        let task = self.myman_tasks.remove(ix);
+        cx.notify();
+        let board = self.path.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    if add {
+                        let text = std::fs::read_to_string(&board)
+                            .with_context(|| format!("reading {}", board.display()))?;
+                        let output = open_loops::insert_board_line(&text, &task.board_line(), true);
+                        std::fs::write(&board, output)
+                            .with_context(|| format!("writing {}", board.display()))?;
+                    }
+                    myman::mark_task_handled(&task)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Err(error) = result {
+                    log::error!("brainz my man task: {error:#}");
+                    this.error = Some(format!("Could not update the board: {error:#}"));
+                }
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn render_myman_tasks(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if self.myman_tasks.is_empty() {
+            return None;
+        }
+        let mut block = v_flex()
+            .w_full()
+            .gap_0p5()
+            .child(
+                h_flex()
+                    .px_2()
+                    .pt_5()
+                    .pb_0p5()
+                    .gap_2()
+                    .child(
+                        Label::new("From My Man")
+                            .size(LabelSize::Small)
+                            .weight(gpui::FontWeight::SEMIBOLD)
+                            .color(Color::Accent),
+                    )
+                    .child(
+                        Label::new(self.myman_tasks.len().to_string())
+                            .size(LabelSize::XSmall)
+                            .color(Color::Placeholder),
+                    ),
+            )
+            .child(
+                div().px_2().pb_1().child(
+                    Label::new(
+                        "Tasks My Man heard in meetings or found in notes. Add to To-Do puts one under Today; Dismiss hides it here and leaves My Man's own list alone.",
+                    )
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted),
+                ),
+            );
+        for (ix, task) in self.myman_tasks.iter().enumerate() {
+            let when = task
+                .date
+                .map(|date| format!(" · {date}"))
+                .unwrap_or_default();
+            block = block.child(
+                h_flex()
+                    .id(("brainz-todo-myman", ix))
+                    .w_full()
+                    .items_center()
+                    .gap_2p5()
+                    .px_2()
+                    .py_1p5()
+                    .rounded_md()
+                    .hover(|this| this.bg(cx.theme().colors().element_hover))
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .flex_1()
+                            .child(Label::new(task.title.clone()).truncate())
+                            .child(
+                                Label::new(format!("My Man {}{when}", task.source))
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Placeholder),
+                            ),
+                    )
+                    .child(
+                        Button::new(("brainz-todo-myman-add", ix), "Add to To-Do")
+                            .label_size(LabelSize::XSmall)
+                            .style(ButtonStyle::Filled)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.resolve_myman_task(ix, true, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(("brainz-todo-myman-dismiss", ix), "Dismiss")
+                            .label_size(LabelSize::XSmall)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.resolve_myman_task(ix, false, cx);
+                            })),
+                    ),
+            );
+        }
+        Some(block.into_any_element())
     }
 
     /// Ticks the loop's marker in its note and, when `add` is set, copies
@@ -411,9 +535,10 @@ impl TodoView {
                     .rounded_md()
                     .hover(|this| this.bg(cx.theme().colors().element_hover))
                     .child(
-                        div().w(px(20.)).flex_none().child(
-                            Label::new(open_loop.marker.clone()).size(LabelSize::Small),
-                        ),
+                        div()
+                            .w(px(20.))
+                            .flex_none()
+                            .child(Label::new(open_loop.marker.clone()).size(LabelSize::Small)),
                     )
                     .child(
                         v_flex()
@@ -423,21 +548,17 @@ impl TodoView {
                             .child(
                                 h_flex()
                                     .gap_2()
+                                    .child(Label::new(who).size(LabelSize::XSmall).color(
+                                        if open_loop.owed_by_owner() {
+                                            Color::Warning
+                                        } else {
+                                            Color::Muted
+                                        },
+                                    ))
                                     .child(
-                                        Label::new(who)
+                                        Label::new(format!("{age} days · {source}"))
                                             .size(LabelSize::XSmall)
-                                            .color(if open_loop.owed_by_owner() {
-                                                Color::Warning
-                                            } else {
-                                                Color::Muted
-                                            }),
-                                    )
-                                    .child(
-                                        Label::new(format!(
-                                            "{age} days · {source}"
-                                        ))
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Placeholder),
+                                            .color(Color::Placeholder),
                                     ),
                             ),
                     )
@@ -708,6 +829,7 @@ impl Render for TodoView {
             body.push(block.into_any_element());
         }
         body.push(self.render_loops(cx));
+        body.extend(self.render_myman_tasks(cx));
 
         v_flex()
             .id("brainz-todo")

@@ -1156,6 +1156,9 @@ fn brainz_agent_isolation_env(registry_id: &str) -> HashMap<String, String> {
     }
     if registry_id == "claude-acp" {
         brainz_seed_claude_mcp_servers(&source, &dir);
+        if let Some(myman_root) = brainz_myman_root() {
+            brainz_allow_additional_directory(&dir.join("settings.json"), &myman_root);
+        }
     }
     let instructions_file = match registry_id {
         "claude-acp" => "CLAUDE.md",
@@ -1181,12 +1184,83 @@ line, the message, then ``` on its own line). Only the message goes inside the f
 no commentary, no quoting markers, no subject line unless asked. Say anything else \
 outside the fence. Brainz shows that block as a draft card with a Copy button.";
 
+/// The My Man rule, added only while the export folder exists on this Mac.
+const BRAINZ_MYMAN_RULE: &str = "\
+- My Man (the user's screenshot, dictation, meeting-recording, and notes app) exports \
+everything as Markdown into `{root}`; read that folder's CLAUDE.md before using it. \
+Its `meetings/` transcripts are the verbatim record when the user asks to log, write \
+up, or recall a call. The `myman` connector searches that folder; `myman-actions` can \
+take a screenshot, start or stop a recording, or save a note in My Man, but only when \
+the user asks for that.";
+
+/// Brainz: the My Man export folder, when My Man has written one.
+fn brainz_myman_root() -> Option<PathBuf> {
+    let root = util::paths::home_dir().join("MyManBrain");
+    root.join("catalog.json").is_file().then_some(root)
+}
+
+/// Brainz: lets Claude read the My Man folder without a prompt by listing
+/// it under `permissions.additionalDirectories`, keeping every other key.
+fn brainz_allow_additional_directory(settings_path: &Path, directory: &Path) {
+    let text = std::fs::read_to_string(settings_path).unwrap_or_else(|_| "{}".to_owned());
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        log::warn!(
+            "not touching {}: it is not valid JSON",
+            settings_path.display()
+        );
+        return;
+    };
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let permissions = object
+        .entry("permissions")
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(permissions) = permissions.as_object_mut() else {
+        return;
+    };
+    let directories = permissions
+        .entry("additionalDirectories")
+        .or_insert_with(|| serde_json::json!([]));
+    let Some(directories) = directories.as_array_mut() else {
+        return;
+    };
+    let wanted = directory.to_string_lossy().into_owned();
+    if directories
+        .iter()
+        .any(|entry| entry.as_str() == Some(&wanted))
+    {
+        return;
+    }
+    directories.push(serde_json::Value::String(wanted));
+    match serde_json::to_string_pretty(&value) {
+        Ok(text) => {
+            if let Err(error) = std::fs::write(settings_path, text + "\n") {
+                log::warn!(
+                    "failed to add {} to {}: {error}",
+                    directory.display(),
+                    settings_path.display()
+                );
+            }
+        }
+        Err(error) => log::warn!("failed to serialize {}: {error}", settings_path.display()),
+    }
+}
+
 /// Brainz: upserts the house-rules block in the agent's instructions file,
 /// keeping whatever else is there.
 fn brainz_write_house_rules(path: &Path) {
+    brainz_write_house_rules_with(path, brainz_myman_root().as_deref());
+}
+
+fn brainz_write_house_rules_with(path: &Path, myman_root: Option<&Path>) {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let block =
-        format!("{BRAINZ_HOUSE_RULES_START}\n{BRAINZ_HOUSE_RULES}\n{BRAINZ_HOUSE_RULES_END}");
+    let mut rules = BRAINZ_HOUSE_RULES.to_owned();
+    if let Some(root) = myman_root {
+        rules.push('\n');
+        rules.push_str(&BRAINZ_MYMAN_RULE.replace("{root}", &root.to_string_lossy()));
+    }
+    let block = format!("{BRAINZ_HOUSE_RULES_START}\n{rules}\n{BRAINZ_HOUSE_RULES_END}");
     let updated = match (
         existing.find(BRAINZ_HOUSE_RULES_START),
         existing.find(BRAINZ_HOUSE_RULES_END),
@@ -2395,6 +2469,48 @@ mod tests {
         assert!(second.ends_with("and me\n"));
         assert_eq!(second.matches(BRAINZ_HOUSE_RULES_START).count(), 1);
         assert_eq!(second.matches("## Brainz house rules").count(), 1);
+    }
+
+    #[test]
+    fn brainz_house_rules_mention_my_man_only_when_its_folder_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("CLAUDE.md");
+        brainz_write_house_rules_with(&path, Some(Path::new("/Users/ada/MyManBrain")));
+        let with = std::fs::read_to_string(&path).unwrap();
+        assert!(with.contains("`/Users/ada/MyManBrain`"));
+        brainz_write_house_rules_with(&path, None);
+        let without = std::fs::read_to_string(&path).unwrap();
+        assert!(!without.contains("MyManBrain"));
+        assert_eq!(without.matches(BRAINZ_HOUSE_RULES_START).count(), 1);
+    }
+
+    #[test]
+    fn brainz_additional_directory_is_added_once_and_keeps_other_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"model":"opus","permissions":{"allow":["Read"],"additionalDirectories":["/x"]}}"#,
+        )
+        .unwrap();
+        brainz_allow_additional_directory(&path, Path::new("/Users/ada/MyManBrain"));
+        brainz_allow_additional_directory(&path, Path::new("/Users/ada/MyManBrain"));
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["model"], "opus");
+        assert_eq!(value["permissions"]["allow"], serde_json::json!(["Read"]));
+        assert_eq!(
+            value["permissions"]["additionalDirectories"],
+            serde_json::json!(["/x", "/Users/ada/MyManBrain"])
+        );
+        let fresh = dir.path().join("fresh.json");
+        brainz_allow_additional_directory(&fresh, Path::new("/Users/ada/MyManBrain"));
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&fresh).unwrap()).unwrap();
+        assert_eq!(
+            value["permissions"]["additionalDirectories"],
+            serde_json::json!(["/Users/ada/MyManBrain"])
+        );
     }
 
     #[gpui::test]
