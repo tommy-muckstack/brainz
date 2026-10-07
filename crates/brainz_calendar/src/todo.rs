@@ -358,12 +358,11 @@ impl TodoView {
                     .child(
                         Label::new("Flagged in notes")
                             .size(LabelSize::Small)
-                            .weight(gpui::FontWeight::SEMIBOLD)
-                            .color(Color::Accent),
+                            .weight(gpui::FontWeight::SEMIBOLD),
                     )
                     .child(
                         Label::new(self.loops.len().to_string())
-                            .size(LabelSize::XSmall)
+                            .size(LabelSize::Small)
                             .color(Color::Placeholder),
                     ),
             )
@@ -372,7 +371,7 @@ impl TodoView {
                     Label::new(
                         "Lines in your notes that start with ⏳ (waiting on someone) or ⏰ (you owe it) and never made it onto the board. Add to To-Do copies one here and ticks the note; Dismiss just ticks the note.",
                     )
-                    .size(LabelSize::XSmall)
+                    .size(LabelSize::Small)
                     .color(Color::Muted),
                 ),
             );
@@ -380,7 +379,7 @@ impl TodoView {
             return block
                 .child(
                     div().px_2().py_1().child(
-                        Label::new("Nothing flagged. Every ⏳ and ⏰ in your notes is on the board or ticked.")
+                        Label::new("Nothing flagged")
                             .size(LabelSize::Small)
                             .color(Color::Placeholder),
                     ),
@@ -411,9 +410,10 @@ impl TodoView {
                     .rounded_md()
                     .hover(|this| this.bg(cx.theme().colors().element_hover))
                     .child(
-                        div().w(px(20.)).flex_none().child(
-                            Label::new(open_loop.marker.clone()).size(LabelSize::Small),
-                        ),
+                        div()
+                            .w(px(20.))
+                            .flex_none()
+                            .child(Label::new(open_loop.marker.clone()).size(LabelSize::Small)),
                     )
                     .child(
                         v_flex()
@@ -423,34 +423,30 @@ impl TodoView {
                             .child(
                                 h_flex()
                                     .gap_2()
+                                    .child(Label::new(who).size(LabelSize::Small).color(
+                                        if open_loop.owed_by_owner() {
+                                            Color::Warning
+                                        } else {
+                                            Color::Muted
+                                        },
+                                    ))
                                     .child(
-                                        Label::new(who)
-                                            .size(LabelSize::XSmall)
-                                            .color(if open_loop.owed_by_owner() {
-                                                Color::Warning
-                                            } else {
-                                                Color::Muted
-                                            }),
-                                    )
-                                    .child(
-                                        Label::new(format!(
-                                            "{age} days · {source}"
-                                        ))
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Placeholder),
+                                        Label::new(format!("{age} days · {source}"))
+                                            .size(LabelSize::Small)
+                                            .color(Color::Placeholder),
                                     ),
                             ),
                     )
                     .child(
                         Button::new(("brainz-todo-loop-open", ix), "Open note")
-                            .label_size(LabelSize::XSmall)
+                            .label_size(LabelSize::Small)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_relative(&file, window, cx);
                             })),
                     )
                     .child(
                         Button::new(("brainz-todo-loop-add", ix), "Add to To-Do")
-                            .label_size(LabelSize::XSmall)
+                            .label_size(LabelSize::Small)
                             .style(ButtonStyle::Filled)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.resolve_loop(ix, true, cx);
@@ -458,7 +454,7 @@ impl TodoView {
                     )
                     .child(
                         Button::new(("brainz-todo-loop-dismiss", ix), "Dismiss")
-                            .label_size(LabelSize::XSmall)
+                            .label_size(LabelSize::Small)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.resolve_loop(ix, false, cx);
                             })),
@@ -541,15 +537,13 @@ impl TodoView {
                                 .gap_2()
                                 .when_some(item.note.clone(), |this, note| {
                                     this.child(
-                                        Label::new(note)
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Muted),
+                                        Label::new(note).size(LabelSize::Small).color(Color::Muted),
                                     )
                                 })
                                 .when_some(item.tag.clone(), |this, tag| {
                                     this.child(
                                         Label::new(tag)
-                                            .size(LabelSize::XSmall)
+                                            .size(LabelSize::Small)
                                             .color(Color::Placeholder),
                                     )
                                 }),
@@ -601,7 +595,7 @@ impl Render for TodoView {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(Icon::new(IconName::BrainzCheckboxChecked).color(Color::Accent))
+                    .child(Icon::new(IconName::BrainzCheckboxChecked).color(Color::Muted))
                     .child(Label::new("To-Do").size(LabelSize::Large))
                     .child(
                         Label::new(format!("{open_count} open"))
@@ -662,11 +656,15 @@ impl Render for TodoView {
                         Label::new(section.name.clone())
                             .size(LabelSize::Small)
                             .weight(gpui::FontWeight::SEMIBOLD)
-                            .color(if is_done { Color::Muted } else { Color::Accent }),
+                            .color(if is_done {
+                                Color::Muted
+                            } else {
+                                Color::Default
+                            }),
                     )
                     .child(
                         Label::new(section.items.len().to_string())
-                            .size(LabelSize::XSmall)
+                            .size(LabelSize::Small)
                             .color(Color::Placeholder),
                     )
                     .when(is_done, |this| {
@@ -675,7 +673,7 @@ impl Render for TodoView {
                                 "brainz-todo-toggle-done",
                                 if self.show_done { "Hide" } else { "Show" },
                             )
-                            .label_size(LabelSize::XSmall)
+                            .label_size(LabelSize::Small)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.show_done = !this.show_done;
                                 cx.notify();
@@ -702,7 +700,11 @@ impl Render for TodoView {
                 );
             }
             for item in &section.items {
-                block = block.child(self.render_item(item_ix, item, cx));
+                block = block.child(ui::reveal(
+                    ("brainz-todo-item-reveal", item_ix),
+                    item_ix,
+                    self.render_item(item_ix, item, cx),
+                ));
                 item_ix += 1;
             }
             body.push(block.into_any_element());

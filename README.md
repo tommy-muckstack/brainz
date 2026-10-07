@@ -72,7 +72,17 @@ the file name that opens it on click; the agent still gets the path.
 Named links in chat replies also render as rounded, clickable pills, preserving
 their displayed titles and original file or web destinations.
 
-The briefcase button at the far left of the status bar opens the **Brief** tab.
+**Getting around.** The sidebar starts with one short list: Brief, Calendar,
+To-Do, Themes, Connectors, each with a name, the current one marked by an amber
+bar that slides in. The file tree sits below it under a Notes heading and hides
+the plumbing (dotfiles, `brainz.toml`, the root folder itself). Lists arrive
+with a short fade-and-rise, later rows a beat after earlier ones; the newest
+chat turns do the same. The accent colour is kept for what is alive or yours:
+your messages, the current place in the sidebar, the prep banner, the pills.
+Headings are plain text, body and meta copy share one scale, and every tab
+reads in the same centred column as the chat.
+
+**Brief** is the first item in the sidebar.
 At the top is the day's read: the narrative block of the brain's brief file
 (`brief` in `brainz.toml`), written by whatever bot you point at the prompt file
 next to it, with how old it is. Below that: today's calendar events with who
@@ -89,7 +99,7 @@ Claude tab pre-filled to rewrite the callout. The first Claude conversation offe
 brain accepted; read, search, git, and connectors never ask; destructive shapes
 still prompt) so routine work stops asking.
 
-The calendar button in the status bar (bottom left) opens a **Calendar** tab
+**Calendar** in the sidebar opens a tab
 with the next seven days, read from every account macOS Calendar knows about.
 It uses a small bundled helper built from `script/brainz-calendar.swift`, the
 standard EventKit approach. macOS asks for Calendar access the first
@@ -113,14 +123,14 @@ While an agent is working, the send button's hover menu has a clickable
 gear button. The minus and plus beside Send shrink or grow the chat text one
 pixel at a time and save the size in settings.
 
-The checkbox button next to the calendar opens a **To-Do** tab over the
+**To-Do** in the sidebar opens a tab over the
 brain's check-off board (`TODO.md` at the root, or the `todo` path in
 `brainz.toml`). Sections are `##` headings, items are `- [ ]` lines, and Done
 folds away; it refreshes every 30 seconds. Ticking an item checks it in place
 with today's date and shows it struck through in amber, so nothing vanishes;
 un-ticking clears the box. Whoever maintains the board tidies Done later.
 
-The trend-line button next to the MCP button opens a **Themes** tab: what the
+**Themes** in the sidebar opens a tab: what the
 brain has been about, computed from its git history. **Sync** (or a daily
 run while Brainz is open) walks every commit, takes the added lines of `.md`
 files, and turns bold spans, wiki links, the names of people and companies
@@ -189,7 +199,7 @@ become symlinks to it, so a memory written in Brainz is there in a terminal
 `claude` session and vice versa. Credentials never move. If the layout is not
 one of the expected shapes, nothing changes and a notification says why.
 
-The MCP button next to it opens an **MCP Connectors** tab listing the servers
+**Connectors** in the sidebar opens a tab listing the servers
 Brainz's Claude and Codex know about, with logos for the ones you use most.
 The first time Claude runs in Brainz, your terminal Claude's MCP servers are
 copied into Brainz's own config so both have the same connectors. Every minute

@@ -980,9 +980,9 @@
     "drag_and_drop": true,
     // Whether to hide the root entry when only one folder is open in the window;
     // this also affects how file paths appear in the file finder history.
-    "hide_root": false,
+    "hide_root": true,
     // Whether to hide the hidden entries in the project panel.
-    "hide_hidden": false,
+    "hide_hidden": true,
     // Settings for automatically opening files.
     "auto_open": {
       // Whether to automatically open newly created files in the editor.

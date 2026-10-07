@@ -8,6 +8,7 @@ pub mod github_sync;
 pub mod launcher;
 pub mod mcp;
 pub mod memory_share;
+pub mod nav;
 pub mod ocr;
 pub mod open_loops;
 pub mod pdf;
@@ -373,7 +374,7 @@ impl CalendarView {
             }))
             .child(
                 Label::new(Self::time_label(event))
-                    .size(LabelSize::XSmall)
+                    .size(LabelSize::Small)
                     .color(if in_progress {
                         Color::Accent
                     } else {
@@ -501,7 +502,7 @@ impl CalendarView {
                 .gap_0p5()
                 .child(
                     Label::new(label.to_owned())
-                        .size(LabelSize::XSmall)
+                        .size(LabelSize::Small)
                         .color(Color::Muted),
                 )
                 .child(Label::new(value).size(LabelSize::Small))
@@ -614,7 +615,7 @@ impl CalendarView {
                 .pb_2()
                 .child(
                     Label::new(day.format("%a").to_string().to_uppercase())
-                        .size(LabelSize::XSmall)
+                        .size(LabelSize::Small)
                         .color(if is_today {
                             Color::Accent
                         } else {
@@ -710,8 +711,8 @@ impl Render for CalendarView {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(Icon::new(IconName::BrainzCalendar).color(Color::Accent))
-                    .child(Label::new("Next 7 days").size(LabelSize::Large)),
+                    .child(Icon::new(IconName::BrainzCalendar).color(Color::Muted))
+                    .child(Label::new("Calendar").size(LabelSize::Large)),
             )
             .child(
                 h_flex()

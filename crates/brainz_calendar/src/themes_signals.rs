@@ -2389,8 +2389,14 @@ mod real_brain {
             loop_line("3. ⏳ Rich to confirm the comp band"),
             Some(("⏳", "Rich to confirm the comp band".to_owned()))
         );
-        assert_eq!(loop_line("3. Open loops tab. Lines with ⏳, ✅, or ⚠️ are excluded."), None);
-        assert_eq!(loop_line("🟢🟢 ADIL CALL DONE 9/18. ⏳ notes to sync"), None);
+        assert_eq!(
+            loop_line("3. Open loops tab. Lines with ⏳, ✅, or ⚠️ are excluded."),
+            None
+        );
+        assert_eq!(
+            loop_line("🟢🟢 ADIL CALL DONE 9/18. ⏳ notes to sync"),
+            None
+        );
         assert_eq!(loop_line("- ✅ sent (2026-09-25) .. was ⏳"), None);
         assert_eq!(loop_line("| ⏳ | waiting |"), None);
         assert_eq!(loop_line("## ⏳ Waiting"), None);

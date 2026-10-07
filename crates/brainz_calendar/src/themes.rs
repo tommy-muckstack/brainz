@@ -712,13 +712,13 @@ impl ThemesView {
             .child(trend_line(&theme.series))
             .child(
                 Label::new(momentum)
-                    .size(LabelSize::XSmall)
+                    .size(LabelSize::Small)
                     .color(momentum_color),
             )
             .child(
                 div().flex_1().min_w_0().child(
                     Label::new(folders)
-                        .size(LabelSize::XSmall)
+                        .size(LabelSize::Small)
                         .color(Color::Muted)
                         .truncate(),
                 ),
@@ -795,7 +795,7 @@ impl ThemesView {
         if self.merging.as_deref() == Some(id.as_str()) {
             let mut picker = h_flex().flex_wrap().gap_1().pl_8().py_1().child(
                 Label::new("Merge into:")
-                    .size(LabelSize::XSmall)
+                    .size(LabelSize::Small)
                     .color(Color::Muted),
             );
             let candidates: Vec<(String, String)> = self
@@ -819,7 +819,7 @@ impl ThemesView {
                         ("brainz-merge-target", ix * 1000 + candidate_ix),
                         candidate_name,
                     )
-                    .label_size(LabelSize::XSmall)
+                    .label_size(LabelSize::Small)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.curate(format!("- merge: {source} => {target}"), cx);
                     })),
@@ -827,7 +827,7 @@ impl ThemesView {
             }
             picker = picker.child(
                 Button::new(("brainz-merge-cancel", ix), "Cancel")
-                    .label_size(LabelSize::XSmall)
+                    .label_size(LabelSize::Small)
                     .color(Color::Muted)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.merging = None;
@@ -854,12 +854,12 @@ impl ThemesView {
                         .items_center()
                         .gap_2()
                         .child(trend_line_sized(&theme.months, px(240.)))
-                        .child(Label::new(span).size(LabelSize::XSmall).color(Color::Muted)),
+                        .child(Label::new(span).size(LabelSize::Small).color(Color::Muted)),
                 );
             }
             let mut files = h_flex().flex_wrap().gap_1().child(
                 Label::new("Files")
-                    .size(LabelSize::XSmall)
+                    .size(LabelSize::Small)
                     .color(Color::Muted),
             );
             for (file_ix, file) in theme.files.iter().enumerate() {
@@ -867,7 +867,7 @@ impl ThemesView {
                 let label = signals::file_label(&file.name);
                 files = files.child(
                     Button::new(("brainz-theme-file", ix * 100 + file_ix), label)
-                        .label_size(LabelSize::XSmall)
+                        .label_size(LabelSize::Small)
                         .start_icon(
                             Icon::new(IconName::File)
                                 .size(IconSize::XSmall)
@@ -883,7 +883,7 @@ impl ThemesView {
             if !theme.people.is_empty() {
                 let mut people = h_flex().flex_wrap().gap_1().child(
                     Label::new("People")
-                        .size(LabelSize::XSmall)
+                        .size(LabelSize::Small)
                         .color(Color::Muted),
                 );
                 for (person_ix, person) in theme.people.iter().enumerate() {
@@ -893,7 +893,7 @@ impl ThemesView {
                             ("brainz-theme-person", ix * 100 + person_ix),
                             person.name.clone(),
                         )
-                        .label_size(LabelSize::XSmall)
+                        .label_size(LabelSize::Small)
                         .tooltip(Tooltip::text(format!(
                             "Co-mentioned {} times",
                             person.weight
@@ -921,12 +921,11 @@ impl ThemesView {
             .child(
                 Label::new(title)
                     .size(LabelSize::Small)
-                    .weight(gpui::FontWeight::SEMIBOLD)
-                    .color(Color::Accent),
+                    .weight(gpui::FontWeight::SEMIBOLD),
             )
             .child(
                 Label::new(count.to_string())
-                    .size(LabelSize::XSmall)
+                    .size(LabelSize::Small)
                     .color(Color::Placeholder),
             )
             .into_any_element()
@@ -999,7 +998,7 @@ impl Render for ThemesView {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(Icon::new(IconName::BrainzTheme).color(Color::Accent))
+                    .child(Icon::new(IconName::BrainzTheme).color(Color::Muted))
                     .child(Label::new("Themes").size(LabelSize::Large)),
             )
             .child(
@@ -1086,12 +1085,12 @@ impl Render for ThemesView {
                             signals.weeks.len(),
                             signals.themes.iter().filter(|theme| !theme.hidden).count(),
                         ))
-                        .size(LabelSize::XSmall)
+                        .size(LabelSize::Small)
                         .color(Color::Muted),
                     )
                     .child(
                         Button::new("brainz-themes-open-loops", "Flagged in notes")
-                            .label_size(LabelSize::XSmall)
+                            .label_size(LabelSize::Small)
                             .tooltip(Tooltip::text("Open the To-Do tab, where flagged lines can be moved onto the board"))
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(crate::todo::OpenTodo), cx);

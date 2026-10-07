@@ -1362,7 +1362,7 @@ impl McpView {
                             .child(Label::new(hosted.title()).weight(gpui::FontWeight::SEMIBOLD))
                             .child(
                                 Label::new(hosted.transport_label())
-                                    .size(LabelSize::XSmall)
+                                    .size(LabelSize::Small)
                                     .color(Color::Muted),
                             ),
                     )
@@ -1501,7 +1501,7 @@ impl McpView {
             } else {
                 Color::Muted
             }))
-            .child(Label::new(name).size(LabelSize::XSmall).color(if lapsed {
+            .child(Label::new(name).size(LabelSize::Small).color(if lapsed {
                 Color::Custom(accent)
             } else if connected {
                 Color::Default
@@ -1517,7 +1517,7 @@ impl McpView {
                 } else if lapsed {
                     this.child(
                         Label::new("· Reconnect")
-                            .size(LabelSize::XSmall)
+                            .size(LabelSize::Small)
                             .color(Color::Custom(accent)),
                     )
                 } else if connected {
@@ -1692,7 +1692,7 @@ impl McpView {
                             .when(!connector.transport.is_empty(), |this| {
                                 this.child(
                                     Label::new(connector.transport.clone())
-                                        .size(LabelSize::XSmall)
+                                        .size(LabelSize::Small)
                                         .color(Color::Muted),
                                 )
                             }),
@@ -1747,7 +1747,7 @@ impl Item for McpView {
     fn to_item_events(_: &Self::Event, _: &mut dyn FnMut(workspace::item::ItemEvent)) {}
 
     fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
-        "MCP Connectors".into()
+        "Connectors".into()
     }
 
     fn tab_icon(&self, _window: &Window, _cx: &App) -> Option<Icon> {
@@ -1768,8 +1768,8 @@ impl Render for McpView {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(Icon::new(IconName::BrainzMcp).color(Color::Accent))
-                    .child(Label::new("MCP Connectors").size(LabelSize::Large)),
+                    .child(Icon::new(IconName::BrainzMcp).color(Color::Muted))
+                    .child(Label::new("Connectors").size(LabelSize::Large)),
             )
             .child(
                 IconButton::new("brainz-mcp-refresh", IconName::ArrowCircle)
@@ -1782,22 +1782,6 @@ impl Render for McpView {
             vec![
                 Label::new("Reading connector configs…")
                     .color(Color::Muted)
-                    .into_any_element(),
-            ]
-        } else if self.connectors.is_empty() {
-            vec![
-                v_flex()
-                    .gap_2()
-                    .child(Label::new("No MCP connectors yet."))
-                    .child(
-                        Label::new(
-                            "Add servers with `claude mcp add …` in a Brainz shell. Connectors \
-                             from your terminal Claude are copied in the first time Claude runs \
-                             here.",
-                        )
-                        .size(LabelSize::Small)
-                        .color(Color::Muted),
-                    )
                     .into_any_element(),
             ]
         } else {
@@ -1817,7 +1801,14 @@ impl Render for McpView {
             );
             let connectors = self.connectors.clone();
             for (ix, connector) in connectors.iter().enumerate() {
-                rows.push(self.render_connector(ix, connector, cx).into_any_element());
+                rows.push(
+                    ui::reveal(
+                        ("brainz-mcp-connector-reveal", ix),
+                        ix,
+                        self.render_connector(ix, connector, cx),
+                    )
+                    .into_any_element(),
+                );
             }
             let configured: Vec<String> = connectors.iter().map(|c| c.name.clone()).collect();
             let available: Vec<&'static HostedConnector> = HOSTED_CONNECTORS
@@ -1903,7 +1894,7 @@ impl Render for McpButton {
             )
             .into()
         } else {
-            "MCP Connectors".into()
+            "Connectors".into()
         };
         div().child(
             IconButton::new("brainz-mcp-button", IconName::BrainzMcp)
