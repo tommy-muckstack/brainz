@@ -230,8 +230,12 @@ impl ThemesRunner {
         cx.notify();
         self._task = Some(cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move { signals::run_pass(&repo) })
+                .background_spawn({
+                    let repo = repo.clone();
+                    async move { signals::run_pass(&repo) }
+                })
                 .await;
+            let succeeded = result.is_ok();
             this.update(cx, |this, cx| {
                 this.running = false;
                 if let Err(error) = result {
@@ -241,6 +245,12 @@ impl ThemesRunner {
                 cx.notify();
             })
             .ok();
+            if succeeded {
+                // The brain's proper nouns tune My Man's dictation; a
+                // failure here is My Man's problem, not the pass's.
+                cx.background_spawn(async move { crate::myman::feed_vocabulary(&repo) })
+                    .await;
+            }
         }));
     }
 

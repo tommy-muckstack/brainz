@@ -23,7 +23,8 @@ use crate::{
     LoadState,
     brain_config::BrainConfig,
     brain_match::BrainIndex,
-    open_loops,
+    myman, open_loops,
+    prep::OpenClaudePrefilled,
     status_decay::{self, Decay},
     themes_signals::{self as signals, OpenLoop},
     todo,
@@ -39,6 +40,7 @@ actions!(
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const LOOP_LIMIT: usize = 10;
+const RECORDING_LIMIT: usize = 6;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BriefEvent {
@@ -88,10 +90,39 @@ pub struct Brief {
     pub loops: Vec<OpenLoop>,
     pub loops_total: usize,
     pub owner: String,
+    /// My Man recordings no note in the brain cites yet, newest first.
+    pub recordings: Vec<myman::Meeting>,
+    pub recordings_total: usize,
+    pub myman_root: Option<PathBuf>,
 }
 
 const NARRATIVE_START: &str = "<!-- narrative:start -->";
 const NARRATIVE_END: &str = "<!-- narrative:end -->";
+
+/// What the Log this call button puts in the Claude box.
+pub fn log_call_prompt(meeting: &myman::Meeting, root: &std::path::Path, owner: &str) -> String {
+    let path = root.join(&meeting.path);
+    let others = meeting.others(owner);
+    let mut text = format!(
+        "Log this call into the brain. My Man recorded \"{}\" on {}",
+        meeting.title,
+        meeting.started.format("%A %B %-d at %-I:%M %p")
+    );
+    if let Some(minutes) = meeting.minutes() {
+        text.push_str(&format!(" ({minutes} min"));
+        if !others.is_empty() {
+            text.push_str(&format!(", with {}", others.join(", ")));
+        }
+        text.push(')');
+    } else if !others.is_empty() {
+        text.push_str(&format!(" with {}", others.join(", ")));
+    }
+    text.push_str(&format!(
+        ". The transcript is at {}. Reconcile it with any other source for the same call, write the notes in the right folder, update that folder's index, and keep the transcript path at the top of the note.",
+        path.display()
+    ));
+    text
+}
 
 /// The narrative block of a brief file, or `None` when the markers are
 /// missing.
@@ -239,6 +270,17 @@ pub fn build(repo: &std::path::Path, now: DateTime<Local>) -> Brief {
         .ok()
         .and_then(|text| narrative_block(&text));
 
+    let (recordings, recordings_total, myman_root) = match myman::MyMan::detect(&config) {
+        Some(myman) => {
+            let mut recordings =
+                myman.unlogged_meetings(repo, i64::from(config.myman.log_after_days), now);
+            let total = recordings.len();
+            recordings.truncate(RECORDING_LIMIT);
+            (recordings, total, Some(myman.root))
+        }
+        None => (Vec::new(), 0, None),
+    };
+
     let (owes, owes_updated) = match std::fs::read_to_string(repo.join(&config.todo)) {
         Ok(text) => {
             let board = todo::parse_board(&text);
@@ -271,6 +313,9 @@ pub fn build(repo: &std::path::Path, now: DateTime<Local>) -> Brief {
         loops,
         loops_total,
         owner: config.owner_label(),
+        recordings,
+        recordings_total,
+        myman_root,
     }
 }
 
@@ -755,6 +800,133 @@ impl BriefView {
         rows
     }
 
+    fn open_absolute(&self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if !path.exists() {
+            return;
+        }
+        self.workspace
+            .update(cx, |workspace, cx| {
+                workspace
+                    .open_abs_path(
+                        path,
+                        OpenOptions {
+                            visible: Some(OpenVisible::None),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                    .detach_and_log_err(cx);
+            })
+            .ok();
+    }
+
+    /// Opens Claude with the ask to log the recording, transcript path and
+    /// all; the brain's own meeting workflow takes it from there.
+    fn log_recording(&self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(meeting), Some(root)) = (
+            self.brief.recordings.get(ix),
+            self.brief.myman_root.as_ref(),
+        ) else {
+            return;
+        };
+        let text = log_call_prompt(meeting, root, &self.brief.owner);
+        window.dispatch_action(Box::new(OpenClaudePrefilled { text }), cx);
+    }
+
+    fn render_recordings(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        if self.brief.myman_root.is_none() {
+            return Vec::new();
+        }
+        let mut rows = vec![self.section("Recordings to log", Some(self.brief.recordings_total))];
+        if self.brief.recordings.is_empty() {
+            rows.push(self.empty("Every recent My Man recording is cited somewhere in the brain"));
+            return rows;
+        }
+        rows.push(
+            div()
+                .px_1()
+                .pb_1()
+                .child(
+                    Label::new(
+                        "Calls My Man recorded that no note in the brain mentions yet. Log this call opens Claude with the transcript ready.",
+                    )
+                    .size(LabelSize::Small)
+                    .color(Color::Muted),
+                )
+                .into_any_element(),
+        );
+        for (ix, meeting) in self.brief.recordings.iter().enumerate() {
+            let others = meeting.others(&self.brief.owner);
+            let mut detail = match meeting.minutes() {
+                Some(minutes) => format!("{minutes} min"),
+                None => String::new(),
+            };
+            if !others.is_empty() {
+                if !detail.is_empty() {
+                    detail.push_str(" · ");
+                }
+                detail.push_str(&others.join(", "));
+            }
+            let path = self
+                .brief
+                .myman_root
+                .as_ref()
+                .map(|root| root.join(&meeting.path));
+            rows.push(
+                h_flex()
+                    .id(("brainz-brief-recording", ix))
+                    .w_full()
+                    .items_center()
+                    .gap_2()
+                    .px_1()
+                    .py_1()
+                    .rounded_md()
+                    .child(
+                        div().w(px(64.)).flex_none().child(
+                            Label::new(meeting.started.format("%a %-d").to_string())
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                    )
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Label::new(meeting.title.clone())
+                                .size(LabelSize::Small)
+                                .truncate(),
+                        ),
+                    )
+                    .when(!detail.is_empty(), |this| {
+                        this.child(
+                            Label::new(detail)
+                                .size(LabelSize::Small)
+                                .color(Color::Muted)
+                                .truncate(),
+                        )
+                    })
+                    .when_some(path, |this, path| {
+                        this.child(
+                            Button::new(("brainz-brief-recording-open", ix), "Transcript")
+                                .label_size(LabelSize::Small)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_absolute(path.clone(), window, cx);
+                                })),
+                        )
+                    })
+                    .child(
+                        Button::new(("brainz-brief-recording-log", ix), "Log this call")
+                            .label_size(LabelSize::Small)
+                            .style(ButtonStyle::Filled)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.log_recording(ix, window, cx);
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
+        rows
+    }
+
     fn render_stale(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut rows = vec![self.section(
             "Status lines behind their notes",
@@ -1017,6 +1189,7 @@ impl Render for BriefView {
         let mut body: Vec<AnyElement> = Vec::new();
         body.extend(self.render_narrative(window, cx));
         body.extend(self.render_events(cx));
+        body.extend(self.render_recordings(cx));
         body.extend(self.render_owes(cx));
         body.extend(self.render_desk(cx));
         body.extend(self.render_stale(cx));
@@ -1131,6 +1304,29 @@ mod tests {
                 .unwrap()
                 .placeholder
         );
+    }
+
+    #[test]
+    fn log_call_prompt_names_the_recording_and_its_transcript() {
+        let meeting = myman::Meeting {
+            id: "meeting-1".into(),
+            path: "meetings/2026-10-02-D255EB5E.md".into(),
+            title: "Ada / Grace".into(),
+            started: chrono::TimeZone::with_ymd_and_hms(&Local, 2026, 10, 2, 20, 38, 0).unwrap(),
+            ended: Some(
+                chrono::TimeZone::with_ymd_and_hms(&Local, 2026, 10, 2, 21, 17, 0).unwrap(),
+            ),
+            participants: vec![
+                "Speaker 2".into(),
+                "Ada Lovelace".into(),
+                "Grace Hopper".into(),
+            ],
+            complete: true,
+            low_content: false,
+        };
+        let text = log_call_prompt(&meeting, std::path::Path::new("/brain/MyManBrain"), "Ada");
+        assert!(text.starts_with("Log this call into the brain. My Man recorded \"Ada / Grace\" on Friday October 2 at 8:38 PM (39 min, with Grace Hopper)."));
+        assert!(text.contains("/brain/MyManBrain/meetings/2026-10-02-D255EB5E.md"));
     }
 
     #[test]

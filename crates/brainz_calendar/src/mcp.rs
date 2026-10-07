@@ -876,19 +876,26 @@ pub const HOSTED_CONNECTORS: &[HostedConnector] = &[
         blurb: "Meetings, notes, and calendar from Wispr Flow",
     },
     HostedConnector {
-        name: "myman",
+        name: crate::myman::READ_CONNECTOR,
         label: "My Man",
-        // My Man keeps everything as Markdown in ~/MyManBrain; the stock
-        // filesystem server scoped to that folder is the connector.
+        // My Man ships its own read-only companion inside the export
+        // folder; it reads the folder from MYMAN_BRAIN_ROOT.
         transport: HostedTransport::Stdio {
-            command: "npx",
-            args: &[
-                "-y",
-                "@modelcontextprotocol/server-filesystem",
-                "~/MyManBrain",
-            ],
+            command: "node",
+            args: &["~/MyManBrain/tools/server.mjs"],
         },
-        blurb: "Notes, meetings, and dictations from My Man",
+        blurb: "Search meetings, notes, screenshots, and dictations from My Man",
+    },
+    HostedConnector {
+        name: crate::myman::ACTIONS_CONNECTOR,
+        label: "My Man actions",
+        // The app-actions companion talks to the running app over its local
+        // socket; My Man's Settings → Agents decides what it may do.
+        transport: HostedTransport::Stdio {
+            command: "node",
+            args: &["~/MyManBrain/tools/app-server.mjs"],
+        },
+        blurb: "Take screenshots, start recordings, and save notes in My Man",
     },
 ];
 
@@ -925,39 +932,93 @@ impl HostedConnector {
     /// Writes the connector into the client's config; the caller then runs
     /// the sign-in.
     pub fn add(&self, client: McpClient) -> Result<()> {
-        let home = paths::home_dir().to_string_lossy().into_owned();
-        let expand = |arg: &str| arg.replacen("~", &home, 1);
         match (client, self.transport) {
             (McpClient::Claude, HostedTransport::Http { url }) => {
                 connect_claude(self.name, serde_json::json!({ "type": "http", "url": url }))
             }
-            (McpClient::Claude, HostedTransport::Stdio { command, args }) => connect_claude(
-                self.name,
-                serde_json::json!({
+            (McpClient::Claude, HostedTransport::Stdio { command, args }) => {
+                let (args, env) = self.stdio_launch(args);
+                let mut config = serde_json::json!({
                     "type": "stdio",
                     "command": command,
-                    "args": args.iter().map(|arg| expand(arg)).collect::<Vec<_>>(),
-                }),
-            ),
+                    "args": args,
+                });
+                if !env.is_empty() {
+                    let env: serde_json::Map<String, serde_json::Value> = env
+                        .into_iter()
+                        .map(|(key, value)| (key, value.into()))
+                        .collect();
+                    config["env"] = serde_json::Value::Object(env);
+                }
+                connect_claude(self.name, config)
+            }
             (McpClient::Codex, HostedTransport::Http { url }) => {
                 let mut table = toml::map::Map::new();
                 table.insert("url".into(), toml::Value::String(url.into()));
                 connect_codex(self.name, toml::Value::Table(table))
             }
             (McpClient::Codex, HostedTransport::Stdio { command, args }) => {
+                let (args, env) = self.stdio_launch(args);
                 let mut table = toml::map::Map::new();
                 table.insert("command".into(), toml::Value::String(command.into()));
                 table.insert(
                     "args".into(),
-                    toml::Value::Array(
-                        args.iter()
-                            .map(|arg| toml::Value::String(expand(arg)))
-                            .collect(),
-                    ),
+                    toml::Value::Array(args.into_iter().map(toml::Value::String).collect()),
                 );
+                if !env.is_empty() {
+                    let env: toml::map::Map<String, toml::Value> = env
+                        .into_iter()
+                        .map(|(key, value)| (key, toml::Value::String(value)))
+                        .collect();
+                    table.insert("env".into(), toml::Value::Table(env));
+                }
                 connect_codex(self.name, toml::Value::Table(table))
             }
         }
+    }
+
+    /// The expanded arguments and env for a local connector. The My Man
+    /// pair gets the configured export folder, the machine id, and the
+    /// saved agent credential.
+    fn stdio_launch(&self, args: &[&str]) -> (Vec<String>, Vec<(String, String)>) {
+        let home = paths::home_dir().to_string_lossy().into_owned();
+        let expand = |arg: &str| arg.replacen("~", &home, 1);
+        if !self.is_myman() {
+            return (args.iter().map(|arg| expand(arg)).collect(), Vec::new());
+        }
+        let root = crate::myman::MyMan::detect_default()
+            .map(|myman| myman.root)
+            .unwrap_or_else(|| paths::home_dir().join(crate::myman::DEFAULT_ROOT));
+        let default_root = format!("~/{}", crate::myman::DEFAULT_ROOT);
+        let args = args
+            .iter()
+            .map(|arg| expand(&arg.replacen(&default_root, &root.to_string_lossy(), 1)))
+            .collect();
+        (args, crate::myman::companion_env(&root))
+    }
+
+    pub fn is_myman(&self) -> bool {
+        self.name.starts_with(crate::myman::READ_CONNECTOR)
+    }
+
+    /// Every hosted connector already configured in a client gets its
+    /// launch rewritten, so a newly saved credential reaches the servers.
+    pub fn refresh_configured(configured: &[String]) -> Result<()> {
+        for hosted in HOSTED_CONNECTORS.iter().filter(|hosted| hosted.is_myman()) {
+            if !hosted.is_configured(configured) {
+                continue;
+            }
+            for client in [McpClient::Claude, McpClient::Codex] {
+                let present = match client {
+                    McpClient::Claude => read_claude_servers().contains_key(hosted.name),
+                    McpClient::Codex => read_codex_servers().contains_key(hosted.name),
+                };
+                if present {
+                    hosted.add(client)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Whether Connect also has to run the client's sign-in.
@@ -1231,6 +1292,10 @@ pub struct McpView {
     focus_handle: FocusHandle,
     workspace: WeakEntity<Workspace>,
     connectors: Vec<Connector>,
+    /// Whether a My Man agent credential is saved; the actions connector
+    /// shows a paste field until one is.
+    myman_token_saved: bool,
+    myman_token_editor: Option<Entity<editor::Editor>>,
     /// Connectors with a sign-in running right now.
     reconnecting: std::collections::HashSet<String>,
     _reconnect: Option<Task<()>>,
@@ -1266,6 +1331,8 @@ impl McpView {
             focus_handle: cx.focus_handle(),
             workspace,
             connectors: Vec::new(),
+            myman_token_saved: false,
+            myman_token_editor: None,
             reconnecting: std::collections::HashSet::new(),
             _reconnect: None,
             loading: true,
@@ -1281,14 +1348,99 @@ impl McpView {
         self.loading = true;
         cx.notify();
         self._load = Some(cx.spawn(async move |this, cx| {
-            let connectors = cx.background_spawn(async { load_connectors() }).await;
+            let (connectors, token_saved) = cx
+                .background_spawn(async {
+                    (load_connectors(), crate::myman::saved_token().is_some())
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.connectors = connectors;
+                this.myman_token_saved = token_saved;
                 this.loading = false;
                 cx.notify();
             })
             .ok();
         }));
+    }
+
+    /// Stores the credential pasted from My Man's Settings → Agents and
+    /// rewrites the My Man connectors so the servers receive it.
+    fn save_myman_token(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.myman_token_editor.clone() else {
+            return;
+        };
+        let token = editor.read(cx).text(cx);
+        let configured: Vec<String> = self.connectors.iter().map(|c| c.name.clone()).collect();
+        let result = crate::myman::save_token(&token)
+            .and_then(|()| HostedConnector::refresh_configured(&configured));
+        match result {
+            Ok(()) => {
+                self.error = None;
+                self.myman_token_editor = None;
+                self.refresh(cx);
+            }
+            Err(error) => {
+                self.error = Some(format!("Couldn't save the My Man credential: {error:#}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// The paste field under the My Man actions row while no credential is
+    /// saved: My Man refuses app actions from unnamed agents.
+    fn render_myman_token_card(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let editor = self
+            .myman_token_editor
+            .get_or_insert_with(|| {
+                cx.new(|cx| {
+                    let mut editor = editor::Editor::single_line(window, cx);
+                    editor.set_placeholder_text("Paste the agent credential", window, cx);
+                    editor
+                })
+            })
+            .clone();
+        v_flex()
+            .w_full()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().colors().text_accent.opacity(0.5))
+            .child(
+                Label::new(
+                    "My Man only acts for a named agent. In My Man, open Settings → Agents, \
+                     add an agent called Brainz with the actions you want to allow, and \
+                     paste its credential here. Brainz keeps it in its own config folder.",
+                )
+                .size(LabelSize::Small)
+                .color(Color::Muted),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().colors().border)
+                            .bg(cx.theme().colors().editor_background)
+                            .child(editor),
+                    )
+                    .child(
+                        Button::new("brainz-mcp-myman-token-save", "Save")
+                            .style(ButtonStyle::Filled)
+                            .label_size(LabelSize::Small)
+                            .on_click(cx.listener(|this, _, _, cx| this.save_myman_token(cx))),
+                    ),
+            )
     }
 
     /// Adds a hosted connector to Claude and runs its sign-in.
@@ -1387,10 +1539,14 @@ impl McpView {
                 Button::new(("brainz-mcp-hosted-connect", ix), "Connect")
                     .style(ButtonStyle::Filled)
                     .label_size(LabelSize::Small)
-                    .tooltip(Tooltip::text(format!(
-                        "Add {} to Claude and sign in; a terminal opens with the link",
-                        hosted.title()
-                    )))
+                    .tooltip(Tooltip::text(if hosted.needs_login() {
+                        format!(
+                            "Add {} to Claude and sign in; a terminal opens with the link",
+                            hosted.title()
+                        )
+                    } else {
+                        format!("Add {} to Claude", hosted.title())
+                    }))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.connect_hosted(hosted, window, cx);
                     }))
@@ -1760,7 +1916,7 @@ impl Item for McpView {
 }
 
 impl Render for McpView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let header = h_flex()
             .w_full()
             .items_center()
@@ -1800,6 +1956,7 @@ impl Render for McpView {
                     .into_any_element(),
             );
             let connectors = self.connectors.clone();
+            let token_saved = self.myman_token_saved;
             for (ix, connector) in connectors.iter().enumerate() {
                 rows.push(
                     ui::reveal(
@@ -1809,6 +1966,11 @@ impl Render for McpView {
                     )
                     .into_any_element(),
                 );
+                if !token_saved
+                    && Connector::key(&connector.name) == crate::myman::ACTIONS_CONNECTOR
+                {
+                    rows.push(self.render_myman_token_card(window, cx).into_any_element());
+                }
             }
             let configured: Vec<String> = connectors.iter().map(|c| c.name.clone()).collect();
             let available: Vec<&'static HostedConnector> = HOSTED_CONNECTORS

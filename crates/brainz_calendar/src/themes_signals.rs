@@ -1098,6 +1098,149 @@ fn top_weighted(map: &HashMap<String, u32>, limit: usize) -> Vec<Weighted> {
     entries
 }
 
+/// Proper nouns for a dictation vocabulary, people first: the people and
+/// place files, every person named in notes, the companies and projects
+/// under the vocabulary folders (spelled as their own index heading, since
+/// a folder name cannot say "HuddleUp"), and the acronym allowlist.
+pub fn dictation_vocabulary(repo: &Path) -> Result<Vec<String>> {
+    let config = BrainConfig::load(repo);
+    let acronyms = read_list_file(&config.themes_path(repo, VOCABULARY_NAME));
+    let tree: Vec<String> = git(repo, &["ls-tree", "-r", "--name-only", "HEAD"])?
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let mut vocabulary = Vocabulary::from_tree(&tree, &[], &config);
+    vocabulary.read_entities(repo, &tree, &config)?;
+    let mut terms: Vec<String> = vocabulary
+        .entries
+        .iter()
+        .filter(|(_, _, category)| *category != ThemeCategory::Things)
+        .map(|(_, display, _)| display.clone())
+        .collect();
+    for folder in &config.vocabulary_folders {
+        let folder = folder.trim_matches('/');
+        let mut stems: Vec<&str> = tree
+            .iter()
+            .filter_map(|path| path.strip_prefix(folder)?.strip_prefix('/'))
+            .filter_map(|rest| rest.split_once('/').map(|(stem, _)| stem))
+            .filter(|stem| *stem != "archive")
+            .collect();
+        stems.sort_unstable();
+        stems.dedup();
+        for stem in stems {
+            let dir = repo.join(folder).join(stem);
+            let heading = ["CLAUDE.md", "README.md", "index.md"]
+                .iter()
+                .find_map(|name| std::fs::read_to_string(dir.join(name)).ok())
+                .and_then(|text| index_heading(&text));
+            if let Some(heading) = heading {
+                terms.push(heading);
+            }
+        }
+    }
+    terms.extend(acronyms.iter().map(|acronym| acronym.trim().to_owned()));
+    let mut seen = HashSet::new();
+    Ok(terms
+        .into_iter()
+        .filter(|term| usable_for_dictation(term))
+        .filter(|term| seen.insert(term.to_lowercase()))
+        .collect())
+}
+
+/// The first `# Heading` of an index file, shortened to the name before any
+/// " — ", " - ", ":" or "(" qualifier.
+fn index_heading(text: &str) -> Option<String> {
+    let heading = text
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("# "))?
+        .trim();
+    let name = heading
+        .split([':', '('])
+        .next()
+        .unwrap_or(heading)
+        .split(" — ")
+        .next()
+        .unwrap_or(heading)
+        .split(" - ")
+        .next()
+        .unwrap_or(heading)
+        .trim();
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// Words that mark an address, a meeting label, or a job title rather than
+/// a name worth teaching a speech model.
+const DICTATION_NOISE: &[&str] = &[
+    "prep",
+    "call",
+    "intro",
+    "interview",
+    "template",
+    "guide",
+    "rehearsal",
+    "research",
+    "suite",
+    "street",
+    "blvd",
+    "avenue",
+    "building",
+    "agency",
+    "inn",
+    "hotel",
+    "manager",
+    "partnership",
+    "operations",
+    "remote",
+    "meet",
+    "rewrite",
+    "repositioning",
+    "monthly",
+    "weekly",
+    "based",
+    "rooted",
+    "give",
+];
+
+/// A term a speech model could mangle and a person would want restored:
+/// a capitalised name of one to three words, no digits, no address or
+/// meeting-label words, nothing that reads as a sentence fragment.
+fn usable_for_dictation(term: &str) -> bool {
+    let words: Vec<&str> = term.split_whitespace().collect();
+    let letters = term.chars().filter(|c| c.is_alphabetic()).count();
+    let count = term.chars().count();
+    if !(3..=40).contains(&count) || !(1..=3).contains(&words.len()) || letters < 3 {
+        return false;
+    }
+    if term.chars().any(|c| c.is_ascii_digit())
+        || term.contains(['/', '\\', '`', '*', '[', ']', '~', '(', ')', ':'])
+    {
+        return false;
+    }
+    if words
+        .iter()
+        .any(|word| DICTATION_NOISE.contains(&word.to_lowercase().trim_matches(['.', ','])))
+    {
+        return false;
+    }
+    // Every word is a name-shaped token: capitalised, at least two letters
+    // (so "Adam L" and "Ben K" stay out), and no "Boston-rooted" compounds.
+    words.iter().all(|word| {
+        let word = word.trim_matches(['.', ',', '\'']);
+        if word == "&" || word == "of" || word == "and" {
+            return true;
+        }
+        let mut chars = word.chars();
+        let first_upper = chars.next().is_some_and(char::is_uppercase);
+        let enough = word.chars().filter(|c| c.is_alphabetic()).count() >= 2;
+        let compound_lower = word
+            .split('-')
+            .skip(1)
+            .any(|part| part.chars().next().is_some_and(char::is_lowercase));
+        first_upper && enough && !compound_lower
+    })
+}
+
 /// Runs the whole pass against the brain checkout at `repo` and writes the
 /// output files. Returns the signals for immediate display.
 pub fn run_pass(repo: &Path) -> Result<Signals> {
@@ -1918,6 +2061,31 @@ pub fn file_label(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_headings_drop_qualifiers_and_dictation_filter_keeps_names() {
+        assert_eq!(
+            index_heading("---\nx: 1\n---\n# HuddleUp — youth sports app\n").as_deref(),
+            Some("HuddleUp")
+        );
+        assert_eq!(
+            index_heading("# Acme (client): notes\n").as_deref(),
+            Some("Acme")
+        );
+        assert!(index_heading("no heading\n").is_none());
+        assert!(usable_for_dictation("Grace Hopper"));
+        assert!(usable_for_dictation("Course & Cloth"));
+        assert!(usable_for_dictation("PLG"));
+        assert!(usable_for_dictation("Hilmar Geir Eiðsson"));
+        assert!(!usable_for_dictation("meeting"));
+        assert!(!usable_for_dictation("A/B"));
+        assert!(!usable_for_dictation("Adam L"));
+        assert!(!usable_for_dictation("Suite 300"));
+        assert!(!usable_for_dictation("Boston-rooted"));
+        assert!(!usable_for_dictation("Recruiter Intro Call Prep"));
+        assert!(!usable_for_dictation("SF ~monthly"));
+        assert!(!usable_for_dictation("One Two Three Four"));
+    }
 
     #[test]
     fn categories_use_profiles_places_and_contextual_names() {

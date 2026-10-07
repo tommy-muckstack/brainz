@@ -8,6 +8,7 @@ pub mod github_sync;
 pub mod launcher;
 pub mod mcp;
 pub mod memory_share;
+pub mod myman;
 pub mod nav;
 pub mod ocr;
 pub mod open_loops;

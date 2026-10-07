@@ -85,7 +85,7 @@ pub fn add_to_board(todo_path: &Path, open_loop: &OpenLoop, owner: &str) -> anyh
     Ok(())
 }
 
-fn insert_board_line(text: &str, line: &str, owed_by_owner: bool) -> String {
+pub(crate) fn insert_board_line(text: &str, line: &str, owed_by_owner: bool) -> String {
     let wanted: &[&str] = if owed_by_owner {
         &["today"]
     } else {
