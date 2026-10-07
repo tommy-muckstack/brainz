@@ -2048,6 +2048,11 @@ impl MessageEditor {
             }
         }
 
+        // Brainz: a pasted image or thumbnailed document renders as an empty
+        // chip above the text, so the space typed after it would indent the
+        // first line. Drop it from the display only.
+        strip_space_after_hidden_chips(&mut text, &mut mentions);
+
         // Brainz: bare shared-note links and paths to files on this Mac in
         // older messages become pills too, display only; the text the agent
         // saw is unchanged.
@@ -2653,6 +2658,38 @@ impl MessageEditor {
 }
 
 /// Brainz: documents Quick Look renders well enough to stand in for a chip.
+/// Removes the spaces (not line breaks) that directly follow a mention whose
+/// chip is hidden (a pasted image or a thumbnailed document), shifting the
+/// later mention ranges to match.
+fn strip_space_after_hidden_chips(
+    text: &mut String,
+    mentions: &mut [(Range<usize>, MentionUri, Mention)],
+) {
+    let mut removed_total = 0usize;
+    for ix in 0..mentions.len() {
+        let (range, uri, mention) = &mut mentions[ix];
+        range.start -= removed_total;
+        range.end -= removed_total;
+        let hidden = matches!(mention, Mention::Image(_))
+            || matches!(uri, MentionUri::File { abs_path } if is_thumbnail_document(abs_path));
+        if !hidden {
+            continue;
+        }
+        let after = &text[range.end..];
+        let spaces = after
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\u{a0}' || *c == '\t')
+            .map(char::len_utf8)
+            .sum::<usize>();
+        if spaces == 0 {
+            continue;
+        }
+        let end = range.end;
+        text.replace_range(end..end + spaces, "");
+        removed_total += spaces;
+    }
+}
+
 pub(crate) fn is_thumbnail_document(path: &std::path::Path) -> bool {
     let extension = path
         .extension()
@@ -6293,6 +6330,49 @@ mod tests {
             .unwrap()
             .into_values()
             .collect::<Vec<_>>()
+    }
+
+    #[test]
+    fn hidden_chip_spaces_are_dropped_from_the_bubble_only() {
+        use crate::message_editor::{MentionImage, strip_space_after_hidden_chips};
+        use gpui::ImageFormat;
+        let image_uri = MentionUri::PastedImage {
+            name: "Image".to_string(),
+        };
+        let pdf_uri = MentionUri::File {
+            abs_path: PathBuf::from("/tmp/Reminder.pdf"),
+        };
+        let note_uri = MentionUri::File {
+            abs_path: PathBuf::from("/tmp/note.md"),
+        };
+        let image_link = image_uri.as_link().to_string();
+        let pdf_link = pdf_uri.as_link().to_string();
+        let note_link = note_uri.as_link().to_string();
+        let mut text = format!("{image_link}  hello {note_link} there\n{pdf_link} do it");
+        let image_range = 0..image_link.len();
+        let note_start = text.find(&note_link).unwrap();
+        let note_range = note_start..note_start + note_link.len();
+        let pdf_start = text.find(&pdf_link).unwrap();
+        let pdf_range = pdf_start..pdf_start + pdf_link.len();
+        let mut mentions = vec![
+            (
+                image_range,
+                image_uri,
+                Mention::Image(MentionImage {
+                    data: SharedString::from("").into(),
+                    format: ImageFormat::Png,
+                }),
+            ),
+            (note_range, note_uri.clone(), Mention::Link),
+            (pdf_range, pdf_uri.clone(), Mention::Link),
+        ];
+        strip_space_after_hidden_chips(&mut text, &mut mentions);
+        assert_eq!(
+            text,
+            format!("{image_link}hello {note_link} there\n{pdf_link}do it")
+        );
+        assert_eq!(&text[mentions[1].0.clone()], note_link);
+        assert_eq!(&text[mentions[2].0.clone()], pdf_link);
     }
 
     fn write_test_png_file(extension: Option<&str>) -> PathBuf {
