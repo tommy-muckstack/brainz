@@ -130,9 +130,18 @@ pub fn ensure_shared(brain: &Path, home: &Path, brainz_claude_dir: &Path) -> Res
             }
         }
     }
+    let target_has_files = std::fs::symlink_metadata(&target)
+        .map(|m| {
+            m.is_dir()
+                && memory_files(&target)
+                    .map(|f| !f.is_empty())
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false);
     if real_dirs.is_empty() {
-        if linked == 1 {
-            // One side already shared, the other never existed: link it.
+        if linked == 1 || target_has_files {
+            // One side already shared, or the brain arrived with memory of
+            // its own (a clone on another Mac): link whatever is missing.
             for source in &sources {
                 if !points_to(source, &target) {
                     link(source, &target)?;
@@ -145,26 +154,14 @@ pub fn ensure_shared(brain: &Path, home: &Path, brainz_claude_dir: &Path) -> Res
         }
         return Ok(Outcome::Nothing);
     }
-    let target_has_files = std::fs::symlink_metadata(&target)
-        .map(|m| {
-            m.is_dir()
-                && memory_files(&target)
-                    .map(|f| !f.is_empty())
-                    .unwrap_or(false)
-        })
-        .unwrap_or(false);
-    if target_has_files && linked == 0 {
-        bail!(
-            "{} already has memory files and neither Claude folder links to it; merge by hand",
-            target.display()
-        );
-    }
 
-    // Newest file wins on a name collision; the index is unioned.
+    // Newest file wins on a name collision; the index is unioned. Memory
+    // already in the brain takes part like any other folder, so a brain
+    // that came with memory and a Mac that has some of its own merge too.
     let mut chosen: BTreeMap<String, (PathBuf, std::time::SystemTime)> = BTreeMap::new();
     let mut indexes: Vec<String> = Vec::new();
     let mut ordered = real_dirs.clone();
-    if target.is_dir() && linked > 0 {
+    if target_has_files {
         ordered.insert(0, target.clone());
     }
     for dir in &ordered {
@@ -361,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn nothing_to_do_without_memory_and_unsafe_layouts_stop() {
+    fn nothing_to_do_without_memory_and_a_foreign_symlink_stops() {
         let root = tempfile::tempdir().unwrap();
         let brain = root.path().join("brain");
         let home = root.path().join("home");
@@ -372,18 +369,69 @@ mod tests {
             Outcome::Nothing
         );
         let [cli, _] = memory_dirs(&brain, &home, &brainz);
-        std::fs::create_dir_all(&cli).unwrap();
-        std::fs::write(cli.join("a.md"), "a").unwrap();
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(root.path().join("elsewhere"), &cli).unwrap();
+        let error = ensure_shared(&brain, &home, &brainz).unwrap_err();
+        assert!(error.to_string().contains("does not point at"), "{error}");
+    }
+
+    #[test]
+    fn a_brain_that_arrives_with_memory_is_linked_or_merged() {
+        // Second Mac: the brain was cloned with memory, nothing local yet.
+        let root = tempfile::tempdir().unwrap();
+        let brain = root.path().join("brain");
+        let home = root.path().join("home");
+        let brainz = root.path().join("brainz-config/claude");
         std::fs::create_dir_all(brain.join(TARGET)).unwrap();
         std::fs::write(brain.join(TARGET).join("z.md"), "z").unwrap();
-        let error = ensure_shared(&brain, &home, &brainz).unwrap_err();
-        assert!(error.to_string().contains("merge by hand"), "{error}");
-        assert!(cli.join("a.md").exists());
+        let outcome = ensure_shared(&brain, &home, &brainz).unwrap();
         assert!(
-            !std::fs::symlink_metadata(&cli)
+            matches!(outcome, Outcome::Linked { files: 1, .. }),
+            "{outcome:?}"
+        );
+        let [cli, inside] = memory_dirs(&brain, &home, &brainz);
+        assert!(points_to(&cli, &brain.join(TARGET)));
+        assert!(points_to(&inside, &brain.join(TARGET)));
+        assert_eq!(
+            ensure_shared(&brain, &home, &brainz).unwrap(),
+            Outcome::AlreadyShared
+        );
+
+        // A Mac with memory of its own meets a brain that has some too.
+        let root = tempfile::tempdir().unwrap();
+        let brain = root.path().join("brain");
+        let home = root.path().join("home");
+        let brainz = root.path().join("brainz-config/claude");
+        std::fs::create_dir_all(brain.join(TARGET)).unwrap();
+        std::fs::write(brain.join(TARGET).join("z.md"), "z").unwrap();
+        std::fs::write(brain.join(TARGET).join(INDEX), "- z\n").unwrap();
+        let [cli, inside] = memory_dirs(&brain, &home, &brainz);
+        std::fs::create_dir_all(&cli).unwrap();
+        std::fs::write(cli.join("a.md"), "a").unwrap();
+        std::fs::write(cli.join(INDEX), "- a\n").unwrap();
+        let outcome = ensure_shared(&brain, &home, &brainz).unwrap();
+        assert!(
+            matches!(outcome, Outcome::Linked { files: 3, .. }),
+            "{outcome:?}"
+        );
+        let target = brain.join(TARGET);
+        assert_eq!(std::fs::read_to_string(target.join("a.md")).unwrap(), "a");
+        assert_eq!(std::fs::read_to_string(target.join("z.md")).unwrap(), "z");
+        assert_eq!(
+            std::fs::read_to_string(target.join(INDEX)).unwrap(),
+            "- z\n- a\n"
+        );
+        assert!(points_to(&cli, &target));
+        assert!(points_to(&inside, &target));
+        assert!(
+            std::fs::read_dir(brain.join(".claude"))
                 .unwrap()
-                .file_type()
-                .is_symlink()
+                .filter_map(Result::ok)
+                .any(|e| e
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("memory.pre-share-")),
+            "the brain's earlier memory is kept as a backup"
         );
     }
 

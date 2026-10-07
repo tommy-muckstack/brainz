@@ -120,10 +120,11 @@ pub fn render(workspace: &WeakEntity<Workspace>, cx: &mut App) -> gpui::AnyEleme
                 } else {
                     Color::Muted
                 }))
-                .child(
-                    Label::new(item.label)
-                        .color(if active { Color::Default } else { Color::Muted }),
-                )
+                .child(Label::new(item.label).color(if active {
+                    Color::Default
+                } else {
+                    Color::Muted
+                }))
                 .when(trouble, |this| {
                     this.child(div().flex_1()).child(
                         div()
