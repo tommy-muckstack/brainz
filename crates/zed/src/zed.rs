@@ -864,6 +864,7 @@ fn ensure_agent_panel_for_workspace(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Task<anyhow::Result<()>> {
+    let had_panel = workspace.panel::<agent_ui::AgentPanel>(cx).is_some();
     let task = setup_or_teardown_ai_panel(workspace, window, cx, move |workspace, cx| {
         agent_ui::AgentPanel::load(workspace, cx)
     });
@@ -878,7 +879,28 @@ fn ensure_agent_panel_for_workspace(
                     panel.initialize_from_source_workspace_if_needed(source_workspace, window, cx);
                 });
             }
-        })
+        })?;
+
+        // Brainz: a window that opens with a Claude, Codex, or terminal tab
+        // restored starts with the cursor in it, so typing goes to the agent
+        // rather than to whatever file the workspace restored. Waits a beat
+        // so the workspace's own restore has finished claiming focus.
+        if !had_panel {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(400))
+                .await;
+            workspace
+                .update_in(cx, |workspace, window, cx| {
+                    let restored = workspace
+                        .panel::<agent_ui::AgentPanel>(cx)
+                        .is_some_and(|panel| panel.read(cx).has_open_surface());
+                    if restored {
+                        workspace.focus_panel::<agent_ui::AgentPanel>(window, cx);
+                    }
+                })
+                .ok();
+        }
+        anyhow::Ok(())
     })
 }
 
