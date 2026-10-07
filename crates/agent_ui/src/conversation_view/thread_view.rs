@@ -12307,7 +12307,12 @@ impl ThreadView {
         } else {
             brainz_calendar::mcp::McpClient::Claude
         };
-        if let Err(error) = hosted.add(client) {
+        let brain_root = self
+            .workspace
+            .upgrade()
+            .and_then(|workspace| workspace.read(cx).root_paths(cx).first().cloned());
+        let myman = brainz_calendar::myman::MyMan::detect_for(brain_root.as_deref());
+        if let Err(error) = hosted.add(client, myman.as_ref()) {
             log::error!("brainz mcp connect {}: {error:#}", hosted.name);
             return;
         }

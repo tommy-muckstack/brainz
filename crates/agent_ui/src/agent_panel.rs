@@ -1275,6 +1275,9 @@ pub struct AgentPanel {
     _extension_subscription: Option<Subscription>,
     _project_subscription: Subscription,
     zoomed: bool,
+    /// Brainz: set once at load when a thread or terminal came back from
+    /// the last session.
+    restored_surface: bool,
     pending_serialization: Option<Task<Result<()>>>,
     persist_selected_agent_task: Task<()>,
     new_user_onboarding: Entity<AgentPanelOnboarding>,
@@ -1577,6 +1580,8 @@ impl AgentPanel {
                         panel.selected_agent = agent;
                     }
 
+                    panel.restored_surface =
+                        terminal_to_restore.is_some() || thread_to_restore.is_some();
                     if let Some(metadata) = terminal_to_restore {
                         panel.restore_terminal_for_panel_load(
                             metadata,
@@ -1721,6 +1726,7 @@ impl AgentPanel {
             _extension_subscription: extension_subscription,
             _project_subscription,
             zoomed: false,
+            restored_surface: false,
             pending_serialization: None,
             new_user_onboarding: onboarding,
             thread_store,
@@ -4548,11 +4554,11 @@ impl AgentPanel {
         self.serialize(cx);
     }
 
-    /// Brainz: whether the panel is showing a thread or a terminal (as
-    /// opposed to nothing restored yet), so the window can start with the
-    /// cursor in it.
-    pub fn has_open_surface(&self) -> bool {
-        !matches!(self.visible_surface(), VisibleSurface::Uninitialized)
+    /// Brainz: whether the panel brought back a thread or a terminal from
+    /// the last session (not one it just created for an empty brain), so
+    /// the window can start with the cursor in it.
+    pub fn has_restored_surface(&self) -> bool {
+        self.restored_surface && !matches!(self.visible_surface(), VisibleSurface::Uninitialized)
     }
 
     fn visible_surface(&self) -> VisibleSurface<'_> {

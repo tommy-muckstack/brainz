@@ -2048,11 +2048,6 @@ impl MessageEditor {
             }
         }
 
-        // Brainz: a pasted image or thumbnailed document renders as an empty
-        // chip above the text, so the space typed after it would indent the
-        // first line. Drop it from the display only.
-        strip_space_after_hidden_chips(&mut text, &mut mentions);
-
         // Brainz: bare shared-note links and paths to files on this Mac in
         // older messages become pills too, display only; the text the agent
         // saw is unchanged.
@@ -2078,6 +2073,14 @@ impl MessageEditor {
                 mentions.extend(extra);
                 mentions.sort_by_key(|(range, _, _)| range.start);
             }
+        }
+
+        // Brainz: a pasted image or thumbnailed document renders as an empty
+        // chip above the text, so the space typed after it would indent the
+        // first line. Drop it from what the editor shows, after every pill
+        // (including the ones just added for older messages) is known.
+        {
+            strip_space_after_hidden_chips(&mut text, &mut mentions);
         }
 
         if text.is_empty() && mentions.is_empty() {
@@ -2657,19 +2660,28 @@ impl MessageEditor {
     }
 }
 
-/// Brainz: documents Quick Look renders well enough to stand in for a chip.
-/// Removes the spaces (not line breaks) that directly follow a mention whose
-/// chip is hidden (a pasted image or a thumbnailed document), shifting the
-/// later mention ranges to match.
+/// Brainz: removes the spaces (not line breaks) that directly follow a
+/// mention whose chip is hidden (a pasted image or a thumbnailed document),
+/// shifting the later mention ranges to match. Mentions must be sorted by
+/// position; the ranges of an unsorted list cannot be shifted safely.
 fn strip_space_after_hidden_chips(
     text: &mut String,
     mentions: &mut [(Range<usize>, MentionUri, Mention)],
 ) {
+    debug_assert!(
+        mentions
+            .windows(2)
+            .all(|pair| pair[0].0.start <= pair[1].0.start),
+        "mentions must be sorted by position"
+    );
     let mut removed_total = 0usize;
     for ix in 0..mentions.len() {
         let (range, uri, mention) = &mut mentions[ix];
-        range.start -= removed_total;
-        range.end -= removed_total;
+        range.start = range.start.saturating_sub(removed_total);
+        range.end = range.end.saturating_sub(removed_total);
+        if range.end > text.len() {
+            break;
+        }
         let hidden = matches!(mention, Mention::Image(_))
             || matches!(uri, MentionUri::File { abs_path } if is_thumbnail_document(abs_path));
         if !hidden {
@@ -2690,6 +2702,7 @@ fn strip_space_after_hidden_chips(
     }
 }
 
+/// Brainz: documents Quick Look renders well enough to stand in for a chip.
 pub(crate) fn is_thumbnail_document(path: &std::path::Path) -> bool {
     let extension = path
         .extension()

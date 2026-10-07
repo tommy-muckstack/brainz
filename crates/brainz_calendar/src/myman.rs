@@ -71,7 +71,11 @@ impl Meeting {
             .iter()
             .filter(|name| {
                 let lower = name.to_lowercase();
-                !lower.starts_with("speaker") && (owner.is_empty() || !lower.contains(&owner))
+                let is_owner = !owner.is_empty()
+                    && lower
+                        .split(|c: char| !c.is_alphanumeric())
+                        .any(|word| word == owner);
+                !lower.starts_with("speaker") && !is_owner
             })
             .cloned()
             .collect()
@@ -122,9 +126,17 @@ impl MyMan {
         root.join("catalog.json").is_file().then_some(Self { root })
     }
 
-    /// The default folder regardless of any brain, for the connectors.
-    pub fn detect_default() -> Option<Self> {
-        Self::detect(&BrainConfig::default())
+    /// The folder for the brain open at `workspace_root`, or the default
+    /// one when no brain is open, for the connectors.
+    pub fn detect_for(workspace_root: Option<&Path>) -> Option<Self> {
+        let config = workspace_root.map(BrainConfig::load).unwrap_or_default();
+        Self::detect(&config)
+    }
+
+    /// Whether this My Man ships the bundled MCP companion the connectors
+    /// launch (1.1.9x and later).
+    pub fn has_companion(&self) -> bool {
+        self.root.join("tools/server.mjs").is_file()
     }
 
     pub fn join(&self, relative: &str) -> PathBuf {
@@ -175,12 +187,17 @@ impl MyMan {
         let Ok(meetings) = self.meetings() else {
             return Vec::new();
         };
-        meetings
+        let recent: Vec<Meeting> = meetings
             .into_iter()
             .filter(|meeting| meeting.complete && !meeting.low_content)
             .filter(|meeting| meeting.started >= since && meeting.started <= now)
             .filter(|meeting| meeting.minutes().is_none_or(|minutes| minutes >= 5))
-            .filter(|meeting| !brain_cites(brain, meeting.stem()))
+            .collect();
+        let stems: Vec<&str> = recent.iter().map(Meeting::stem).collect();
+        let cited = brain_cites(brain, &stems);
+        recent
+            .into_iter()
+            .filter(|meeting| !cited.contains(meeting.stem()))
             .collect()
     }
 
@@ -282,7 +299,8 @@ impl MyMan {
         std::fs::write(&path, output).with_context(|| format!("writing {}", path.display()))?;
         record.added.extend(added.iter().cloned());
         if let Some(parent) = record_path.parent() {
-            std::fs::create_dir_all(parent).ok();
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
         }
         std::fs::write(record_path, serde_json::to_string_pretty(&record)?)
             .with_context(|| format!("writing {}", record_path.display()))?;
@@ -396,10 +414,11 @@ pub fn parse_tasks(text: &str) -> Vec<MyManTask> {
             None => (rest, ""),
         };
         let mut body = body.trim();
-        // The assignee suffix My Man adds; the board says who owes in its own way.
+        // The assignee suffix My Man adds ("— Ada"); a dash inside the task
+        // text itself ("Follow up - send the deck") is left alone.
         for dash in [" — ", " – ", " - "] {
-            if let Some((head, _)) = body.rsplit_once(dash) {
-                if !head.trim().is_empty() {
+            if let Some((head, tail)) = body.rsplit_once(dash) {
+                if !head.trim().is_empty() && looks_like_assignee(tail) {
                     body = head.trim();
                 }
                 break;
@@ -426,26 +445,81 @@ pub fn parse_tasks(text: &str) -> Vec<MyManTask> {
     tasks
 }
 
-/// Whether any file in the brain mentions the meeting's stem. Tracked and
-/// untracked files both count, so a note written minutes ago already
-/// clears it.
-fn brain_cites(brain: &Path, stem: &str) -> bool {
-    if stem.len() < 8 {
-        return true;
+/// One or two capitalised words, no digits: a person, not task text.
+fn looks_like_assignee(tail: &str) -> bool {
+    let words: Vec<&str> = tail.split_whitespace().collect();
+    (1..=2).contains(&words.len())
+        && tail.chars().count() <= 30
+        && words.iter().all(|word| {
+            word.chars().next().is_some_and(char::is_uppercase)
+                && word
+                    .chars()
+                    .all(|c| c.is_alphabetic() || c == '\'' || c == '-')
+        })
+}
+
+/// Which of the meeting stems some file in the brain mentions, in one git
+/// grep. Tracked and untracked files both count, so a note written minutes
+/// ago already clears its recording.
+fn brain_cites(brain: &Path, stems: &[&str]) -> HashSet<String> {
+    use std::io::Write as _;
+    let wanted: Vec<&str> = stems
+        .iter()
+        .copied()
+        .filter(|stem| stem.len() >= 8)
+        .collect();
+    if wanted.is_empty() {
+        return HashSet::new();
     }
     #[allow(clippy::disallowed_methods, reason = "runs on the background executor")]
-    let output = std::process::Command::new("git")
+    let child = std::process::Command::new("git")
         .current_dir(brain)
-        .args(["grep", "-I", "-l", "-F", "--untracked", "--", stem])
-        .output();
-    match output {
-        Ok(output) => !output.stdout.is_empty(),
+        .args([
+            "grep",
+            "-I",
+            "-o",
+            "-h",
+            "-F",
+            "--untracked",
+            "-f",
+            "-",
+            "--",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let mut child = match child {
+        Ok(child) => child,
         Err(error) => {
-            log::debug!("brainz myman: git grep failed: {error}");
-            false
+            log::debug!("brainz myman: git grep failed to start: {error}");
+            return HashSet::new();
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let patterns = wanted.join("\n") + "\n";
+        if let Err(error) = stdin.write_all(patterns.as_bytes()) {
+            log::debug!("brainz myman: git grep stdin: {error}");
         }
     }
+    #[allow(clippy::disallowed_methods, reason = "runs on the background executor")]
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(error) => {
+            log::debug!("brainz myman: git grep failed: {error}");
+            return HashSet::new();
+        }
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| line.trim().to_owned())
+        .filter(|line| !line.is_empty())
+        .collect()
 }
+
+/// Serialises the To-Do tab's read-modify-write of the board and the
+/// handled list, so two quick clicks cannot lose each other's write.
+pub static TASK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// `key: value` pairs of the YAML front matter, scalars only.
 fn front_matter(note: &str) -> HashMap<String, String> {
@@ -616,7 +690,8 @@ pub fn save_token(token: &str) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).ok();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("restricting {}", path.display()))?;
     }
     Ok(())
 }
@@ -669,6 +744,11 @@ mod tests {
         assert_eq!(newest.minutes(), Some(38));
         assert!(newest.complete && !newest.low_content);
         assert_eq!(newest.others("ada"), Vec::<String>::new());
+        let mixed = Meeting {
+            participants: vec!["Adam Smith".into(), "Ada Lovelace".into()],
+            ..newest.clone()
+        };
+        assert_eq!(mixed.others("ada"), vec!["Adam Smith".to_owned()]);
     }
 
     #[test]
@@ -696,6 +776,11 @@ mod tests {
         let tasks = myman.open_tasks();
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].title, "Share my screen");
+        let dashed = parse_tasks(
+            "- [ ] Follow up - send the deck — Ada  <!-- note, 2026-09-25 -->\n- [ ] Ship v2 - beta  <!-- meeting -->\n",
+        );
+        assert_eq!(dashed[0].title, "Follow up - send the deck");
+        assert_eq!(dashed[1].title, "Ship v2 - beta");
         assert_eq!(tasks[0].source, "meeting");
         assert_eq!(tasks[0].date, NaiveDate::from_ymd_opt(2026, 9, 25));
         assert_eq!(

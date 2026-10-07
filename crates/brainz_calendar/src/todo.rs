@@ -11,9 +11,7 @@ use anyhow::{Context as _, Result};
 use chrono::Local;
 use gpui::{App, EventEmitter, FocusHandle, Focusable, Task, WeakEntity, Window, actions};
 use ui::{Tooltip, prelude::*};
-use workspace::{
-    HideStatusItem, Item, ItemHandle, OpenOptions, OpenVisible, StatusItemView, Workspace,
-};
+use workspace::{Item, OpenOptions, OpenVisible, Workspace};
 
 use crate::{
     brain_config::BrainConfig,
@@ -290,6 +288,9 @@ impl TodoView {
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
+                    let _serialised = myman::TASK_LOCK
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
                     if add {
                         let text = std::fs::read_to_string(&board)
                             .with_context(|| format!("reading {}", board.display()))?;
@@ -328,8 +329,7 @@ impl TodoView {
                     .child(
                         Label::new("From My Man")
                             .size(LabelSize::Small)
-                            .weight(gpui::FontWeight::SEMIBOLD)
-                            .color(Color::Accent),
+                            .weight(gpui::FontWeight::SEMIBOLD),
                     )
                     .child(
                         Label::new(self.myman_tasks.len().to_string())
@@ -855,65 +855,5 @@ impl Render for TodoView {
                     .child(header)
                     .children(body),
             )
-    }
-}
-
-/// Status bar button that opens the To-Do tab.
-pub struct TodoButton {
-    pane_item_focus_handle: Option<FocusHandle>,
-    /// The To-Do tab is the active item, so the button lights up.
-    active: bool,
-}
-
-impl TodoButton {
-    pub fn new() -> Self {
-        Self {
-            pane_item_focus_handle: None,
-            active: false,
-        }
-    }
-}
-
-impl Render for TodoButton {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let focus_handle = self.pane_item_focus_handle.clone();
-        let active = self.active;
-        div().child(
-            IconButton::new("brainz-todo-button", IconName::BrainzCheckboxChecked)
-                .icon_size(IconSize::Small)
-                .toggle_state(active)
-                .icon_color(if active {
-                    Color::Accent
-                } else {
-                    Color::Default
-                })
-                .tooltip(move |_window, cx| {
-                    if let Some(focus_handle) = &focus_handle {
-                        Tooltip::for_action_in("To-Do", &OpenTodo, focus_handle, cx)
-                    } else {
-                        Tooltip::for_action("To-Do", &OpenTodo, cx)
-                    }
-                })
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(Box::new(OpenTodo), cx);
-                }),
-        )
-    }
-}
-
-impl StatusItemView for TodoButton {
-    fn set_active_pane_item(
-        &mut self,
-        active_pane_item: Option<&dyn ItemHandle>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.pane_item_focus_handle = active_pane_item.map(|item| item.item_focus_handle(cx));
-        self.active = active_pane_item.is_some_and(|item| item.downcast::<TodoView>().is_some());
-        cx.notify();
-    }
-
-    fn hide_setting(&self, _: &App) -> Option<HideStatusItem> {
-        None
     }
 }

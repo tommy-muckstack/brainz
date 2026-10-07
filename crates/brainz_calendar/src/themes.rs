@@ -15,9 +15,7 @@ use gpui::{
     WeakEntity, Window, actions, canvas, point,
 };
 use ui::{ContextMenu, Disclosure, PopoverMenu, Tooltip, prelude::*};
-use workspace::{
-    HideStatusItem, Item, ItemHandle, OpenOptions, OpenVisible, StatusItemView, Workspace,
-};
+use workspace::{Item, OpenOptions, OpenVisible, Workspace};
 
 use crate::{
     brain_config::BrainConfig,
@@ -1156,64 +1154,5 @@ impl Render for ThemesView {
                     .child(header)
                     .children(body),
             )
-    }
-}
-
-/// Status bar button that opens the Themes tab.
-pub struct ThemesButton {
-    pane_item_focus_handle: Option<FocusHandle>,
-    active: bool,
-}
-
-impl ThemesButton {
-    pub fn new() -> Self {
-        Self {
-            pane_item_focus_handle: None,
-            active: false,
-        }
-    }
-}
-
-impl Render for ThemesButton {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let focus_handle = self.pane_item_focus_handle.clone();
-        let active = self.active;
-        div().child(
-            IconButton::new("brainz-themes-button", IconName::BrainzTheme)
-                .icon_size(IconSize::Small)
-                .toggle_state(active)
-                .icon_color(if active {
-                    Color::Accent
-                } else {
-                    Color::Default
-                })
-                .tooltip(move |_window, cx| {
-                    if let Some(focus_handle) = &focus_handle {
-                        Tooltip::for_action_in("Themes", &OpenThemes, focus_handle, cx)
-                    } else {
-                        Tooltip::for_action("Themes", &OpenThemes, cx)
-                    }
-                })
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(Box::new(OpenThemes), cx);
-                }),
-        )
-    }
-}
-
-impl StatusItemView for ThemesButton {
-    fn set_active_pane_item(
-        &mut self,
-        active_pane_item: Option<&dyn ItemHandle>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.pane_item_focus_handle = active_pane_item.map(|item| item.item_focus_handle(cx));
-        self.active = active_pane_item.is_some_and(|item| item.downcast::<ThemesView>().is_some());
-        cx.notify();
-    }
-
-    fn hide_setting(&self, _: &App) -> Option<HideStatusItem> {
-        None
     }
 }

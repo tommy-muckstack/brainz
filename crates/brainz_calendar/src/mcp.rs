@@ -10,7 +10,7 @@ use gpui::{
 };
 use terminal_view::terminal_panel::TerminalPanel;
 use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
-use workspace::{HideStatusItem, Item, ItemHandle, StatusItemView, Workspace, dock::DockPosition};
+use workspace::{Item, Workspace, dock::DockPosition};
 
 /// Which CLI owns a connector's sign-in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -931,13 +931,13 @@ impl HostedConnector {
 
     /// Writes the connector into the client's config; the caller then runs
     /// the sign-in.
-    pub fn add(&self, client: McpClient) -> Result<()> {
+    pub fn add(&self, client: McpClient, myman: Option<&crate::myman::MyMan>) -> Result<()> {
         match (client, self.transport) {
             (McpClient::Claude, HostedTransport::Http { url }) => {
                 connect_claude(self.name, serde_json::json!({ "type": "http", "url": url }))
             }
             (McpClient::Claude, HostedTransport::Stdio { command, args }) => {
-                let (args, env) = self.stdio_launch(args);
+                let (args, env) = self.stdio_launch(args, myman);
                 let mut config = serde_json::json!({
                     "type": "stdio",
                     "command": command,
@@ -958,7 +958,7 @@ impl HostedConnector {
                 connect_codex(self.name, toml::Value::Table(table))
             }
             (McpClient::Codex, HostedTransport::Stdio { command, args }) => {
-                let (args, env) = self.stdio_launch(args);
+                let (args, env) = self.stdio_launch(args, myman);
                 let mut table = toml::map::Map::new();
                 table.insert("command".into(), toml::Value::String(command.into()));
                 table.insert(
@@ -980,14 +980,18 @@ impl HostedConnector {
     /// The expanded arguments and env for a local connector. The My Man
     /// pair gets the configured export folder, the machine id, and the
     /// saved agent credential.
-    fn stdio_launch(&self, args: &[&str]) -> (Vec<String>, Vec<(String, String)>) {
+    fn stdio_launch(
+        &self,
+        args: &[&str],
+        myman: Option<&crate::myman::MyMan>,
+    ) -> (Vec<String>, Vec<(String, String)>) {
         let home = paths::home_dir().to_string_lossy().into_owned();
         let expand = |arg: &str| arg.replacen("~", &home, 1);
         if !self.is_myman() {
             return (args.iter().map(|arg| expand(arg)).collect(), Vec::new());
         }
-        let root = crate::myman::MyMan::detect_default()
-            .map(|myman| myman.root)
+        let root = myman
+            .map(|myman| myman.root.clone())
             .unwrap_or_else(|| paths::home_dir().join(crate::myman::DEFAULT_ROOT));
         let default_root = format!("~/{}", crate::myman::DEFAULT_ROOT);
         let args = args
@@ -1001,24 +1005,34 @@ impl HostedConnector {
         self.name.starts_with(crate::myman::READ_CONNECTOR)
     }
 
-    /// Every hosted connector already configured in a client gets its
-    /// launch rewritten, so a newly saved credential reaches the servers.
-    pub fn refresh_configured(configured: &[String]) -> Result<()> {
+    /// Every My Man connector already configured in a client gets its
+    /// launch rewritten: a newly saved credential reaches the servers, and
+    /// the older filesystem-server shape from before the bundled companion
+    /// becomes the companion. Blocking file I/O: background executor.
+    pub fn refresh_configured(myman: Option<&crate::myman::MyMan>) -> Result<()> {
+        let claude = read_claude_servers();
+        let codex = read_codex_servers();
         for hosted in HOSTED_CONNECTORS.iter().filter(|hosted| hosted.is_myman()) {
-            if !hosted.is_configured(configured) {
-                continue;
+            if claude.contains_key(hosted.name) {
+                hosted.add(McpClient::Claude, myman)?;
             }
-            for client in [McpClient::Claude, McpClient::Codex] {
-                let present = match client {
-                    McpClient::Claude => read_claude_servers().contains_key(hosted.name),
-                    McpClient::Codex => read_codex_servers().contains_key(hosted.name),
-                };
-                if present {
-                    hosted.add(client)?;
-                }
+            if codex.contains_key(hosted.name) {
+                hosted.add(McpClient::Codex, myman)?;
             }
         }
         Ok(())
+    }
+
+    /// Whether the older `myman` entry (the stock filesystem server) is
+    /// still what a client has, so the launch should be rewritten.
+    pub fn legacy_myman_configured() -> bool {
+        let legacy = |text: String| text.contains("server-filesystem");
+        read_claude_servers()
+            .get(crate::myman::READ_CONNECTOR)
+            .is_some_and(|value| legacy(value.to_string()))
+            || read_codex_servers()
+                .get(crate::myman::READ_CONNECTOR)
+                .is_some_and(|value| legacy(value.to_string()))
     }
 
     /// Whether Connect also has to run the client's sign-in.
@@ -1347,9 +1361,15 @@ impl McpView {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.loading = true;
         cx.notify();
+        let myman = self.myman(cx);
         self._load = Some(cx.spawn(async move |this, cx| {
             let (connectors, token_saved) = cx
-                .background_spawn(async {
+                .background_spawn(async move {
+                    if HostedConnector::legacy_myman_configured()
+                        && let Err(error) = HostedConnector::refresh_configured(myman.as_ref())
+                    {
+                        log::warn!("brainz mcp: could not update the My Man connector: {error:#}");
+                    }
                     (load_connectors(), crate::myman::saved_token().is_some())
                 })
                 .await;
@@ -1370,20 +1390,38 @@ impl McpView {
             return;
         };
         let token = editor.read(cx).text(cx);
-        let configured: Vec<String> = self.connectors.iter().map(|c| c.name.clone()).collect();
-        let result = crate::myman::save_token(&token)
-            .and_then(|()| HostedConnector::refresh_configured(&configured));
-        match result {
-            Ok(()) => {
-                self.error = None;
-                self.myman_token_editor = None;
-                self.refresh(cx);
-            }
-            Err(error) => {
-                self.error = Some(format!("Couldn't save the My Man credential: {error:#}"));
-                cx.notify();
-            }
-        }
+        let myman = self.myman(cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    crate::myman::save_token(&token)
+                        .and_then(|()| HostedConnector::refresh_configured(myman.as_ref()))
+                })
+                .await;
+            this.update(cx, |this, cx| match result {
+                Ok(()) => {
+                    this.error = None;
+                    this.myman_token_editor = None;
+                    this.refresh(cx);
+                }
+                Err(error) => {
+                    this.error = Some(format!("Couldn't save the My Man credential: {error:#}"));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The My Man folder for the open brain (its `[myman] root`), or the
+    /// default folder when no brain is open.
+    fn myman(&self, cx: &App) -> Option<crate::myman::MyMan> {
+        let root = self
+            .workspace
+            .upgrade()
+            .and_then(|workspace| workspace.read(cx).root_paths(cx).first().cloned());
+        crate::myman::MyMan::detect_for(root.as_deref())
     }
 
     /// The paste field under the My Man actions row while no credential is
@@ -1450,7 +1488,8 @@ impl McpView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match hosted.add(McpClient::Claude) {
+        let myman = self.myman(cx);
+        match hosted.add(McpClient::Claude, myman.as_ref()) {
             Ok(()) if hosted.needs_login() => {
                 self.error = None;
                 self.reconnect(McpClient::Claude, hosted.name.to_owned(), window, cx);
@@ -1973,9 +2012,12 @@ impl Render for McpView {
                 }
             }
             let configured: Vec<String> = connectors.iter().map(|c| c.name.clone()).collect();
+            // The My Man pair only makes sense when that My Man ships the companion.
+            let companion = self.myman(cx).is_some_and(|myman| myman.has_companion());
             let available: Vec<&'static HostedConnector> = HOSTED_CONNECTORS
                 .iter()
                 .filter(|hosted| !hosted.is_configured(&configured))
+                .filter(|hosted| !hosted.is_myman() || companion)
                 .collect();
             if !available.is_empty() {
                 rows.push(
@@ -2010,92 +2052,5 @@ impl Render for McpView {
                     .child(header)
                     .children(body),
             )
-    }
-}
-
-/// Status bar button that opens the MCP connectors tab.
-pub struct McpButton {
-    pane_item_focus_handle: Option<FocusHandle>,
-    /// The MCP tab is the active item, so the button lights up.
-    active: bool,
-    _health_subscription: Option<Subscription>,
-}
-
-impl McpButton {
-    pub fn new() -> Self {
-        Self {
-            pane_item_focus_handle: None,
-            active: false,
-            _health_subscription: None,
-        }
-    }
-}
-
-impl Render for McpButton {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let focus_handle = self.pane_item_focus_handle.clone();
-        let active = self.active;
-        let failing = health(cx)
-            .map(|health| {
-                if self._health_subscription.is_none() {
-                    self._health_subscription = Some(cx.observe(&health, |_, _, cx| cx.notify()));
-                }
-                health.read(cx).failing()
-            })
-            .unwrap_or_default();
-        let trouble = !failing.is_empty();
-        let tooltip_title: SharedString = if trouble {
-            format!(
-                "MCP: {} down ({})",
-                failing.len(),
-                failing
-                    .iter()
-                    .map(|(name, _)| name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-            .into()
-        } else {
-            "Connectors".into()
-        };
-        div().child(
-            IconButton::new("brainz-mcp-button", IconName::BrainzMcp)
-                .icon_size(IconSize::Small)
-                .toggle_state(active)
-                .icon_color(if trouble {
-                    Color::Error
-                } else if active {
-                    Color::Accent
-                } else {
-                    Color::Default
-                })
-                .tooltip(move |_window, cx| {
-                    if let Some(focus_handle) = &focus_handle {
-                        Tooltip::for_action_in(tooltip_title.clone(), &OpenMcp, focus_handle, cx)
-                    } else {
-                        Tooltip::for_action(tooltip_title.clone(), &OpenMcp, cx)
-                    }
-                })
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(Box::new(OpenMcp), cx);
-                }),
-        )
-    }
-}
-
-impl StatusItemView for McpButton {
-    fn set_active_pane_item(
-        &mut self,
-        active_pane_item: Option<&dyn ItemHandle>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.pane_item_focus_handle = active_pane_item.map(|item| item.item_focus_handle(cx));
-        self.active = active_pane_item.is_some_and(|item| item.downcast::<McpView>().is_some());
-        cx.notify();
-    }
-
-    fn hide_setting(&self, _: &App) -> Option<HideStatusItem> {
-        None
     }
 }
