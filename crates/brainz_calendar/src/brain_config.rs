@@ -22,6 +22,10 @@
 //! [themes]
 //! noise_dirs = ["itinerary", "roster", "logistics", "prompt"]
 //! window_weeks = 12
+//!
+//! [myman]
+//! root = "~/MyManBrain"       # My Man's export folder; the default when it exists
+//! log_after_days = 14         # how far back the Brief looks for unlogged recordings
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -64,6 +68,26 @@ pub struct BrainConfig {
     pub calendar: CalendarConfig,
     /// Knobs for the themes pass.
     pub themes: ThemesConfig,
+    /// The My Man export folder Brainz reads alongside the brain.
+    pub myman: MyManConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MyManConfig {
+    /// `~/MyManBrain` when unset; `~` expands to the home folder.
+    pub root: Option<String>,
+    /// Recordings older than this never show as "to log" in the Brief.
+    pub log_after_days: u32,
+}
+
+impl Default for MyManConfig {
+    fn default() -> Self {
+        Self {
+            root: None,
+            log_after_days: 14,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -123,6 +147,7 @@ impl Default for BrainConfig {
             sync: true,
             calendar: CalendarConfig::default(),
             themes: ThemesConfig::default(),
+            myman: MyManConfig::default(),
         }
     }
 }
@@ -205,6 +230,8 @@ mod tests {
         assert_eq!(config.people_dir, "people");
         assert_eq!(config.calendar.prep_lead_minutes, 10);
         assert_eq!(config.themes.window_weeks, 12);
+        assert_eq!(config.myman.log_after_days, 14);
+        assert!(config.myman.root.is_none());
         assert_eq!(config.match_dirs(), config.vocabulary_folders);
     }
 

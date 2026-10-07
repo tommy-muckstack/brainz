@@ -11,13 +11,11 @@ use anyhow::{Context as _, Result};
 use chrono::Local;
 use gpui::{App, EventEmitter, FocusHandle, Focusable, Task, WeakEntity, Window, actions};
 use ui::{Tooltip, prelude::*};
-use workspace::{
-    HideStatusItem, Item, ItemHandle, OpenOptions, OpenVisible, StatusItemView, Workspace,
-};
+use workspace::{Item, OpenOptions, OpenVisible, Workspace};
 
 use crate::{
     brain_config::BrainConfig,
-    open_loops,
+    myman, open_loops,
     themes::runner,
     themes_signals::{self as signals, OpenLoop},
 };
@@ -182,6 +180,9 @@ pub struct TodoView {
     board: TodoBoard,
     /// ⏳ and ⏰ lines from notes, oldest first, from the last signals pass.
     loops: Vec<OpenLoop>,
+    /// Open tasks My Man pulled out of meetings and notes, not yet on the
+    /// board or dismissed.
+    myman_tasks: Vec<myman::MyManTask>,
     error: Option<String>,
     show_done: bool,
     _load: Option<Task<()>>,
@@ -237,6 +238,7 @@ impl TodoView {
             owner,
             board: TodoBoard::default(),
             loops: Vec::new(),
+            myman_tasks: Vec::new(),
             error: None,
             show_done: false,
             _load: None,
@@ -250,8 +252,13 @@ impl TodoView {
         let path = self.path.clone();
         let repo = self.repo.clone();
         self._load = Some(cx.spawn(async move |this, cx| {
-            let (result, loops) = cx
-                .background_spawn(async move { (load_board(&path), load_loops(&repo)) })
+            let (result, loops, myman_tasks) = cx
+                .background_spawn(async move {
+                    let myman_tasks = myman::MyMan::detect(&BrainConfig::load(&repo))
+                        .map(|myman| myman::pending_tasks(&myman))
+                        .unwrap_or_default();
+                    (load_board(&path), load_loops(&repo), myman_tasks)
+                })
                 .await;
             this.update(cx, |this, cx| {
                 match result {
@@ -262,10 +269,127 @@ impl TodoView {
                     Err(error) => this.error = Some(format!("{error:#}")),
                 }
                 this.loops = loops;
+                this.myman_tasks = myman_tasks;
                 cx.notify();
             })
             .ok();
         }));
+    }
+
+    /// Copies a My Man task onto the board under Today (or just remembers
+    /// it as dismissed), so it stops showing here.
+    fn resolve_myman_task(&mut self, ix: usize, add: bool, cx: &mut Context<Self>) {
+        if ix >= self.myman_tasks.len() {
+            return;
+        }
+        let task = self.myman_tasks.remove(ix);
+        cx.notify();
+        let board = self.path.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let _serialised = myman::TASK_LOCK
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if add {
+                        let text = std::fs::read_to_string(&board)
+                            .with_context(|| format!("reading {}", board.display()))?;
+                        let output = open_loops::insert_board_line(&text, &task.board_line(), true);
+                        std::fs::write(&board, output)
+                            .with_context(|| format!("writing {}", board.display()))?;
+                    }
+                    myman::mark_task_handled(&task)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Err(error) = result {
+                    log::error!("brainz my man task: {error:#}");
+                    this.error = Some(format!("Could not update the board: {error:#}"));
+                }
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn render_myman_tasks(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        if self.myman_tasks.is_empty() {
+            return None;
+        }
+        let mut block = v_flex()
+            .w_full()
+            .gap_0p5()
+            .child(
+                h_flex()
+                    .px_2()
+                    .pt_5()
+                    .pb_0p5()
+                    .gap_2()
+                    .child(
+                        Label::new("From My Man")
+                            .size(LabelSize::Small)
+                            .weight(gpui::FontWeight::SEMIBOLD),
+                    )
+                    .child(
+                        Label::new(self.myman_tasks.len().to_string())
+                            .size(LabelSize::Small)
+                            .color(Color::Placeholder),
+                    ),
+            )
+            .child(
+                div().px_2().pb_1().child(
+                    Label::new(
+                        "Tasks My Man heard in meetings or found in notes. Add to To-Do puts one under Today; Dismiss hides it here and leaves My Man's own list alone.",
+                    )
+                    .size(LabelSize::Small)
+                    .color(Color::Muted),
+                ),
+            );
+        for (ix, task) in self.myman_tasks.iter().enumerate() {
+            let when = task
+                .date
+                .map(|date| format!(" · {date}"))
+                .unwrap_or_default();
+            block = block.child(
+                h_flex()
+                    .id(("brainz-todo-myman", ix))
+                    .w_full()
+                    .items_center()
+                    .gap_2p5()
+                    .px_2()
+                    .py_1p5()
+                    .rounded_md()
+                    .hover(|this| this.bg(cx.theme().colors().element_hover))
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .flex_1()
+                            .child(Label::new(task.title.clone()).truncate())
+                            .child(
+                                Label::new(format!("My Man {}{when}", task.source))
+                                    .size(LabelSize::Small)
+                                    .color(Color::Placeholder),
+                            ),
+                    )
+                    .child(
+                        Button::new(("brainz-todo-myman-add", ix), "Add to To-Do")
+                            .label_size(LabelSize::Small)
+                            .style(ButtonStyle::Filled)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.resolve_myman_task(ix, true, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(("brainz-todo-myman-dismiss", ix), "Dismiss")
+                            .label_size(LabelSize::Small)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.resolve_myman_task(ix, false, cx);
+                            })),
+                    ),
+            );
+        }
+        Some(block.into_any_element())
     }
 
     /// Ticks the loop's marker in its note and, when `add` is set, copies
@@ -358,12 +482,11 @@ impl TodoView {
                     .child(
                         Label::new("Flagged in notes")
                             .size(LabelSize::Small)
-                            .weight(gpui::FontWeight::SEMIBOLD)
-                            .color(Color::Accent),
+                            .weight(gpui::FontWeight::SEMIBOLD),
                     )
                     .child(
                         Label::new(self.loops.len().to_string())
-                            .size(LabelSize::XSmall)
+                            .size(LabelSize::Small)
                             .color(Color::Placeholder),
                     ),
             )
@@ -372,7 +495,7 @@ impl TodoView {
                     Label::new(
                         "Lines in your notes that start with ⏳ (waiting on someone) or ⏰ (you owe it) and never made it onto the board. Add to To-Do copies one here and ticks the note; Dismiss just ticks the note.",
                     )
-                    .size(LabelSize::XSmall)
+                    .size(LabelSize::Small)
                     .color(Color::Muted),
                 ),
             );
@@ -380,7 +503,7 @@ impl TodoView {
             return block
                 .child(
                     div().px_2().py_1().child(
-                        Label::new("Nothing flagged. Every ⏳ and ⏰ in your notes is on the board or ticked.")
+                        Label::new("Nothing flagged")
                             .size(LabelSize::Small)
                             .color(Color::Placeholder),
                     ),
@@ -411,9 +534,10 @@ impl TodoView {
                     .rounded_md()
                     .hover(|this| this.bg(cx.theme().colors().element_hover))
                     .child(
-                        div().w(px(20.)).flex_none().child(
-                            Label::new(open_loop.marker.clone()).size(LabelSize::Small),
-                        ),
+                        div()
+                            .w(px(20.))
+                            .flex_none()
+                            .child(Label::new(open_loop.marker.clone()).size(LabelSize::Small)),
                     )
                     .child(
                         v_flex()
@@ -423,34 +547,30 @@ impl TodoView {
                             .child(
                                 h_flex()
                                     .gap_2()
+                                    .child(Label::new(who).size(LabelSize::Small).color(
+                                        if open_loop.owed_by_owner() {
+                                            Color::Warning
+                                        } else {
+                                            Color::Muted
+                                        },
+                                    ))
                                     .child(
-                                        Label::new(who)
-                                            .size(LabelSize::XSmall)
-                                            .color(if open_loop.owed_by_owner() {
-                                                Color::Warning
-                                            } else {
-                                                Color::Muted
-                                            }),
-                                    )
-                                    .child(
-                                        Label::new(format!(
-                                            "{age} days · {source}"
-                                        ))
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Placeholder),
+                                        Label::new(format!("{age} days · {source}"))
+                                            .size(LabelSize::Small)
+                                            .color(Color::Placeholder),
                                     ),
                             ),
                     )
                     .child(
                         Button::new(("brainz-todo-loop-open", ix), "Open note")
-                            .label_size(LabelSize::XSmall)
+                            .label_size(LabelSize::Small)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_relative(&file, window, cx);
                             })),
                     )
                     .child(
                         Button::new(("brainz-todo-loop-add", ix), "Add to To-Do")
-                            .label_size(LabelSize::XSmall)
+                            .label_size(LabelSize::Small)
                             .style(ButtonStyle::Filled)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.resolve_loop(ix, true, cx);
@@ -458,7 +578,7 @@ impl TodoView {
                     )
                     .child(
                         Button::new(("brainz-todo-loop-dismiss", ix), "Dismiss")
-                            .label_size(LabelSize::XSmall)
+                            .label_size(LabelSize::Small)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.resolve_loop(ix, false, cx);
                             })),
@@ -541,15 +661,13 @@ impl TodoView {
                                 .gap_2()
                                 .when_some(item.note.clone(), |this, note| {
                                     this.child(
-                                        Label::new(note)
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Muted),
+                                        Label::new(note).size(LabelSize::Small).color(Color::Muted),
                                     )
                                 })
                                 .when_some(item.tag.clone(), |this, tag| {
                                     this.child(
                                         Label::new(tag)
-                                            .size(LabelSize::XSmall)
+                                            .size(LabelSize::Small)
                                             .color(Color::Placeholder),
                                     )
                                 }),
@@ -601,7 +719,7 @@ impl Render for TodoView {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(Icon::new(IconName::BrainzCheckboxChecked).color(Color::Accent))
+                    .child(Icon::new(IconName::BrainzCheckboxChecked).color(Color::Muted))
                     .child(Label::new("To-Do").size(LabelSize::Large))
                     .child(
                         Label::new(format!("{open_count} open"))
@@ -662,11 +780,15 @@ impl Render for TodoView {
                         Label::new(section.name.clone())
                             .size(LabelSize::Small)
                             .weight(gpui::FontWeight::SEMIBOLD)
-                            .color(if is_done { Color::Muted } else { Color::Accent }),
+                            .color(if is_done {
+                                Color::Muted
+                            } else {
+                                Color::Default
+                            }),
                     )
                     .child(
                         Label::new(section.items.len().to_string())
-                            .size(LabelSize::XSmall)
+                            .size(LabelSize::Small)
                             .color(Color::Placeholder),
                     )
                     .when(is_done, |this| {
@@ -675,7 +797,7 @@ impl Render for TodoView {
                                 "brainz-todo-toggle-done",
                                 if self.show_done { "Hide" } else { "Show" },
                             )
-                            .label_size(LabelSize::XSmall)
+                            .label_size(LabelSize::Small)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.show_done = !this.show_done;
                                 cx.notify();
@@ -702,12 +824,17 @@ impl Render for TodoView {
                 );
             }
             for item in &section.items {
-                block = block.child(self.render_item(item_ix, item, cx));
+                block = block.child(ui::reveal(
+                    ("brainz-todo-item-reveal", item_ix),
+                    item_ix,
+                    self.render_item(item_ix, item, cx),
+                ));
                 item_ix += 1;
             }
             body.push(block.into_any_element());
         }
         body.push(self.render_loops(cx));
+        body.extend(self.render_myman_tasks(cx));
 
         v_flex()
             .id("brainz-todo")
@@ -728,65 +855,5 @@ impl Render for TodoView {
                     .child(header)
                     .children(body),
             )
-    }
-}
-
-/// Status bar button that opens the To-Do tab.
-pub struct TodoButton {
-    pane_item_focus_handle: Option<FocusHandle>,
-    /// The To-Do tab is the active item, so the button lights up.
-    active: bool,
-}
-
-impl TodoButton {
-    pub fn new() -> Self {
-        Self {
-            pane_item_focus_handle: None,
-            active: false,
-        }
-    }
-}
-
-impl Render for TodoButton {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let focus_handle = self.pane_item_focus_handle.clone();
-        let active = self.active;
-        div().child(
-            IconButton::new("brainz-todo-button", IconName::BrainzCheckboxChecked)
-                .icon_size(IconSize::Small)
-                .toggle_state(active)
-                .icon_color(if active {
-                    Color::Accent
-                } else {
-                    Color::Default
-                })
-                .tooltip(move |_window, cx| {
-                    if let Some(focus_handle) = &focus_handle {
-                        Tooltip::for_action_in("To-Do", &OpenTodo, focus_handle, cx)
-                    } else {
-                        Tooltip::for_action("To-Do", &OpenTodo, cx)
-                    }
-                })
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(Box::new(OpenTodo), cx);
-                }),
-        )
-    }
-}
-
-impl StatusItemView for TodoButton {
-    fn set_active_pane_item(
-        &mut self,
-        active_pane_item: Option<&dyn ItemHandle>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.pane_item_focus_handle = active_pane_item.map(|item| item.item_focus_handle(cx));
-        self.active = active_pane_item.is_some_and(|item| item.downcast::<TodoView>().is_some());
-        cx.notify();
-    }
-
-    fn hide_setting(&self, _: &App) -> Option<HideStatusItem> {
-        None
     }
 }

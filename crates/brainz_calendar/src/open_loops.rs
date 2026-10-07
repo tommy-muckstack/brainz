@@ -75,19 +75,28 @@ pub fn board_line(open_loop: &OpenLoop, owner: &str) -> String {
 pub fn add_to_board(todo_path: &Path, open_loop: &OpenLoop, owner: &str) -> anyhow::Result<()> {
     let text = std::fs::read_to_string(todo_path)
         .with_context(|| format!("reading {}", todo_path.display()))?;
-    let output = insert_board_line(&text, &board_line(open_loop, owner), open_loop.owed_by_owner());
-    std::fs::write(todo_path, output).with_context(|| format!("writing {}", todo_path.display()))?;
+    let output = insert_board_line(
+        &text,
+        &board_line(open_loop, owner),
+        open_loop.owed_by_owner(),
+    );
+    std::fs::write(todo_path, output)
+        .with_context(|| format!("writing {}", todo_path.display()))?;
     Ok(())
 }
 
-fn insert_board_line(text: &str, line: &str, owed_by_owner: bool) -> String {
+pub(crate) fn insert_board_line(text: &str, line: &str, owed_by_owner: bool) -> String {
     let wanted: &[&str] = if owed_by_owner {
         &["today"]
     } else {
         &["delayed", "waiting"]
     };
     let lines: Vec<&str> = text.lines().collect();
-    let heading_at = |ix: usize| lines[ix].strip_prefix("## ").map(|name| name.trim().to_ascii_lowercase());
+    let heading_at = |ix: usize| {
+        lines[ix]
+            .strip_prefix("## ")
+            .map(|name| name.trim().to_ascii_lowercase())
+    };
     let section = (0..lines.len()).find(|&ix| {
         heading_at(ix).is_some_and(|name| wanted.iter().any(|prefix| name.starts_with(prefix)))
     });
@@ -127,7 +136,12 @@ fn insert_board_line(text: &str, line: &str, owed_by_owner: bool) -> String {
             };
             let done = (0..lines.len())
                 .find(|&ix| heading_at(ix).is_some_and(|name| name.starts_with("done")));
-            let mut block = vec![heading.to_owned(), String::new(), line.to_owned(), String::new()];
+            let mut block = vec![
+                heading.to_owned(),
+                String::new(),
+                line.to_owned(),
+                String::new(),
+            ];
             match done {
                 Some(ix) => {
                     if ix > 0 && !lines[ix - 1].trim().is_empty() {
@@ -213,7 +227,11 @@ mod tests {
     fn strike_marker_ticks_the_nearest_matching_line() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("note.md");
-        std::fs::write(&path, "# Note\n\n- ⏳ Lea to come back with the counter\n- ⏳ other\n").unwrap();
+        std::fs::write(
+            &path,
+            "# Note\n\n- ⏳ Lea to come back with the counter\n- ⏳ other\n",
+        )
+        .unwrap();
         let mut lp = waiting("Lea to come back with the counter", Some("Lea"));
         lp.line = 9;
         strike_marker(&path, &lp).unwrap();

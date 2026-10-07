@@ -15,15 +15,14 @@ use gpui::{
 };
 use markdown::{Markdown, MarkdownElement, MarkdownStyle};
 use ui::{Tooltip, prelude::*};
-use workspace::{
-    HideStatusItem, Item, ItemHandle, OpenOptions, OpenVisible, StatusItemView, Workspace,
-};
+use workspace::{Item, OpenOptions, OpenVisible, Workspace};
 
 use crate::{
     LoadState,
     brain_config::BrainConfig,
     brain_match::BrainIndex,
-    open_loops,
+    myman, open_loops,
+    prep::OpenClaudePrefilled,
     status_decay::{self, Decay},
     themes_signals::{self as signals, OpenLoop},
     todo,
@@ -39,6 +38,7 @@ actions!(
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const LOOP_LIMIT: usize = 10;
+const RECORDING_LIMIT: usize = 6;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BriefEvent {
@@ -88,10 +88,39 @@ pub struct Brief {
     pub loops: Vec<OpenLoop>,
     pub loops_total: usize,
     pub owner: String,
+    /// My Man recordings no note in the brain cites yet, newest first.
+    pub recordings: Vec<myman::Meeting>,
+    pub recordings_total: usize,
+    pub myman_root: Option<PathBuf>,
 }
 
 const NARRATIVE_START: &str = "<!-- narrative:start -->";
 const NARRATIVE_END: &str = "<!-- narrative:end -->";
+
+/// What the Log this call button puts in the Claude box.
+pub fn log_call_prompt(meeting: &myman::Meeting, root: &std::path::Path, owner: &str) -> String {
+    let path = root.join(&meeting.path);
+    let others = meeting.others(owner);
+    let mut text = format!(
+        "Log this call into the brain. My Man recorded \"{}\" on {}",
+        meeting.title,
+        meeting.started.format("%A %B %-d at %-I:%M %p")
+    );
+    if let Some(minutes) = meeting.minutes() {
+        text.push_str(&format!(" ({minutes} min"));
+        if !others.is_empty() {
+            text.push_str(&format!(", with {}", others.join(", ")));
+        }
+        text.push(')');
+    } else if !others.is_empty() {
+        text.push_str(&format!(" with {}", others.join(", ")));
+    }
+    text.push_str(&format!(
+        ". The transcript is at {}. Reconcile it with any other source for the same call, write the notes in the right folder, update that folder's index, and keep the transcript path at the top of the note.",
+        path.display()
+    ));
+    text
+}
 
 /// The narrative block of a brief file, or `None` when the markers are
 /// missing.
@@ -117,10 +146,13 @@ fn first_iso_date(line: &str) -> Option<NaiveDate> {
     let bytes = line.as_bytes();
     (0..bytes.len().saturating_sub(9))
         .filter(|&i| {
-            bytes[i..i + 10]
-                .iter()
-                .enumerate()
-                .all(|(j, b)| if j == 4 || j == 7 { *b == b'-' } else { b.is_ascii_digit() })
+            bytes[i..i + 10].iter().enumerate().all(|(j, b)| {
+                if j == 4 || j == 7 {
+                    *b == b'-'
+                } else {
+                    b.is_ascii_digit()
+                }
+            })
         })
         .find_map(|i| NaiveDate::parse_from_str(&line[i..i + 10], "%Y-%m-%d").ok())
 }
@@ -162,11 +194,15 @@ fn open_owes(board: &todo::TodoBoard) -> Vec<Owe> {
         .iter()
         .filter(|section| !section.name.to_ascii_lowercase().starts_with("done"))
         .flat_map(|section| {
-            section.items.iter().filter(|item| !item.done).map(|item| Owe {
-                section: section.name.clone(),
-                title: item.title.clone(),
-                tag: item.tag.clone(),
-            })
+            section
+                .items
+                .iter()
+                .filter(|item| !item.done)
+                .map(|item| Owe {
+                    section: section.name.clone(),
+                    title: item.title.clone(),
+                    tag: item.tag.clone(),
+                })
         })
         .collect()
 }
@@ -232,6 +268,17 @@ pub fn build(repo: &std::path::Path, now: DateTime<Local>) -> Brief {
         .ok()
         .and_then(|text| narrative_block(&text));
 
+    let (recordings, recordings_total, myman_root) = match myman::MyMan::detect(&config) {
+        Some(myman) => {
+            let mut recordings =
+                myman.unlogged_meetings(repo, i64::from(config.myman.log_after_days), now);
+            let total = recordings.len();
+            recordings.truncate(RECORDING_LIMIT);
+            (recordings, total, Some(myman.root))
+        }
+        None => (Vec::new(), 0, None),
+    };
+
     let (owes, owes_updated) = match std::fs::read_to_string(repo.join(&config.todo)) {
         Ok(text) => {
             let board = todo::parse_board(&text);
@@ -264,6 +311,9 @@ pub fn build(repo: &std::path::Path, now: DateTime<Local>) -> Brief {
         loops,
         loops_total,
         owner: config.owner_label(),
+        recordings,
+        recordings_total,
+        myman_root,
     }
 }
 
@@ -396,13 +446,12 @@ impl BriefView {
             .child(
                 Label::new(title)
                     .size(LabelSize::Small)
-                    .weight(gpui::FontWeight::SEMIBOLD)
-                    .color(Color::Accent),
+                    .weight(gpui::FontWeight::SEMIBOLD),
             )
             .when_some(count, |this, count| {
                 this.child(
                     Label::new(count.to_string())
-                        .size(LabelSize::XSmall)
+                        .size(LabelSize::Small)
                         .color(Color::Placeholder),
                 )
             })
@@ -482,19 +531,16 @@ impl BriefView {
                 .child(
                     Label::new("The read")
                         .size(LabelSize::Small)
-                        .weight(gpui::FontWeight::SEMIBOLD)
-                        .color(Color::Accent),
+                        .weight(gpui::FontWeight::SEMIBOLD),
                 )
                 .when_some(subtitle, |this, subtitle| {
-                    this.child(
-                        Label::new(subtitle)
-                            .size(LabelSize::XSmall)
-                            .color(if age.is_some_and(|days| days > 1) {
-                                Color::Warning
-                            } else {
-                                Color::Placeholder
-                            }),
-                    )
+                    this.child(Label::new(subtitle).size(LabelSize::Small).color(
+                        if age.is_some_and(|days| days > 1) {
+                            Color::Warning
+                        } else {
+                            Color::Placeholder
+                        },
+                    ))
                 })
                 .into_any_element(),
         ];
@@ -524,17 +570,17 @@ impl BriefView {
                     .items_center()
                     .child(
                         Label::new(if self.brief.narrative.is_some() {
-                            "No read yet today. Paste the prompt next to the brief file into Grokbot."
+                            "No read yet today."
                         } else {
-                            "No brief file in this brain yet. Add one with a narrative block and point `brief` in brainz.toml at it."
+                            "No brief file in this brain yet."
                         })
                         .size(LabelSize::Small)
                         .color(Color::Placeholder),
                     )
                     .when(self.brief.narrative.is_some(), |this| {
                         this.child(
-                            Button::new("brainz-brief-open-narrative", "Open file")
-                                .label_size(LabelSize::XSmall)
+                            Button::new("brainz-brief-open-narrative", "Open brief")
+                                .label_size(LabelSize::Small)
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.open_relative(&file, window, cx);
                                 })),
@@ -550,7 +596,7 @@ impl BriefView {
     fn render_owes(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut rows = vec![self.section("Open owes", Some(self.brief.owes.len()))];
         if self.brief.owes.is_empty() {
-            rows.push(self.empty("Nothing owed, or the To-Do board is empty"));
+            rows.push(self.empty("Nothing owed"));
             return rows;
         }
         let todo_file = self.brief.todo_file.clone();
@@ -560,38 +606,36 @@ impl BriefView {
                 let name = owe.section.to_ascii_lowercase();
                 name.starts_with("today") || name.starts_with("urgent")
             };
-            rows.push(
-                h_flex()
-                    .id(("brainz-brief-owe", ix))
-                    .w_full()
-                    .items_center()
-                    .gap_2()
-                    .px_1()
-                    .py_1()
-                    .rounded_md()
-                    .hover(|this| this.bg(cx.theme().colors().element_hover))
-                    .cursor_pointer()
-                    .tooltip(Tooltip::text("Open the To-Do board"))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_relative(&file, window, cx);
-                    }))
-                    .child(
-                        div().w(px(110.)).flex_none().child(
-                            Label::new(owe.section.clone())
-                                .size(LabelSize::XSmall)
-                                .color(if urgent { Color::Warning } else { Color::Muted })
-                                .truncate(),
-                        ),
-                    )
-                    .child(
-                        div().flex_1().min_w_0().child(
-                            Label::new(owe.title.clone())
-                                .size(LabelSize::Small)
-                                .truncate(),
-                        ),
-                    )
-                    .into_any_element(),
-            );
+            let row = h_flex()
+                .id(("brainz-brief-owe", ix))
+                .w_full()
+                .items_center()
+                .gap_2()
+                .px_1()
+                .py_1()
+                .rounded_md()
+                .hover(|this| this.bg(cx.theme().colors().element_hover))
+                .cursor_pointer()
+                .tooltip(Tooltip::text("Open the To-Do board"))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_relative(&file, window, cx);
+                }))
+                .child(
+                    div().w(px(110.)).flex_none().child(
+                        Label::new(owe.section.clone())
+                            .size(LabelSize::Small)
+                            .color(if urgent { Color::Warning } else { Color::Muted })
+                            .truncate(),
+                    ),
+                )
+                .child(
+                    div().flex_1().min_w_0().child(
+                        Label::new(owe.title.clone())
+                            .size(LabelSize::Small)
+                            .truncate(),
+                    ),
+                );
+            rows.push(ui::reveal(("brainz-brief-owe-reveal", ix), ix, row).into_any_element());
         }
         if let Some(updated) = &self.brief.owes_updated {
             rows.push(
@@ -599,7 +643,7 @@ impl BriefView {
                     .px_1()
                     .child(
                         Label::new(format!("Board updated {updated}"))
-                            .size(LabelSize::XSmall)
+                            .size(LabelSize::Small)
                             .color(Color::Placeholder),
                     )
                     .into_any_element(),
@@ -615,12 +659,16 @@ impl BriefView {
         };
         let mut rows = Vec::new();
         for (title, items, key) in [
-            ("Decisions only you can make", &self.brief.decisions, "decision"),
+            (
+                "Decisions only you can make",
+                &self.brief.decisions,
+                "decision",
+            ),
             ("Blocked", &self.brief.blocked, "blocked"),
         ] {
             rows.push(self.section(title, Some(items.len())));
             if items.is_empty() {
-                rows.push(self.empty("Nothing here"));
+                rows.push(self.empty("Nothing right now"));
                 continue;
             }
             for (ix, item) in items.iter().enumerate() {
@@ -645,9 +693,10 @@ impl BriefView {
                             this.open_relative(&file, window, cx);
                         }))
                         .child(
-                            div().flex_1().min_w_0().child(
-                                Label::new(text).size(LabelSize::Small).truncate(),
-                            ),
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(Label::new(text).size(LabelSize::Small).truncate()),
                         )
                         .into_any_element(),
                 );
@@ -659,7 +708,7 @@ impl BriefView {
                     .px_1()
                     .child(
                         Label::new(format!("Desk updated {updated}"))
-                            .size(LabelSize::XSmall)
+                            .size(LabelSize::Small)
                             .color(Color::Placeholder),
                     )
                     .into_any_element(),
@@ -685,7 +734,7 @@ impl BriefView {
             return rows;
         }
         if self.brief.events.is_empty() {
-            rows.push(self.empty("Nothing on the calendar today"));
+            rows.push(self.empty("Nothing on the calendar"));
             return rows;
         }
         let now = Local::now();
@@ -694,16 +743,18 @@ impl BriefView {
             let matched = event.folder.is_some();
             let mut row = h_flex()
                 .id(("brainz-brief-event", ix))
+                .group("brainz-brief-event")
                 .w_full()
                 .items_center()
                 .gap_2()
                 .px_1()
                 .py_1()
                 .rounded_md()
+                .hover(|this| this.bg(cx.theme().colors().element_hover))
                 .child(
                     div().w(px(64.)).flex_none().child(
                         Label::new(Self::time_label(event))
-                            .size(LabelSize::XSmall)
+                            .size(LabelSize::Small)
                             .color(if past {
                                 Color::Placeholder
                             } else {
@@ -724,32 +775,152 @@ impl BriefView {
                 let who = event.who.clone().unwrap_or_default();
                 row = row.child(
                     Label::new(format!("{who} · {}", signals::file_label(&folder)))
-                        .size(LabelSize::XSmall)
-                        .color(Color::Muted),
+                        .size(LabelSize::Small)
+                        .color(Color::Muted)
+                        .truncate(),
                 );
-                match event.prep_file.clone() {
-                    Some(prep) => {
-                        row = row.child(
-                            Button::new(("brainz-brief-prep", ix), "Open prep")
-                                .label_size(LabelSize::XSmall)
-                                .style(ButtonStyle::Filled)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_relative(&prep, window, cx);
-                                })),
-                        );
-                    }
-                    None => {
-                        row = row.child(
-                            Button::new(("brainz-brief-folder", ix), "Open folder")
-                                .label_size(LabelSize::XSmall)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_relative(&folder, window, cx);
-                                })),
-                        );
-                    }
-                }
+                let (id, label, target) = match event.prep_file.clone() {
+                    Some(prep) => ("brainz-brief-prep", "Open prep", prep),
+                    None => ("brainz-brief-folder", "Open folder", folder),
+                };
+                row = row.child(
+                    div().visible_on_hover("brainz-brief-event").child(
+                        Button::new((id, ix), label)
+                            .label_size(LabelSize::Small)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_relative(&target, window, cx);
+                            })),
+                    ),
+                );
             }
-            rows.push(row.into_any_element());
+            rows.push(ui::reveal(("brainz-brief-event-reveal", ix), ix, row).into_any_element());
+        }
+        rows
+    }
+
+    fn open_absolute(&self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if !path.exists() {
+            return;
+        }
+        self.workspace
+            .update(cx, |workspace, cx| {
+                workspace
+                    .open_abs_path(
+                        path,
+                        OpenOptions {
+                            visible: Some(OpenVisible::None),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                    .detach_and_log_err(cx);
+            })
+            .ok();
+    }
+
+    /// Opens Claude with the ask to log the recording, transcript path and
+    /// all; the brain's own meeting workflow takes it from there.
+    fn log_recording(&self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(meeting), Some(root)) = (
+            self.brief.recordings.get(ix),
+            self.brief.myman_root.as_ref(),
+        ) else {
+            return;
+        };
+        let text = log_call_prompt(meeting, root, &self.brief.owner);
+        window.dispatch_action(Box::new(OpenClaudePrefilled { text }), cx);
+    }
+
+    fn render_recordings(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        if self.brief.myman_root.is_none() {
+            return Vec::new();
+        }
+        let mut rows = vec![self.section("Recordings to log", Some(self.brief.recordings_total))];
+        if self.brief.recordings.is_empty() {
+            rows.push(self.empty("Every recent My Man recording is cited somewhere in the brain"));
+            return rows;
+        }
+        rows.push(
+            div()
+                .px_1()
+                .pb_1()
+                .child(
+                    Label::new(
+                        "Calls My Man recorded that no note in the brain mentions yet. Log this call opens Claude with the transcript ready.",
+                    )
+                    .size(LabelSize::Small)
+                    .color(Color::Muted),
+                )
+                .into_any_element(),
+        );
+        for (ix, meeting) in self.brief.recordings.iter().enumerate() {
+            let others = meeting.others(&self.brief.owner);
+            let mut detail = match meeting.minutes() {
+                Some(minutes) => format!("{minutes} min"),
+                None => String::new(),
+            };
+            if !others.is_empty() {
+                if !detail.is_empty() {
+                    detail.push_str(" · ");
+                }
+                detail.push_str(&others.join(", "));
+            }
+            let path = self
+                .brief
+                .myman_root
+                .as_ref()
+                .map(|root| root.join(&meeting.path));
+            rows.push(
+                h_flex()
+                    .id(("brainz-brief-recording", ix))
+                    .w_full()
+                    .items_center()
+                    .gap_2()
+                    .px_1()
+                    .py_1()
+                    .rounded_md()
+                    .child(
+                        div().w(px(64.)).flex_none().child(
+                            Label::new(meeting.started.format("%a %-d").to_string())
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                    )
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Label::new(meeting.title.clone())
+                                .size(LabelSize::Small)
+                                .truncate(),
+                        ),
+                    )
+                    .when(!detail.is_empty(), |this| {
+                        this.child(
+                            Label::new(detail)
+                                .size(LabelSize::Small)
+                                .color(Color::Muted)
+                                .truncate(),
+                        )
+                    })
+                    .when_some(path, |this, path| {
+                        this.child(
+                            Button::new(("brainz-brief-recording-open", ix), "Transcript")
+                                .label_size(LabelSize::Small)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_absolute(path.clone(), window, cx);
+                                })),
+                        )
+                    })
+                    .child(
+                        Button::new(("brainz-brief-recording-log", ix), "Log this call")
+                            .label_size(LabelSize::Small)
+                            .style(ButtonStyle::Filled)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.log_recording(ix, window, cx);
+                            })),
+                    )
+                    .into_any_element(),
+            );
         }
         rows
     }
@@ -760,7 +931,7 @@ impl BriefView {
             Some(self.brief.stale.len()),
         )];
         if self.brief.stale.is_empty() {
-            rows.push(self.empty("Every status callout is as new as its newest note"));
+            rows.push(self.empty("Every status line is current"));
             return rows;
         }
         for (ix, decay) in self.brief.stale.iter().enumerate() {
@@ -784,13 +955,12 @@ impl BriefView {
                         div().flex_1().min_w_0().child(
                             Label::new(decay.folder.clone())
                                 .size(LabelSize::Small)
-                                .color(Color::Accent)
                                 .truncate(),
                         ),
                     )
                     .child(
                         Label::new(decay.tooltip())
-                            .size(LabelSize::XSmall)
+                            .size(LabelSize::Small)
                             .color(Color::Muted),
                     )
                     .into_any_element(),
@@ -839,9 +1009,7 @@ impl BriefView {
         let today = Local::now().date_naive();
         let mut rows = vec![self.section("Flagged in notes", Some(self.brief.loops_total))];
         if self.brief.loops.is_empty() {
-            rows.push(self.empty(
-                "Nothing flagged: every ⏳ and ⏰ in your notes is on the board or ticked",
-            ));
+            rows.push(self.empty("Nothing flagged"));
             return rows;
         }
         rows.push(
@@ -852,7 +1020,7 @@ impl BriefView {
                     Label::new(
                         "Lines in notes starting with ⏳ (waiting on someone) or ⏰ (you owe it) that are not on the To-Do board yet, oldest first.",
                     )
-                    .size(LabelSize::XSmall)
+                    .size(LabelSize::Small)
                     .color(Color::Muted),
                 )
                 .into_any_element(),
@@ -893,25 +1061,21 @@ impl BriefView {
                             .child(Label::new(open_loop.marker.clone()).size(LabelSize::Small)),
                     )
                     .child(
-                        div()
-                            .w(px(150.))
-                            .flex_none()
-                            .overflow_hidden()
-                            .child(
-                                Label::new(who)
-                                    .size(LabelSize::XSmall)
-                                    .color(if open_loop.owed_by_owner() {
-                                        Color::Warning
-                                    } else {
-                                        Color::Muted
-                                    })
-                                    .truncate(),
-                            ),
+                        div().w(px(150.)).flex_none().overflow_hidden().child(
+                            Label::new(who)
+                                .size(LabelSize::Small)
+                                .color(if open_loop.owed_by_owner() {
+                                    Color::Warning
+                                } else {
+                                    Color::Muted
+                                })
+                                .truncate(),
+                        ),
                     )
                     .child(
                         div().w(px(56.)).flex_none().child(
                             Label::new(format!("{} days", open_loop.age_days(today)))
-                                .size(LabelSize::XSmall)
+                                .size(LabelSize::Small)
                                 .color(Color::Placeholder),
                         ),
                     )
@@ -923,7 +1087,7 @@ impl BriefView {
                     )
                     .child(
                         Button::new(("brainz-brief-loop-add", ix), "Add to To-Do")
-                            .label_size(LabelSize::XSmall)
+                            .label_size(LabelSize::Small)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.add_loop_to_board(ix, cx);
                             })),
@@ -937,7 +1101,7 @@ impl BriefView {
                 .pt_1()
                 .child(
                     Button::new("brainz-brief-all-loops", "All flagged lines")
-                        .label_size(LabelSize::XSmall)
+                        .label_size(LabelSize::Small)
                         .on_click(|_, window, cx| {
                             window.dispatch_action(Box::new(crate::todo::OpenTodo), cx);
                         }),
@@ -989,7 +1153,7 @@ impl Render for BriefView {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(Icon::new(IconName::BrainzBrief).color(Color::Accent))
+                    .child(Icon::new(IconName::BrainzBrief).color(Color::Muted))
                     .child(Label::new("Brief").size(LabelSize::Large))
                     .child(Label::new(date).size(LabelSize::Small).color(Color::Muted)),
             )
@@ -1023,6 +1187,7 @@ impl Render for BriefView {
         let mut body: Vec<AnyElement> = Vec::new();
         body.extend(self.render_narrative(window, cx));
         body.extend(self.render_events(cx));
+        body.extend(self.render_recordings(cx));
         body.extend(self.render_owes(cx));
         body.extend(self.render_desk(cx));
         body.extend(self.render_stale(cx));
@@ -1038,7 +1203,7 @@ impl Render for BriefView {
             .child(
                 v_flex()
                     .w_full()
-                    .max_w(px(1100.))
+                    .max_w(px(760.))
                     .mx_auto()
                     .pt_6()
                     .pb_10()
@@ -1049,66 +1214,6 @@ impl Render for BriefView {
             )
     }
 }
-
-/// Status bar button that opens the Brief tab.
-pub struct BriefButton {
-    pane_item_focus_handle: Option<FocusHandle>,
-    active: bool,
-}
-
-impl BriefButton {
-    pub fn new() -> Self {
-        Self {
-            pane_item_focus_handle: None,
-            active: false,
-        }
-    }
-}
-
-impl Render for BriefButton {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let focus_handle = self.pane_item_focus_handle.clone();
-        let active = self.active;
-        div().child(
-            IconButton::new("brainz-brief-button", IconName::BrainzBrief)
-                .icon_size(IconSize::Small)
-                .toggle_state(active)
-                .icon_color(if active {
-                    Color::Accent
-                } else {
-                    Color::Default
-                })
-                .tooltip(move |_window, cx| {
-                    if let Some(focus_handle) = &focus_handle {
-                        Tooltip::for_action_in("Brief", &OpenBrief, focus_handle, cx)
-                    } else {
-                        Tooltip::for_action("Brief", &OpenBrief, cx)
-                    }
-                })
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(Box::new(OpenBrief), cx);
-                }),
-        )
-    }
-}
-
-impl StatusItemView for BriefButton {
-    fn set_active_pane_item(
-        &mut self,
-        active_pane_item: Option<&dyn ItemHandle>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.pane_item_focus_handle = active_pane_item.map(|item| item.item_focus_handle(cx));
-        self.active = active_pane_item.is_some_and(|item| item.downcast::<BriefView>().is_some());
-        cx.notify();
-    }
-
-    fn hide_setting(&self, _: &App) -> Option<HideStatusItem> {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1117,10 +1222,7 @@ mod tests {
     fn narrative_block_reads_the_bot_block_and_its_date() {
         let text = "# Brief\n\n<!-- narrative:start -->\n_Written 2026-10-06._\n\nThe day is about the Tekmetric counter.\n<!-- narrative:end -->\n\nTrailer.\n";
         let narrative = narrative_block(text).unwrap();
-        assert_eq!(
-            narrative.written,
-            NaiveDate::from_ymd_opt(2026, 10, 6)
-        );
+        assert_eq!(narrative.written, NaiveDate::from_ymd_opt(2026, 10, 6));
         assert!(!narrative.placeholder);
         assert!(narrative.text.starts_with("_Written 2026-10-06._"));
         assert!(narrative.text.ends_with("Tekmetric counter."));
@@ -1135,9 +1237,34 @@ mod tests {
         assert!(placeholder.placeholder);
         assert_eq!(placeholder.written, None);
         assert!(narrative_block("# Brief without markers").is_none());
-        assert!(narrative_block("<!-- narrative:start -->\n<!-- narrative:end -->")
-            .unwrap()
-            .placeholder);
+        assert!(
+            narrative_block("<!-- narrative:start -->\n<!-- narrative:end -->")
+                .unwrap()
+                .placeholder
+        );
+    }
+
+    #[test]
+    fn log_call_prompt_names_the_recording_and_its_transcript() {
+        let meeting = myman::Meeting {
+            id: "meeting-1".into(),
+            path: "meetings/2026-10-02-D255EB5E.md".into(),
+            title: "Ada / Grace".into(),
+            started: chrono::TimeZone::with_ymd_and_hms(&Local, 2026, 10, 2, 20, 38, 0).unwrap(),
+            ended: Some(
+                chrono::TimeZone::with_ymd_and_hms(&Local, 2026, 10, 2, 21, 17, 0).unwrap(),
+            ),
+            participants: vec![
+                "Speaker 2".into(),
+                "Ada Lovelace".into(),
+                "Grace Hopper".into(),
+            ],
+            complete: true,
+            low_content: false,
+        };
+        let text = log_call_prompt(&meeting, std::path::Path::new("/brain/MyManBrain"), "Ada");
+        assert!(text.starts_with("Log this call into the brain. My Man recorded \"Ada / Grace\" on Friday October 2 at 8:38 PM (39 min, with Grace Hopper)."));
+        assert!(text.contains("/brain/MyManBrain/meetings/2026-10-02-D255EB5E.md"));
     }
 
     #[test]

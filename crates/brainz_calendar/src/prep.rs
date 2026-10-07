@@ -29,6 +29,11 @@ pub struct Banner {
     pub start: DateTime<Local>,
     pub folder: String,
     pub prep_file: Option<String>,
+    pub title: String,
+    pub attendee_names: Vec<String>,
+    /// The My Man transcript of the last recording that looks like this
+    /// event, and when it was recorded.
+    pub transcript: Option<(PathBuf, DateTime<Local>)>,
 }
 
 impl Banner {
@@ -130,6 +135,9 @@ pub fn choose_banner(
             start: event.start,
             folder: found.folder.clone(),
             prep_file: found.prep_file.clone(),
+            title: event.title.to_string(),
+            attendee_names: event.attendee_names.clone(),
+            transcript: None,
         };
         if !dismissed.contains(&candidate.key())
             && prep
@@ -194,7 +202,21 @@ impl PrepState {
                             return None;
                         }
                         let index = BrainIndex::load(&repo, &config);
-                        choose_banner(&events, &index, &config, Local::now(), &dismissed)
+                        let now = Local::now();
+                        let mut banner = choose_banner(&events, &index, &config, now, &dismissed);
+                        if let Some(banner) = banner.as_mut()
+                            && let Some(myman) = crate::myman::MyMan::detect(&config)
+                        {
+                            banner.transcript = myman
+                                .last_meeting_for(
+                                    &banner.title,
+                                    &banner.attendee_names,
+                                    Some(&banner.who),
+                                    banner.start,
+                                )
+                                .map(|meeting| (myman.join(&meeting.path), meeting.started));
+                        }
+                        banner
                     })
                     .await;
                 let keep_going = this
@@ -248,6 +270,16 @@ impl PrepState {
         for link in google_doc_links(&std::fs::read_to_string(&path).unwrap_or_default()) {
             cx.open_url(&link);
         }
+        open_in_workspace(&workspace, path, window, cx);
+    }
+
+    fn open_transcript(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(banner), Some(workspace)) = (self.banner.clone(), self.workspace.clone()) else {
+            return;
+        };
+        let Some((path, _)) = banner.transcript else {
+            return;
+        };
         open_in_workspace(&workspace, path, window, cx);
     }
 
@@ -356,6 +388,22 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
                 }
             }),
     );
+    if let Some((_, recorded)) = &banner.transcript {
+        buttons = buttons.child(
+            Button::new("brainz-prep-transcript", "Last transcript")
+                .style(ButtonStyle::Subtle)
+                .tooltip(Tooltip::text(format!(
+                    "Open the My Man transcript from {}",
+                    recorded.format("%b %-d")
+                )))
+                .on_click({
+                    let state = state.clone();
+                    move |_, window, cx| {
+                        state.update(cx, |state, cx| state.open_transcript(window, cx));
+                    }
+                }),
+        );
+    }
     buttons = buttons.child(div().flex_1()).child(
         IconButton::new("brainz-prep-dismiss", IconName::Close)
             .icon_size(IconSize::XSmall)

@@ -10,7 +10,7 @@ use gpui::{
 };
 use terminal_view::terminal_panel::TerminalPanel;
 use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
-use workspace::{HideStatusItem, Item, ItemHandle, StatusItemView, Workspace, dock::DockPosition};
+use workspace::{Item, Workspace, dock::DockPosition};
 
 /// Which CLI owns a connector's sign-in.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -876,19 +876,26 @@ pub const HOSTED_CONNECTORS: &[HostedConnector] = &[
         blurb: "Meetings, notes, and calendar from Wispr Flow",
     },
     HostedConnector {
-        name: "myman",
+        name: crate::myman::READ_CONNECTOR,
         label: "My Man",
-        // My Man keeps everything as Markdown in ~/MyManBrain; the stock
-        // filesystem server scoped to that folder is the connector.
+        // My Man ships its own read-only companion inside the export
+        // folder; it reads the folder from MYMAN_BRAIN_ROOT.
         transport: HostedTransport::Stdio {
-            command: "npx",
-            args: &[
-                "-y",
-                "@modelcontextprotocol/server-filesystem",
-                "~/MyManBrain",
-            ],
+            command: "node",
+            args: &["~/MyManBrain/tools/server.mjs"],
         },
-        blurb: "Notes, meetings, and dictations from My Man",
+        blurb: "Search meetings, notes, screenshots, and dictations from My Man",
+    },
+    HostedConnector {
+        name: crate::myman::ACTIONS_CONNECTOR,
+        label: "My Man actions",
+        // The app-actions companion talks to the running app over its local
+        // socket; My Man's Settings → Agents decides what it may do.
+        transport: HostedTransport::Stdio {
+            command: "node",
+            args: &["~/MyManBrain/tools/app-server.mjs"],
+        },
+        blurb: "Take screenshots, start recordings, and save notes in My Man",
     },
 ];
 
@@ -924,40 +931,108 @@ impl HostedConnector {
 
     /// Writes the connector into the client's config; the caller then runs
     /// the sign-in.
-    pub fn add(&self, client: McpClient) -> Result<()> {
-        let home = paths::home_dir().to_string_lossy().into_owned();
-        let expand = |arg: &str| arg.replacen("~", &home, 1);
+    pub fn add(&self, client: McpClient, myman: Option<&crate::myman::MyMan>) -> Result<()> {
         match (client, self.transport) {
             (McpClient::Claude, HostedTransport::Http { url }) => {
                 connect_claude(self.name, serde_json::json!({ "type": "http", "url": url }))
             }
-            (McpClient::Claude, HostedTransport::Stdio { command, args }) => connect_claude(
-                self.name,
-                serde_json::json!({
+            (McpClient::Claude, HostedTransport::Stdio { command, args }) => {
+                let (args, env) = self.stdio_launch(args, myman);
+                let mut config = serde_json::json!({
                     "type": "stdio",
                     "command": command,
-                    "args": args.iter().map(|arg| expand(arg)).collect::<Vec<_>>(),
-                }),
-            ),
+                    "args": args,
+                });
+                if !env.is_empty() {
+                    let env: serde_json::Map<String, serde_json::Value> = env
+                        .into_iter()
+                        .map(|(key, value)| (key, value.into()))
+                        .collect();
+                    config["env"] = serde_json::Value::Object(env);
+                }
+                connect_claude(self.name, config)
+            }
             (McpClient::Codex, HostedTransport::Http { url }) => {
                 let mut table = toml::map::Map::new();
                 table.insert("url".into(), toml::Value::String(url.into()));
                 connect_codex(self.name, toml::Value::Table(table))
             }
             (McpClient::Codex, HostedTransport::Stdio { command, args }) => {
+                let (args, env) = self.stdio_launch(args, myman);
                 let mut table = toml::map::Map::new();
                 table.insert("command".into(), toml::Value::String(command.into()));
                 table.insert(
                     "args".into(),
-                    toml::Value::Array(
-                        args.iter()
-                            .map(|arg| toml::Value::String(expand(arg)))
-                            .collect(),
-                    ),
+                    toml::Value::Array(args.into_iter().map(toml::Value::String).collect()),
                 );
+                if !env.is_empty() {
+                    let env: toml::map::Map<String, toml::Value> = env
+                        .into_iter()
+                        .map(|(key, value)| (key, toml::Value::String(value)))
+                        .collect();
+                    table.insert("env".into(), toml::Value::Table(env));
+                }
                 connect_codex(self.name, toml::Value::Table(table))
             }
         }
+    }
+
+    /// The expanded arguments and env for a local connector. The My Man
+    /// pair gets the configured export folder, the machine id, and the
+    /// saved agent credential.
+    fn stdio_launch(
+        &self,
+        args: &[&str],
+        myman: Option<&crate::myman::MyMan>,
+    ) -> (Vec<String>, Vec<(String, String)>) {
+        let home = paths::home_dir().to_string_lossy().into_owned();
+        let expand = |arg: &str| arg.replacen("~", &home, 1);
+        if !self.is_myman() {
+            return (args.iter().map(|arg| expand(arg)).collect(), Vec::new());
+        }
+        let root = myman
+            .map(|myman| myman.root.clone())
+            .unwrap_or_else(|| paths::home_dir().join(crate::myman::DEFAULT_ROOT));
+        let default_root = format!("~/{}", crate::myman::DEFAULT_ROOT);
+        let args = args
+            .iter()
+            .map(|arg| expand(&arg.replacen(&default_root, &root.to_string_lossy(), 1)))
+            .collect();
+        (args, crate::myman::companion_env(&root))
+    }
+
+    pub fn is_myman(&self) -> bool {
+        self.name.starts_with(crate::myman::READ_CONNECTOR)
+    }
+
+    /// Every My Man connector already configured in a client gets its
+    /// launch rewritten: a newly saved credential reaches the servers, and
+    /// the older filesystem-server shape from before the bundled companion
+    /// becomes the companion. Blocking file I/O: background executor.
+    pub fn refresh_configured(myman: Option<&crate::myman::MyMan>) -> Result<()> {
+        let claude = read_claude_servers();
+        let codex = read_codex_servers();
+        for hosted in HOSTED_CONNECTORS.iter().filter(|hosted| hosted.is_myman()) {
+            if claude.contains_key(hosted.name) {
+                hosted.add(McpClient::Claude, myman)?;
+            }
+            if codex.contains_key(hosted.name) {
+                hosted.add(McpClient::Codex, myman)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the older `myman` entry (the stock filesystem server) is
+    /// still what a client has, so the launch should be rewritten.
+    pub fn legacy_myman_configured() -> bool {
+        let legacy = |text: String| text.contains("server-filesystem");
+        read_claude_servers()
+            .get(crate::myman::READ_CONNECTOR)
+            .is_some_and(|value| legacy(value.to_string()))
+            || read_codex_servers()
+                .get(crate::myman::READ_CONNECTOR)
+                .is_some_and(|value| legacy(value.to_string()))
     }
 
     /// Whether Connect also has to run the client's sign-in.
@@ -1231,6 +1306,10 @@ pub struct McpView {
     focus_handle: FocusHandle,
     workspace: WeakEntity<Workspace>,
     connectors: Vec<Connector>,
+    /// Whether a My Man agent credential is saved; the actions connector
+    /// shows a paste field until one is.
+    myman_token_saved: bool,
+    myman_token_editor: Option<Entity<editor::Editor>>,
     /// Connectors with a sign-in running right now.
     reconnecting: std::collections::HashSet<String>,
     _reconnect: Option<Task<()>>,
@@ -1266,6 +1345,8 @@ impl McpView {
             focus_handle: cx.focus_handle(),
             workspace,
             connectors: Vec::new(),
+            myman_token_saved: false,
+            myman_token_editor: None,
             reconnecting: std::collections::HashSet::new(),
             _reconnect: None,
             loading: true,
@@ -1280,15 +1361,124 @@ impl McpView {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.loading = true;
         cx.notify();
+        let myman = self.myman(cx);
         self._load = Some(cx.spawn(async move |this, cx| {
-            let connectors = cx.background_spawn(async { load_connectors() }).await;
+            let (connectors, token_saved) = cx
+                .background_spawn(async move {
+                    if HostedConnector::legacy_myman_configured()
+                        && let Err(error) = HostedConnector::refresh_configured(myman.as_ref())
+                    {
+                        log::warn!("brainz mcp: could not update the My Man connector: {error:#}");
+                    }
+                    (load_connectors(), crate::myman::saved_token().is_some())
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.connectors = connectors;
+                this.myman_token_saved = token_saved;
                 this.loading = false;
                 cx.notify();
             })
             .ok();
         }));
+    }
+
+    /// Stores the credential pasted from My Man's Settings → Agents and
+    /// rewrites the My Man connectors so the servers receive it.
+    fn save_myman_token(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.myman_token_editor.clone() else {
+            return;
+        };
+        let token = editor.read(cx).text(cx);
+        let myman = self.myman(cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    crate::myman::save_token(&token)
+                        .and_then(|()| HostedConnector::refresh_configured(myman.as_ref()))
+                })
+                .await;
+            this.update(cx, |this, cx| match result {
+                Ok(()) => {
+                    this.error = None;
+                    this.myman_token_editor = None;
+                    this.refresh(cx);
+                }
+                Err(error) => {
+                    this.error = Some(format!("Couldn't save the My Man credential: {error:#}"));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// The My Man folder for the open brain (its `[myman] root`), or the
+    /// default folder when no brain is open.
+    fn myman(&self, cx: &App) -> Option<crate::myman::MyMan> {
+        let root = self
+            .workspace
+            .upgrade()
+            .and_then(|workspace| workspace.read(cx).root_paths(cx).first().cloned());
+        crate::myman::MyMan::detect_for(root.as_deref())
+    }
+
+    /// The paste field under the My Man actions row while no credential is
+    /// saved: My Man refuses app actions from unnamed agents.
+    fn render_myman_token_card(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let editor = self
+            .myman_token_editor
+            .get_or_insert_with(|| {
+                cx.new(|cx| {
+                    let mut editor = editor::Editor::single_line(window, cx);
+                    editor.set_placeholder_text("Paste the agent credential", window, cx);
+                    editor
+                })
+            })
+            .clone();
+        v_flex()
+            .w_full()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .rounded_lg()
+            .border_1()
+            .border_color(cx.theme().colors().text_accent.opacity(0.5))
+            .child(
+                Label::new(
+                    "My Man only acts for a named agent. In My Man, open Settings → Agents, \
+                     add an agent called Brainz with the actions you want to allow, and \
+                     paste its credential here. Brainz keeps it in its own config folder.",
+                )
+                .size(LabelSize::Small)
+                .color(Color::Muted),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().colors().border)
+                            .bg(cx.theme().colors().editor_background)
+                            .child(editor),
+                    )
+                    .child(
+                        Button::new("brainz-mcp-myman-token-save", "Save")
+                            .style(ButtonStyle::Filled)
+                            .label_size(LabelSize::Small)
+                            .on_click(cx.listener(|this, _, _, cx| this.save_myman_token(cx))),
+                    ),
+            )
     }
 
     /// Adds a hosted connector to Claude and runs its sign-in.
@@ -1298,7 +1488,8 @@ impl McpView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match hosted.add(McpClient::Claude) {
+        let myman = self.myman(cx);
+        match hosted.add(McpClient::Claude, myman.as_ref()) {
             Ok(()) if hosted.needs_login() => {
                 self.error = None;
                 self.reconnect(McpClient::Claude, hosted.name.to_owned(), window, cx);
@@ -1362,7 +1553,7 @@ impl McpView {
                             .child(Label::new(hosted.title()).weight(gpui::FontWeight::SEMIBOLD))
                             .child(
                                 Label::new(hosted.transport_label())
-                                    .size(LabelSize::XSmall)
+                                    .size(LabelSize::Small)
                                     .color(Color::Muted),
                             ),
                     )
@@ -1387,10 +1578,14 @@ impl McpView {
                 Button::new(("brainz-mcp-hosted-connect", ix), "Connect")
                     .style(ButtonStyle::Filled)
                     .label_size(LabelSize::Small)
-                    .tooltip(Tooltip::text(format!(
-                        "Add {} to Claude and sign in; a terminal opens with the link",
-                        hosted.title()
-                    )))
+                    .tooltip(Tooltip::text(if hosted.needs_login() {
+                        format!(
+                            "Add {} to Claude and sign in; a terminal opens with the link",
+                            hosted.title()
+                        )
+                    } else {
+                        format!("Add {} to Claude", hosted.title())
+                    }))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.connect_hosted(hosted, window, cx);
                     }))
@@ -1501,7 +1696,7 @@ impl McpView {
             } else {
                 Color::Muted
             }))
-            .child(Label::new(name).size(LabelSize::XSmall).color(if lapsed {
+            .child(Label::new(name).size(LabelSize::Small).color(if lapsed {
                 Color::Custom(accent)
             } else if connected {
                 Color::Default
@@ -1517,7 +1712,7 @@ impl McpView {
                 } else if lapsed {
                     this.child(
                         Label::new("· Reconnect")
-                            .size(LabelSize::XSmall)
+                            .size(LabelSize::Small)
                             .color(Color::Custom(accent)),
                     )
                 } else if connected {
@@ -1692,7 +1887,7 @@ impl McpView {
                             .when(!connector.transport.is_empty(), |this| {
                                 this.child(
                                     Label::new(connector.transport.clone())
-                                        .size(LabelSize::XSmall)
+                                        .size(LabelSize::Small)
                                         .color(Color::Muted),
                                 )
                             }),
@@ -1747,7 +1942,7 @@ impl Item for McpView {
     fn to_item_events(_: &Self::Event, _: &mut dyn FnMut(workspace::item::ItemEvent)) {}
 
     fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
-        "MCP Connectors".into()
+        "Connectors".into()
     }
 
     fn tab_icon(&self, _window: &Window, _cx: &App) -> Option<Icon> {
@@ -1760,7 +1955,7 @@ impl Item for McpView {
 }
 
 impl Render for McpView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let header = h_flex()
             .w_full()
             .items_center()
@@ -1768,8 +1963,8 @@ impl Render for McpView {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(Icon::new(IconName::BrainzMcp).color(Color::Accent))
-                    .child(Label::new("MCP Connectors").size(LabelSize::Large)),
+                    .child(Icon::new(IconName::BrainzMcp).color(Color::Muted))
+                    .child(Label::new("Connectors").size(LabelSize::Large)),
             )
             .child(
                 IconButton::new("brainz-mcp-refresh", IconName::ArrowCircle)
@@ -1782,22 +1977,6 @@ impl Render for McpView {
             vec![
                 Label::new("Reading connector configs…")
                     .color(Color::Muted)
-                    .into_any_element(),
-            ]
-        } else if self.connectors.is_empty() {
-            vec![
-                v_flex()
-                    .gap_2()
-                    .child(Label::new("No MCP connectors yet."))
-                    .child(
-                        Label::new(
-                            "Add servers with `claude mcp add …` in a Brainz shell. Connectors \
-                             from your terminal Claude are copied in the first time Claude runs \
-                             here.",
-                        )
-                        .size(LabelSize::Small)
-                        .color(Color::Muted),
-                    )
                     .into_any_element(),
             ]
         } else {
@@ -1816,13 +1995,29 @@ impl Render for McpView {
                     .into_any_element(),
             );
             let connectors = self.connectors.clone();
+            let token_saved = self.myman_token_saved;
             for (ix, connector) in connectors.iter().enumerate() {
-                rows.push(self.render_connector(ix, connector, cx).into_any_element());
+                rows.push(
+                    ui::reveal(
+                        ("brainz-mcp-connector-reveal", ix),
+                        ix,
+                        self.render_connector(ix, connector, cx),
+                    )
+                    .into_any_element(),
+                );
+                if !token_saved
+                    && Connector::key(&connector.name) == crate::myman::ACTIONS_CONNECTOR
+                {
+                    rows.push(self.render_myman_token_card(window, cx).into_any_element());
+                }
             }
             let configured: Vec<String> = connectors.iter().map(|c| c.name.clone()).collect();
+            // The My Man pair only makes sense when that My Man ships the companion.
+            let companion = self.myman(cx).is_some_and(|myman| myman.has_companion());
             let available: Vec<&'static HostedConnector> = HOSTED_CONNECTORS
                 .iter()
                 .filter(|hosted| !hosted.is_configured(&configured))
+                .filter(|hosted| !hosted.is_myman() || companion)
                 .collect();
             if !available.is_empty() {
                 rows.push(
@@ -1857,92 +2052,5 @@ impl Render for McpView {
                     .child(header)
                     .children(body),
             )
-    }
-}
-
-/// Status bar button that opens the MCP connectors tab.
-pub struct McpButton {
-    pane_item_focus_handle: Option<FocusHandle>,
-    /// The MCP tab is the active item, so the button lights up.
-    active: bool,
-    _health_subscription: Option<Subscription>,
-}
-
-impl McpButton {
-    pub fn new() -> Self {
-        Self {
-            pane_item_focus_handle: None,
-            active: false,
-            _health_subscription: None,
-        }
-    }
-}
-
-impl Render for McpButton {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let focus_handle = self.pane_item_focus_handle.clone();
-        let active = self.active;
-        let failing = health(cx)
-            .map(|health| {
-                if self._health_subscription.is_none() {
-                    self._health_subscription = Some(cx.observe(&health, |_, _, cx| cx.notify()));
-                }
-                health.read(cx).failing()
-            })
-            .unwrap_or_default();
-        let trouble = !failing.is_empty();
-        let tooltip_title: SharedString = if trouble {
-            format!(
-                "MCP: {} down ({})",
-                failing.len(),
-                failing
-                    .iter()
-                    .map(|(name, _)| name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-            .into()
-        } else {
-            "MCP Connectors".into()
-        };
-        div().child(
-            IconButton::new("brainz-mcp-button", IconName::BrainzMcp)
-                .icon_size(IconSize::Small)
-                .toggle_state(active)
-                .icon_color(if trouble {
-                    Color::Error
-                } else if active {
-                    Color::Accent
-                } else {
-                    Color::Default
-                })
-                .tooltip(move |_window, cx| {
-                    if let Some(focus_handle) = &focus_handle {
-                        Tooltip::for_action_in(tooltip_title.clone(), &OpenMcp, focus_handle, cx)
-                    } else {
-                        Tooltip::for_action(tooltip_title.clone(), &OpenMcp, cx)
-                    }
-                })
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(Box::new(OpenMcp), cx);
-                }),
-        )
-    }
-}
-
-impl StatusItemView for McpButton {
-    fn set_active_pane_item(
-        &mut self,
-        active_pane_item: Option<&dyn ItemHandle>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.pane_item_focus_handle = active_pane_item.map(|item| item.item_focus_handle(cx));
-        self.active = active_pane_item.is_some_and(|item| item.downcast::<McpView>().is_some());
-        cx.notify();
-    }
-
-    fn hide_setting(&self, _: &App) -> Option<HideStatusItem> {
-        None
     }
 }

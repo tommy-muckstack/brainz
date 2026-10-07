@@ -5467,13 +5467,10 @@ impl ThreadView {
         });
     }
 
-    /// Brainz: the minus and plus, floating in the panel's bottom-right
-    /// corner just above the status bar's agent button.
+    /// Brainz: the minus and plus for the chat text size, in the options
+    /// drawer.
     fn render_chat_font_size_buttons(&self, cx: &mut Context<Self>) -> AnyElement {
         h_flex()
-            .absolute()
-            .bottom(px(6.))
-            .right(px(8.))
             .gap_0p5()
             .child(
                 IconButton::new("brainz-chat-font-smaller", IconName::Dash)
@@ -5870,6 +5867,14 @@ impl ThreadView {
                         .children(self.render_token_usage(cx)),
                 ),
             )
+            .when(self.parent_session_id.is_none(), |this| {
+                this.child(
+                    v_flex()
+                        .gap_1()
+                        .child(row("Text size"))
+                        .child(self.render_chat_font_size_buttons(cx)),
+                )
+            })
     }
 
     fn build_add_context_menu(
@@ -6465,7 +6470,14 @@ impl ThreadView {
                 let entries = this.thread.read(cx).entries();
                 if let Some(entry) = entries.get(index) {
                     let rendered = this.render_entry(index, entries.len(), entry, window, cx);
-                    centered_container(rendered.into_any_element()).into_any_element()
+                    // Brainz: only the newest turns animate in; scrolling back
+                    // through history must not flicker.
+                    let rendered: AnyElement = if index + 2 >= entries.len() {
+                        ui::reveal(("brainz-entry-reveal", index), 0, rendered).into_any_element()
+                    } else {
+                        rendered.into_any_element()
+                    };
+                    centered_container(rendered).into_any_element()
                 } else if this.generating_indicator_in_list {
                     let confirmation = this.thread.read(cx).is_waiting_for_confirmation()
                         || this.has_pending_request_elicitation(cx);
@@ -12295,7 +12307,12 @@ impl ThreadView {
         } else {
             brainz_calendar::mcp::McpClient::Claude
         };
-        if let Err(error) = hosted.add(client) {
+        let brain_root = self
+            .workspace
+            .upgrade()
+            .and_then(|workspace| workspace.read(cx).root_paths(cx).first().cloned());
+        let myman = brainz_calendar::myman::MyMan::detect_for(brain_root.as_deref());
+        if let Err(error) = hosted.add(client, myman.as_ref()) {
             log::error!("brainz mcp connect {}: {error:#}", hosted.name);
             return;
         }
@@ -13776,9 +13793,15 @@ impl Render for ThreadView {
             .children(self.render_request_elicitations(cx))
             .child(self.render_message_editor(window, cx))
             .relative()
-            .when(self.parent_session_id.is_none(), |this| {
-                this.child(self.render_chat_font_size_buttons(cx))
-            })
+            // Brainz: the thread slips under a short fade at the top instead
+            // of being sliced by the tab strip.
+            .child(div().absolute().top_0().left_0().right_0().h(px(22.)).bg(
+                gpui::linear_gradient(
+                    180.,
+                    gpui::linear_color_stop(cx.theme().colors().panel_background, 0.),
+                    gpui::linear_color_stop(cx.theme().colors().panel_background.opacity(0.), 1.),
+                ),
+            ))
     }
 }
 

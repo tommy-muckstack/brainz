@@ -600,11 +600,8 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         });
 
         let search_button = cx.new(|_| search::search_status_button::SearchButton::new());
-        let brainz_brief_button = cx.new(|_| brainz_calendar::brief::BriefButton::new());
-        let brainz_calendar_button = cx.new(|_| brainz_calendar::CalendarButton::new());
-        let brainz_todo_button = cx.new(|_| brainz_calendar::todo::TodoButton::new());
-        let brainz_mcp_button = cx.new(|_| brainz_calendar::mcp::McpButton::new());
-        let brainz_themes_button = cx.new(|_| brainz_calendar::themes::ThemesButton::new());
+        // Brainz: Brief, Calendar, To-Do, Themes, and Connectors live in the
+        // sidebar navigation now, not the status bar.
         let brainz_launch_button = cx.new(|_| brainz_calendar::launcher::LaunchButton::new());
         let diagnostic_summary =
             cx.new(|cx| diagnostics::items::DiagnosticIndicator::new(workspace, cx));
@@ -639,11 +636,6 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
             cx.new(|cx| git_ui::MergeConflictIndicator::new(workspace, cx));
         workspace.status_bar().update(cx, |status_bar, cx| {
             status_bar.add_left_item(search_button, window, cx);
-            status_bar.add_left_item(brainz_brief_button, window, cx);
-            status_bar.add_left_item(brainz_calendar_button, window, cx);
-            status_bar.add_left_item(brainz_todo_button, window, cx);
-            status_bar.add_left_item(brainz_mcp_button, window, cx);
-            status_bar.add_left_item(brainz_themes_button, window, cx);
             status_bar.add_left_item(brainz_launch_button, window, cx);
             status_bar.add_left_item(lsp_button, window, cx);
             status_bar.add_left_item(diagnostic_summary, window, cx);
@@ -872,6 +864,7 @@ fn ensure_agent_panel_for_workspace(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Task<anyhow::Result<()>> {
+    let had_panel = workspace.panel::<agent_ui::AgentPanel>(cx).is_some();
     let task = setup_or_teardown_ai_panel(workspace, window, cx, move |workspace, cx| {
         agent_ui::AgentPanel::load(workspace, cx)
     });
@@ -886,7 +879,31 @@ fn ensure_agent_panel_for_workspace(
                     panel.initialize_from_source_workspace_if_needed(source_workspace, window, cx);
                 });
             }
-        })
+        })?;
+
+        // Brainz: a window that opens with a Claude, Codex, or terminal tab
+        // restored starts with the cursor in it, so typing goes to the agent
+        // rather than to whatever file the workspace restored. Waits a beat
+        // so the workspace's own restore has finished claiming focus; only a
+        // surface that really came back counts, only while its dock is
+        // open, and only if this workspace still holds the window's focus.
+        if !had_panel {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(400))
+                .await;
+            workspace.update_in(cx, |workspace, window, cx| {
+                let Some(panel) = workspace.panel::<agent_ui::AgentPanel>(cx) else {
+                    return;
+                };
+                let position = panel.read(cx).position(window, cx);
+                let dock_open = workspace.dock_at_position(position).read(cx).is_open();
+                let still_here = workspace.focus_handle(cx).contains_focused(window, cx);
+                if dock_open && still_here && panel.read(cx).has_restored_surface() {
+                    workspace.focus_panel::<agent_ui::AgentPanel>(window, cx);
+                }
+            })?;
+        }
+        anyhow::Ok(())
     })
 }
 

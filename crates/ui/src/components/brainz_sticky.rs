@@ -1,6 +1,7 @@
 use gpui::{
     AnyElement, App, AvailableSpace, Bounds, Element, ElementId, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, Pixels, Position, Style, Window, point, px, relative,
+    InspectorElementId, IntoElement, LayoutId, Pixels, Position, Style, Window, point, px,
+    relative,
 };
 
 /// Brainz: pins a small control to the top-right corner of its parent, and

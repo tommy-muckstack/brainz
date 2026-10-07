@@ -15,9 +15,7 @@ use gpui::{
     WeakEntity, Window, actions, canvas, point,
 };
 use ui::{ContextMenu, Disclosure, PopoverMenu, Tooltip, prelude::*};
-use workspace::{
-    HideStatusItem, Item, ItemHandle, OpenOptions, OpenVisible, StatusItemView, Workspace,
-};
+use workspace::{Item, OpenOptions, OpenVisible, Workspace};
 
 use crate::{
     brain_config::BrainConfig,
@@ -230,8 +228,12 @@ impl ThemesRunner {
         cx.notify();
         self._task = Some(cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move { signals::run_pass(&repo) })
+                .background_spawn({
+                    let repo = repo.clone();
+                    async move { signals::run_pass(&repo) }
+                })
                 .await;
+            let succeeded = result.is_ok();
             this.update(cx, |this, cx| {
                 this.running = false;
                 if let Err(error) = result {
@@ -241,6 +243,12 @@ impl ThemesRunner {
                 cx.notify();
             })
             .ok();
+            if succeeded {
+                // The brain's proper nouns tune My Man's dictation; a
+                // failure here is My Man's problem, not the pass's.
+                cx.background_spawn(async move { crate::myman::feed_vocabulary(&repo) })
+                    .await;
+            }
         }));
     }
 
@@ -712,13 +720,13 @@ impl ThemesView {
             .child(trend_line(&theme.series))
             .child(
                 Label::new(momentum)
-                    .size(LabelSize::XSmall)
+                    .size(LabelSize::Small)
                     .color(momentum_color),
             )
             .child(
                 div().flex_1().min_w_0().child(
                     Label::new(folders)
-                        .size(LabelSize::XSmall)
+                        .size(LabelSize::Small)
                         .color(Color::Muted)
                         .truncate(),
                 ),
@@ -795,7 +803,7 @@ impl ThemesView {
         if self.merging.as_deref() == Some(id.as_str()) {
             let mut picker = h_flex().flex_wrap().gap_1().pl_8().py_1().child(
                 Label::new("Merge into:")
-                    .size(LabelSize::XSmall)
+                    .size(LabelSize::Small)
                     .color(Color::Muted),
             );
             let candidates: Vec<(String, String)> = self
@@ -819,7 +827,7 @@ impl ThemesView {
                         ("brainz-merge-target", ix * 1000 + candidate_ix),
                         candidate_name,
                     )
-                    .label_size(LabelSize::XSmall)
+                    .label_size(LabelSize::Small)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.curate(format!("- merge: {source} => {target}"), cx);
                     })),
@@ -827,7 +835,7 @@ impl ThemesView {
             }
             picker = picker.child(
                 Button::new(("brainz-merge-cancel", ix), "Cancel")
-                    .label_size(LabelSize::XSmall)
+                    .label_size(LabelSize::Small)
                     .color(Color::Muted)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.merging = None;
@@ -854,12 +862,12 @@ impl ThemesView {
                         .items_center()
                         .gap_2()
                         .child(trend_line_sized(&theme.months, px(240.)))
-                        .child(Label::new(span).size(LabelSize::XSmall).color(Color::Muted)),
+                        .child(Label::new(span).size(LabelSize::Small).color(Color::Muted)),
                 );
             }
             let mut files = h_flex().flex_wrap().gap_1().child(
                 Label::new("Files")
-                    .size(LabelSize::XSmall)
+                    .size(LabelSize::Small)
                     .color(Color::Muted),
             );
             for (file_ix, file) in theme.files.iter().enumerate() {
@@ -867,7 +875,7 @@ impl ThemesView {
                 let label = signals::file_label(&file.name);
                 files = files.child(
                     Button::new(("brainz-theme-file", ix * 100 + file_ix), label)
-                        .label_size(LabelSize::XSmall)
+                        .label_size(LabelSize::Small)
                         .start_icon(
                             Icon::new(IconName::File)
                                 .size(IconSize::XSmall)
@@ -883,7 +891,7 @@ impl ThemesView {
             if !theme.people.is_empty() {
                 let mut people = h_flex().flex_wrap().gap_1().child(
                     Label::new("People")
-                        .size(LabelSize::XSmall)
+                        .size(LabelSize::Small)
                         .color(Color::Muted),
                 );
                 for (person_ix, person) in theme.people.iter().enumerate() {
@@ -893,7 +901,7 @@ impl ThemesView {
                             ("brainz-theme-person", ix * 100 + person_ix),
                             person.name.clone(),
                         )
-                        .label_size(LabelSize::XSmall)
+                        .label_size(LabelSize::Small)
                         .tooltip(Tooltip::text(format!(
                             "Co-mentioned {} times",
                             person.weight
@@ -921,12 +929,11 @@ impl ThemesView {
             .child(
                 Label::new(title)
                     .size(LabelSize::Small)
-                    .weight(gpui::FontWeight::SEMIBOLD)
-                    .color(Color::Accent),
+                    .weight(gpui::FontWeight::SEMIBOLD),
             )
             .child(
                 Label::new(count.to_string())
-                    .size(LabelSize::XSmall)
+                    .size(LabelSize::Small)
                     .color(Color::Placeholder),
             )
             .into_any_element()
@@ -999,7 +1006,7 @@ impl Render for ThemesView {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(Icon::new(IconName::BrainzTheme).color(Color::Accent))
+                    .child(Icon::new(IconName::BrainzTheme).color(Color::Muted))
                     .child(Label::new("Themes").size(LabelSize::Large)),
             )
             .child(
@@ -1086,12 +1093,12 @@ impl Render for ThemesView {
                             signals.weeks.len(),
                             signals.themes.iter().filter(|theme| !theme.hidden).count(),
                         ))
-                        .size(LabelSize::XSmall)
+                        .size(LabelSize::Small)
                         .color(Color::Muted),
                     )
                     .child(
                         Button::new("brainz-themes-open-loops", "Flagged in notes")
-                            .label_size(LabelSize::XSmall)
+                            .label_size(LabelSize::Small)
                             .tooltip(Tooltip::text("Open the To-Do tab, where flagged lines can be moved onto the board"))
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(crate::todo::OpenTodo), cx);
@@ -1147,64 +1154,5 @@ impl Render for ThemesView {
                     .child(header)
                     .children(body),
             )
-    }
-}
-
-/// Status bar button that opens the Themes tab.
-pub struct ThemesButton {
-    pane_item_focus_handle: Option<FocusHandle>,
-    active: bool,
-}
-
-impl ThemesButton {
-    pub fn new() -> Self {
-        Self {
-            pane_item_focus_handle: None,
-            active: false,
-        }
-    }
-}
-
-impl Render for ThemesButton {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let focus_handle = self.pane_item_focus_handle.clone();
-        let active = self.active;
-        div().child(
-            IconButton::new("brainz-themes-button", IconName::BrainzTheme)
-                .icon_size(IconSize::Small)
-                .toggle_state(active)
-                .icon_color(if active {
-                    Color::Accent
-                } else {
-                    Color::Default
-                })
-                .tooltip(move |_window, cx| {
-                    if let Some(focus_handle) = &focus_handle {
-                        Tooltip::for_action_in("Themes", &OpenThemes, focus_handle, cx)
-                    } else {
-                        Tooltip::for_action("Themes", &OpenThemes, cx)
-                    }
-                })
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(Box::new(OpenThemes), cx);
-                }),
-        )
-    }
-}
-
-impl StatusItemView for ThemesButton {
-    fn set_active_pane_item(
-        &mut self,
-        active_pane_item: Option<&dyn ItemHandle>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.pane_item_focus_handle = active_pane_item.map(|item| item.item_focus_handle(cx));
-        self.active = active_pane_item.is_some_and(|item| item.downcast::<ThemesView>().is_some());
-        cx.notify();
-    }
-
-    fn hide_setting(&self, _: &App) -> Option<HideStatusItem> {
-        None
     }
 }

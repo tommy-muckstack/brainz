@@ -713,9 +713,23 @@ impl ProjectPanel {
         let project = workspace.project().clone();
         let git_store = project.read(cx).git_store().clone();
         let path_style = project.read(cx).path_style(cx);
+        let workspace_entity = cx.entity();
         let project_panel = cx.new(|cx| {
             let focus_handle = cx.focus_handle();
             cx.on_focus(&focus_handle, window, Self::focus_in).detach();
+
+            // Brainz: the sidebar navigation marks the current tab, so it
+            // redraws whenever the active item changes.
+            cx.subscribe_in(
+                &workspace_entity,
+                window,
+                |_, _, event: &workspace::Event, _, cx| {
+                    if matches!(event, workspace::Event::ActiveItemChanged) {
+                        cx.notify();
+                    }
+                },
+            )
+            .detach();
 
             cx.subscribe_in(
                 &git_store,
@@ -4692,6 +4706,7 @@ impl ProjectPanel {
                             auto_folded_ancestors.clear();
                             if (!hide_gitignore || !entry.is_ignored)
                                 && (!hide_hidden || !entry.is_hidden)
+                                && !brainz_is_config_file(&entry.path)
                             {
                                 visible_worktree_entries.push(entry.to_owned());
                             }
@@ -4708,6 +4723,7 @@ impl ProjectPanel {
                             if precedes_new_entry
                                 && (!hide_gitignore || !entry.is_ignored)
                                 && (!hide_hidden || !entry.is_hidden)
+                                && !brainz_is_config_file(&entry.path)
                             {
                                 visible_worktree_entries.push(Self::create_new_git_entry(
                                     entry.entry,
@@ -7367,6 +7383,11 @@ fn item_width_estimate(depth: usize, item_text_chars: usize, is_symlink: bool) -
     item_width
 }
 
+/// Brainz: the brain's own layout file is plumbing, not a note.
+fn brainz_is_config_file(path: &RelPath) -> bool {
+    path.file_name() == Some("brainz.toml")
+}
+
 impl Render for ProjectPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !cx.has_active_drag() {
@@ -7392,6 +7413,8 @@ impl Render for ProjectPanel {
             self._brainz_mcp_subscription = Some(cx.observe(&state, |_, _, cx| cx.notify()));
         }
         let brainz_mcp_banner = brainz_calendar::mcp::render_banner(&self.workspace, cx);
+        let brainz_nav = brainz_calendar::nav::render(&self.workspace, cx);
+        let brainz_tree_heading = brainz_calendar::nav::render_tree_heading(cx);
         if self._brainz_decay_subscription.is_none()
             && let Some(state) = brainz_calendar::status_decay::state(cx)
         {
@@ -7512,6 +7535,8 @@ impl Render for ProjectPanel {
                 .children(brainz_banner)
                 .children(brainz_prep_banner)
                 .children(brainz_mcp_banner)
+                .child(brainz_nav)
+                .child(brainz_tree_heading)
                 .child(
             h_flex()
                 .id("project-panel")

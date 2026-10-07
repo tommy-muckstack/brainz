@@ -1275,6 +1275,9 @@ pub struct AgentPanel {
     _extension_subscription: Option<Subscription>,
     _project_subscription: Subscription,
     zoomed: bool,
+    /// Brainz: set once at load when a thread or terminal came back from
+    /// the last session.
+    restored_surface: bool,
     pending_serialization: Option<Task<Result<()>>>,
     persist_selected_agent_task: Task<()>,
     new_user_onboarding: Entity<AgentPanelOnboarding>,
@@ -1577,6 +1580,8 @@ impl AgentPanel {
                         panel.selected_agent = agent;
                     }
 
+                    panel.restored_surface =
+                        terminal_to_restore.is_some() || thread_to_restore.is_some();
                     if let Some(metadata) = terminal_to_restore {
                         panel.restore_terminal_for_panel_load(
                             metadata,
@@ -1721,6 +1726,7 @@ impl AgentPanel {
             _extension_subscription: extension_subscription,
             _project_subscription,
             zoomed: false,
+            restored_surface: false,
             pending_serialization: None,
             new_user_onboarding: onboarding,
             thread_store,
@@ -4548,6 +4554,13 @@ impl AgentPanel {
         self.serialize(cx);
     }
 
+    /// Brainz: whether the panel brought back a thread or a terminal from
+    /// the last session (not one it just created for an empty brain), so
+    /// the window can start with the cursor in it.
+    pub fn has_restored_surface(&self) -> bool {
+        self.restored_surface && !matches!(self.visible_surface(), VisibleSurface::Uninitialized)
+    }
+
     fn visible_surface(&self) -> VisibleSurface<'_> {
         match &self.base_view {
             BaseView::Uninitialized => VisibleSurface::Uninitialized,
@@ -7369,9 +7382,8 @@ impl Render for AgentPanel {
             .justify_between()
             .track_focus(&self.focus_handle)
             .bg(cx.theme().colors().panel_background)
-            // Brainz: a visible seam between the document above and this panel.
-            .border_t_1()
-            .border_color(cx.theme().colors().text_muted.opacity(0.35))
+            // Brainz: the panel is a darker surface than the document above;
+            // tone, not a hairline, marks the seam.
             .on_action(cx.listener(|this, action: &NewThread, window, cx| {
                 this.new_thread(action, window, cx);
             }))
@@ -7452,10 +7464,10 @@ impl Render for AgentPanel {
             })
             .children(self.render_trial_end_upsell(window, cx))
             // Brainz: a soft shadow falling from the seam onto the tab strip.
-            .child(div().absolute().top_0().left_0().right_0().h(px(14.)).bg(
+            .child(div().absolute().top_0().left_0().right_0().h(px(10.)).bg(
                 gpui::linear_gradient(
                     180.,
-                    gpui::linear_color_stop(gpui::black().opacity(0.45), 0.),
+                    gpui::linear_color_stop(gpui::black().opacity(0.25), 0.),
                     gpui::linear_color_stop(gpui::black().opacity(0.), 1.),
                 ),
             ));
@@ -14811,7 +14823,11 @@ mod tests {
             assert!(
                 view.as_connected().is_some(),
                 "reset thread should be Connected, got {}",
-                if view.is_loading() { "Loading" } else { "LoadError" }
+                if view.is_loading() {
+                    "Loading"
+                } else {
+                    "LoadError"
+                }
             );
             assert!(
                 !panel.retained_threads.contains_key(&thread_id_a),
@@ -14825,7 +14841,10 @@ mod tests {
         });
 
         let session_id_b = active_session_id(&panel, &cx);
-        assert_ne!(session_id_a, session_id_b, "reset should start a new session");
+        assert_ne!(
+            session_id_a, session_id_b,
+            "reset should start a new session"
+        );
         panel.read_with(&cx, |panel, cx| {
             let new_connection = panel
                 .active_conversation_view()
@@ -14836,7 +14855,11 @@ mod tests {
                 "reset should keep using the running agent connection"
             );
             assert!(
-                panel.connection_store.read(cx).entry(&Agent::Stub).is_some()
+                panel
+                    .connection_store
+                    .read(cx)
+                    .entry(&Agent::Stub)
+                    .is_some()
                     != evict_connection,
                 "reset must not leave an adopted entry behind (evicted={evict_connection})"
             );
@@ -14856,9 +14879,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_reset_active_thread_reconnects_after_connection_evicted(
-        cx: &mut TestAppContext,
-    ) {
+    async fn test_reset_active_thread_reconnects_after_connection_evicted(cx: &mut TestAppContext) {
         reset_active_thread_case(cx, true).await;
     }
 
