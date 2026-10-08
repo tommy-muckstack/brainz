@@ -45,9 +45,10 @@ pub struct SyncState {
     _leave: Option<Task<()>>,
 }
 
-// Text row + gap + button + card padding + outer padding; too small and
-// the button clips into whatever sits below.
-const BANNER_HEIGHT: f32 = 88.;
+// The tallest the banner can be while it slides in or out. It is a ceiling
+// for the slide only; the card itself takes the height its text and button
+// need, so no font size or state can clip the bottom off.
+const BANNER_MAX_HEIGHT: f32 = 160.;
 const SLIDE_MS: u64 = 320;
 
 fn wants_banner(status: &SyncStatus) -> bool {
@@ -252,8 +253,9 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
     if branch != "main" {
         bail!("You're on branch `{branch}`. Switch to `main` first, then sync.");
     }
-    run(repo, "gh", &["auth", "status"])
-        .context("GitHub CLI isn't signed in. Run `gh auth login` in a shell.")?;
+    if run(repo, "gh", &["auth", "status"]).is_err() {
+        bail!("{GITHUB_SIGN_IN_NEEDED}");
+    }
 
     progress("Reviewing changes".into());
     review(repo)?;
@@ -561,10 +563,91 @@ impl SyncState {
 }
 
 /// Popup shown when a sync fails.
+/// The one sync failure with a button instead of an explanation.
+pub const GITHUB_SIGN_IN_NEEDED: &str = "GitHub isn't signed in on this Mac yet.";
+
 pub struct SyncErrorModal {
     message: String,
     state: Entity<SyncState>,
     focus_handle: FocusHandle,
+}
+
+/// Runs `gh auth login` in the terminal panel (the browser opens for the
+/// code), then syncs again once it succeeds, so the person never sees a
+/// shell command.
+pub fn spawn_github_login(
+    workspace: WeakEntity<Workspace>,
+    state: Entity<SyncState>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Task<Result<()>> {
+    use terminal_view::terminal_panel::TerminalPanel;
+    use workspace::dock::DockPosition;
+    let Some(workspace_entity) = workspace.upgrade() else {
+        return Task::ready(Err(anyhow::anyhow!("workspace closed")));
+    };
+    let Some(terminal_panel) = workspace_entity.read(cx).panel::<TerminalPanel>(cx) else {
+        return Task::ready(Err(anyhow::anyhow!("Terminal panel is unavailable")));
+    };
+    let previous_panel = workspace_entity
+        .read(cx)
+        .dock_at_position(DockPosition::Bottom)
+        .read(cx)
+        .active_panel_index();
+    let label = "Sign in to GitHub".to_owned();
+    let spawn = task::SpawnInTerminal {
+        id: task::TaskId("brainz-github-login".to_owned()),
+        full_label: label.clone(),
+        label: label.clone(),
+        command: None,
+        args: Vec::new(),
+        command_label: label,
+        use_new_terminal: true,
+        allow_concurrent_runs: false,
+        hide: task::HideStrategy::Always,
+        shell: task::Shell::WithArguments {
+            program: "gh".to_owned(),
+            args: ["auth", "login", "--web", "--git-protocol", "https"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            title_override: None,
+        },
+        ..Default::default()
+    };
+    window.spawn(cx, async move |cx| {
+        let terminal = terminal_panel
+            .update_in(cx, |terminal_panel, window, cx| {
+                terminal_panel.spawn_task(&spawn, window, cx)
+            })?
+            .await?;
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.open_panel::<TerminalPanel>(window, cx);
+        })?;
+        let exit = terminal
+            .read_with(cx, |terminal, cx| terminal.wait_for_completed_task(cx))?
+            .await;
+        let signed_in = matches!(exit, Some(status) if status.success());
+        workspace.update_in(cx, |workspace, window, cx| {
+            if let Some(index) = previous_panel {
+                workspace
+                    .dock_at_position(DockPosition::Bottom)
+                    .update(cx, |dock, cx| dock.activate_panel(index, window, cx));
+            }
+            if signed_in {
+                let handle = window.window_handle();
+                state.update(cx, |state, cx| {
+                    state.dismiss_error(cx);
+                    state.sync(handle, false, cx);
+                });
+            }
+        })?;
+        if signed_in {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("GitHub sign-in did not finish"))
+        }
+    })
 }
 
 impl SyncErrorModal {
@@ -588,6 +671,16 @@ impl Focusable for SyncErrorModal {
 
 impl Render for SyncErrorModal {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let needs_sign_in = self.message == GITHUB_SIGN_IN_NEEDED;
+        let (title, body) = if needs_sign_in {
+            (
+                "Sign in to GitHub",
+                "Sync keeps your brain on GitHub through the GitHub CLI, which isn't signed in on this Mac yet. Sign in once: a browser window opens for the code, and Sync runs again as soon as you're done."
+                    .to_owned(),
+            )
+        } else {
+            ("Sync to GitHub didn't finish", self.message.clone())
+        };
         v_flex()
             .key_context("BrainzSyncError")
             .track_focus(&self.focus_handle)
@@ -602,22 +695,56 @@ impl Render for SyncErrorModal {
             .child(
                 h_flex()
                     .gap_2()
-                    .child(Icon::new(IconName::Warning).color(Color::Warning))
                     .child(
-                        Label::new("Sync to GitHub didn't finish")
-                            .weight(gpui::FontWeight::SEMIBOLD),
-                    ),
+                        Icon::new(if needs_sign_in {
+                            IconName::Github
+                        } else {
+                            IconName::Warning
+                        })
+                        .color(if needs_sign_in {
+                            Color::Default
+                        } else {
+                            Color::Warning
+                        }),
+                    )
+                    .child(Label::new(title).weight(gpui::FontWeight::SEMIBOLD)),
             )
-            .child(Label::new(self.message.clone()).size(LabelSize::Small))
+            .child(Label::new(body).size(LabelSize::Small))
             .child(
-                h_flex().justify_end().gap_2().child(
-                    Button::new("brainz-sync-error-ok", "OK")
-                        .style(ButtonStyle::Filled)
+                h_flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new(
+                            "brainz-sync-error-ok",
+                            if needs_sign_in { "Not now" } else { "OK" },
+                        )
+                        .style(if needs_sign_in {
+                            ButtonStyle::Subtle
+                        } else {
+                            ButtonStyle::Filled
+                        })
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.state.update(cx, |state, cx| state.dismiss_error(cx));
                             cx.emit(DismissEvent);
                         })),
-                ),
+                    )
+                    .when(needs_sign_in, |this| {
+                        this.child(
+                            Button::new("brainz-sync-github-login", "Sign in to GitHub")
+                                .style(ButtonStyle::Filled)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    let (Some(workspace), state) =
+                                        (this.state.read(cx).workspace.clone(), this.state.clone())
+                                    else {
+                                        return;
+                                    };
+                                    cx.emit(DismissEvent);
+                                    spawn_github_login(workspace, state, window, cx)
+                                        .detach_and_log_err(cx);
+                                })),
+                        )
+                    }),
             )
     }
 }
@@ -691,9 +818,8 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
 
     let banner = v_flex()
         .id("brainz-github-sync-banner")
+        .flex_none()
         .w_full()
-        .h(px(BANNER_HEIGHT))
-        .overflow_hidden()
         .px_2()
         .py_2()
         .child(
@@ -776,6 +902,7 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
     // the banner instead of jumping.
     let animated = if leaving {
         div()
+            .flex_none()
             .w_full()
             .overflow_hidden()
             .child(banner)
@@ -784,19 +911,26 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
                 Animation::new(Duration::from_millis(SLIDE_MS)).with_easing(ease_out_quint()),
                 |wrapper, delta| {
                     let remaining = 1.0 - delta;
-                    wrapper.h(px(BANNER_HEIGHT * remaining)).opacity(remaining)
+                    wrapper
+                        .max_h(px(BANNER_MAX_HEIGHT * remaining))
+                        .opacity(remaining)
                 },
             )
             .into_any_element()
     } else {
         div()
+            .flex_none()
             .w_full()
             .overflow_hidden()
             .child(banner)
             .with_animation(
                 "brainz-github-sync-banner-in",
                 Animation::new(Duration::from_millis(SLIDE_MS)).with_easing(ease_out_back),
-                |wrapper, delta| wrapper.h(px(BANNER_HEIGHT * delta)).opacity(delta.min(1.0)),
+                |wrapper, delta| {
+                    wrapper
+                        .max_h(px(BANNER_MAX_HEIGHT * delta))
+                        .opacity(delta.min(1.0))
+                },
             )
             .into_any_element()
     };

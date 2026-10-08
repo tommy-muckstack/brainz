@@ -5530,7 +5530,7 @@ impl ThreadView {
             };
             let thread_view = cx.weak_entity();
             IconButton::new("send-message", send_icon)
-                .style(ButtonStyle::Filled)
+                .style(ButtonStyle::Subtle)
                 .map(|this| {
                     if is_editor_empty && !is_generating {
                         this.disabled(true).icon_color(Color::Muted)
