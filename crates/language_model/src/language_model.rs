@@ -628,6 +628,7 @@ impl ApiKeyConfiguration {
             is_from_env_var,
             env_var_name,
             api_key_url,
+            connection_status: None,
         }
     }
 }
@@ -640,6 +641,28 @@ pub struct ApiKeyConfiguration {
     pub is_from_env_var: bool,
     pub env_var_name: SharedString,
     pub api_key_url: SharedString,
+    pub connection_status: Option<ApiKeyConnectionStatus>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ApiKeyConnectionStatus {
+    Checking,
+    Connected,
+    WorkspaceRequired,
+    Failed(&'static str),
+}
+
+impl ApiKeyConnectionStatus {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Checking => "Checking API connection…",
+            Self::Connected => "API key verified",
+            Self::WorkspaceRequired => {
+                "This key needs a workspace ID. Add it in Settings → AI → API Keys (Optional), or use a key scoped to one workspace."
+            }
+            Self::Failed(message) => message,
+        }
+    }
 }
 
 /// The subtitle rendered beneath a provider's name when its configuration is

@@ -8,17 +8,18 @@ use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use gpui::{App, AppContext, AsyncApp, Context, Entity, SharedString, Task};
 use http_client::{CustomHeaders, HttpClient};
 use language_model::{
-    ANTHROPIC_PROVIDER_ID, ANTHROPIC_PROVIDER_NAME, ApiKeyConfiguration, ApiKeyState,
-    AuthenticateError, CompactionResult, EnvVar, FastModeConfirmation, IconOrSvg, LanguageModel,
-    LanguageModelClient, LanguageModelCompletionError, LanguageModelCompletionStream,
-    LanguageModelId, LanguageModelName, LanguageModelProvider, LanguageModelProviderId,
-    LanguageModelProviderName, LanguageModelProviderState, LanguageModelRequest,
-    LanguageModelToolChoiceSupport, ModelRateLimiters, ProviderSettingsView, env_var,
-    unavailable_error,
+    ANTHROPIC_PROVIDER_ID, ANTHROPIC_PROVIDER_NAME, ApiKeyConfiguration, ApiKeyConnectionStatus,
+    ApiKeyState, AuthenticateError, CompactionResult, EnvVar, FastModeConfirmation, IconOrSvg,
+    LanguageModel, LanguageModelClient, LanguageModelCompletionError,
+    LanguageModelCompletionStream, LanguageModelId, LanguageModelName, LanguageModelProvider,
+    LanguageModelProviderId, LanguageModelProviderName, LanguageModelProviderState,
+    LanguageModelRequest, LanguageModelToolChoiceSupport, ModelRateLimiters, ProviderSettingsView,
+    env_var, unavailable_error,
 };
 use settings::{Settings, SettingsStore};
 use std::sync::{Arc, LazyLock};
 use ui::IconName;
+use util::ResultExt;
 
 use anthropic::completion::collect_compaction_result;
 pub use anthropic::completion::{AnthropicEventMapper, AnthropicPromptCacheMode, into_anthropic};
@@ -53,7 +54,8 @@ pub struct State {
     credentials_provider: Arc<dyn CredentialsProvider>,
     http_client: Arc<dyn HttpClient>,
     fetched_models: Vec<anthropic::Model>,
-    fetch_models_task: Option<Task<Result<()>>>,
+    connection_status: Option<ApiKeyConnectionStatus>,
+    fetch_models_task: Option<Task<()>>,
 }
 
 impl State {
@@ -65,6 +67,8 @@ impl State {
         let credentials_provider = self.credentials_provider.clone();
         let api_url = AnthropicLanguageModelProvider::api_url(cx);
         let should_fetch_models = api_key.is_some();
+        self.fetch_models_task = None;
+        self.connection_status = None;
         let task = self.api_key_state.store(
             api_url,
             api_key,
@@ -77,7 +81,7 @@ impl State {
             let result = task.await;
             if result.is_ok() && should_fetch_models {
                 this.update(cx, |this, cx| this.restart_fetch_models_task(cx))
-                    .ok();
+                    .log_err();
             }
             result
         })
@@ -97,38 +101,54 @@ impl State {
             let result = task.await;
             if result.is_ok() {
                 this.update(cx, |this, cx| this.restart_fetch_models_task(cx))
-                    .ok();
+                    .log_err();
             }
             result
         })
     }
 
-    fn fetch_models(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
+    fn fetch_models(&mut self, cx: &mut Context<Self>) -> Task<()> {
         let http_client = self.http_client.clone();
         let api_url = AnthropicLanguageModelProvider::api_url(cx);
         let Some(api_key) = self.api_key_state.key(&api_url) else {
-            return Task::ready(Err(anyhow::anyhow!(
-                "cannot fetch Anthropic models without an API key"
-            )));
+            self.connection_status = None;
+            return Task::ready(());
         };
         let extra_headers = AnthropicLanguageModelProvider::settings(cx)
             .custom_headers
             .clone();
+        self.connection_status = Some(ApiKeyConnectionStatus::Checking);
+        cx.notify();
 
         cx.spawn(async move |this, cx| {
-            let models = anthropic::list_models(
+            let result = anthropic::list_models(
                 http_client.as_ref(),
                 &api_url,
                 api_key.as_ref(),
                 &extra_headers,
             )
-            .await
-            .map_err(LanguageModelCompletionError::from)?;
+            .await;
 
             this.update(cx, |this, cx| {
-                this.fetched_models = models;
+                match result {
+                    Ok(models) if !models.is_empty() => {
+                        this.fetched_models = models;
+                        this.connection_status = Some(ApiKeyConnectionStatus::Connected);
+                    }
+                    Ok(_) => {
+                        this.fetched_models.clear();
+                        this.connection_status = Some(ApiKeyConnectionStatus::Failed(
+                            "No Claude models are available for this key and workspace.",
+                        ));
+                    }
+                    Err(error) => {
+                        this.fetched_models.clear();
+                        this.connection_status = Some(connection_error(&error));
+                    }
+                }
                 cx.notify();
             })
+            .log_err();
         })
     }
 
@@ -136,6 +156,43 @@ impl State {
         let task = self.fetch_models(cx);
         self.fetch_models_task.replace(task);
     }
+}
+
+fn connection_error(error: &AnthropicError) -> ApiKeyConnectionStatus {
+    if let AnthropicError::ApiError { status, error } = error {
+        let message = error.message.to_ascii_lowercase();
+        if error.error_type == "invalid_request_error" && message.contains("anthropic-workspace-id")
+        {
+            return ApiKeyConnectionStatus::WorkspaceRequired;
+        }
+        if message.contains("workspace") && status.is_some_and(|status| status.as_u16() == 404) {
+            return ApiKeyConnectionStatus::Failed(
+                "This key cannot access that workspace. Check the workspace ID or use a key scoped to your workspace.",
+            );
+        }
+        if message.contains("credit") || message.contains("billing") || message.contains("balance")
+        {
+            return ApiKeyConnectionStatus::Failed(
+                "Add API credits in the Claude Console, then check the connection again.",
+            );
+        }
+        match status.map(|status| status.as_u16()) {
+            Some(401) => {
+                return ApiKeyConnectionStatus::Failed(
+                    "This API key is invalid or expired. Replace it with a personal Claude API key.",
+                );
+            }
+            Some(403) => {
+                return ApiKeyConnectionStatus::Failed(
+                    "This key does not have access. Check its workspace and permissions in the Claude Console.",
+                );
+            }
+            _ => {}
+        }
+    }
+    ApiKeyConnectionStatus::Failed(
+        "Couldn't connect to the Claude API. Check your connection and try again.",
+    )
 }
 
 impl AnthropicLanguageModelProvider {
@@ -147,10 +204,14 @@ impl AnthropicLanguageModelProvider {
         let state = cx.new(|cx| {
             cx.observe_global::<SettingsStore>({
                 let mut last_api_url = Self::api_url(cx);
+                let mut last_headers = Self::settings(cx).custom_headers.clone();
                 move |this: &mut State, cx| {
                     let credentials_provider = this.credentials_provider.clone();
                     let api_url = Self::api_url(cx);
                     let url_changed = api_url != last_api_url;
+                    let headers = Self::settings(cx).custom_headers.clone();
+                    let headers_changed = headers != last_headers;
+                    last_headers = headers;
                     last_api_url = api_url.clone();
                     this.api_key_state.handle_url_change(
                         api_url,
@@ -158,8 +219,10 @@ impl AnthropicLanguageModelProvider {
                         credentials_provider,
                         cx,
                     );
-                    if url_changed {
+                    if url_changed || headers_changed {
+                        this.fetch_models_task = None;
                         this.fetched_models.clear();
+                        this.connection_status = None;
                         this.authenticate(cx).detach();
                     }
                     cx.notify();
@@ -171,6 +234,7 @@ impl AnthropicLanguageModelProvider {
                 credentials_provider,
                 http_client: http_client.clone(),
                 fetched_models: Vec::new(),
+                connection_status: None,
                 fetch_models_task: None,
             }
         });
@@ -340,12 +404,14 @@ impl LanguageModelProvider for AnthropicLanguageModelProvider {
 
     fn settings_view(&self, cx: &mut App) -> Option<ProviderSettingsView> {
         let state = self.state.read(cx);
-        Some(ProviderSettingsView::ApiKey(ApiKeyConfiguration::new(
+        let mut configuration = ApiKeyConfiguration::new(
             state.api_key_state.has_key(),
             state.api_key_state.is_from_env_var(),
             state.api_key_state.env_var_name().clone(),
-            "https://console.anthropic.com/settings/keys".into(),
-        )))
+            "https://platform.claude.com/settings/keys".into(),
+        );
+        configuration.connection_status = state.connection_status;
+        Some(ProviderSettingsView::ApiKey(configuration))
     }
 
     fn set_api_key(&self, api_key: Option<String>, cx: &mut App) -> Task<Result<()>> {
@@ -602,10 +668,130 @@ fn available_model_to_anthropic_model(available: &AvailableModel) -> anthropic::
 mod tests {
     use super::*;
     use futures::AsyncReadExt as _;
+    use gpui::BorrowAppContext;
     use http_client::{AsyncBody, FakeHttpClient};
     use language_model::{LanguageModelRequestMessage, MessageContent};
     use serde_json::json;
     use std::sync::Mutex;
+
+    #[gpui::test]
+    async fn personal_api_key_with_workspace_scope_needs_no_extra_configuration(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let client = FakeHttpClient::create(|request| async move {
+            assert_eq!(request.uri().path(), "/v1/models");
+            assert!(request.headers().get("anthropic-workspace-id").is_none());
+            Ok(http_client::Response::builder().status(200).body(AsyncBody::from(json!({"data": [{
+                "id": "claude-haiku-test", "display_name": "Claude Haiku Test", "max_input_tokens": 200000, "max_tokens": 8192
+            }]}).to_string()))?)
+        });
+        let provider = direct_anthropic_test_provider(client, cx);
+        cx.update(|cx| provider.set_api_key(Some("personal-test-key".into()), cx))
+            .await
+            .expect("save key");
+        cx.run_until_parked();
+        assert_eq!(
+            provider
+                .state
+                .read_with(cx, |state, _| state.connection_status),
+            Some(ApiKeyConnectionStatus::Connected)
+        );
+        assert!(cx.read(|cx| provider.default_fast_model(cx)).is_some());
+    }
+
+    #[gpui::test]
+    async fn personal_api_key_workspace_change_recovers_without_admin_access(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let completion_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let client = FakeHttpClient::create({
+            let completion_seen = completion_seen.clone();
+            move |request| {
+                let completion_seen = completion_seen.clone();
+                async move {
+                    assert!(
+                        matches!(request.uri().path(), "/v1/models" | "/v1/messages"),
+                        "personal keys never require an Admin API request"
+                    );
+                    if request.headers().get("anthropic-workspace-id").is_none() {
+                        return Ok(http_client::Response::builder().status(400).body(AsyncBody::from(json!({"type": "error", "error": {
+                            "type": "invalid_request_error", "message": "This API key is not scoped to a workspace; include the anthropic-workspace-id header. personal-test-key"
+                        }}).to_string()))?);
+                    }
+                    assert_eq!(
+                        request
+                            .headers()
+                            .get("anthropic-workspace-id")
+                            .expect("workspace"),
+                        "wrkspc_PersonalTest"
+                    );
+                    if request.uri().path() == "/v1/messages" {
+                        completion_seen.store(true, std::sync::atomic::Ordering::SeqCst);
+                        return Ok(http_client::Response::builder()
+                            .status(200)
+                            .body(AsyncBody::from("data: {\"type\":\"message_stop\"}\n\n"))?);
+                    }
+                    Ok(http_client::Response::builder().status(200).body(AsyncBody::from(json!({"data": [{
+                        "id": "claude-haiku-test", "display_name": "Claude Haiku Test", "max_input_tokens": 200000, "max_tokens": 8192
+                    }]}).to_string()))?)
+                }
+            }
+        });
+        let provider = direct_anthropic_test_provider(client, cx);
+        cx.update(|cx| provider.set_api_key(Some("personal-test-key".into()), cx))
+            .await
+            .expect("save key");
+        cx.run_until_parked();
+        let status = provider
+            .state
+            .read_with(cx, |state, _| state.connection_status)
+            .expect("connection status");
+        assert_eq!(status, ApiKeyConnectionStatus::WorkspaceRequired);
+        assert!(!status.message().contains("personal-test-key"));
+        cx.update(|cx| {
+            cx.update_global::<SettingsStore, _>(|store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.language_models.get_or_insert_default().anthropic =
+                        Some(::settings::AnthropicSettingsContent {
+                            api_url: None,
+                            available_models: None,
+                            custom_headers: Some(collections::HashMap::from_iter([(
+                                "anthropic-workspace-id".into(),
+                                "wrkspc_PersonalTest".into(),
+                            )])),
+                        });
+                });
+            });
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            provider
+                .state
+                .read_with(cx, |state, _| state.connection_status),
+            Some(ApiKeyConnectionStatus::Connected)
+        );
+        let model = cx
+            .read(|cx| provider.default_fast_model(cx))
+            .expect("fast model");
+        let mut stream = provider
+            .stream_completion(&model, LanguageModelRequest::default(), &cx.to_async())
+            .await
+            .expect("completion");
+        while let Some(event) = stream.next().await {
+            event.expect("completion event");
+        }
+        assert!(completion_seen.load(std::sync::atomic::Ordering::SeqCst));
+        cx.update(|cx| provider.set_api_key(None, cx))
+            .await
+            .expect("remove key");
+        cx.run_until_parked();
+        assert!(
+            provider
+                .state
+                .read_with(cx, |state, _| state.fetched_models.is_empty()
+                    && state.connection_status.is_none())
+        );
+    }
 
     fn parse_available_model(json: &str) -> AvailableModel {
         serde_json::from_str(json).expect("test fixture should parse")

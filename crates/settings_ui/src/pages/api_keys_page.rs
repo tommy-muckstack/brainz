@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
-use gpui::{Entity, ScrollHandle, Subscription, Task};
+use gpui::{Entity, Focusable, ReadGlobal, ScrollHandle, Subscription, Task};
 use language_model::{
-    ANTHROPIC_PROVIDER_ID, AuthenticateError, IconOrSvg, LanguageModelProvider,
-    LanguageModelRegistry, OPEN_AI_PROVIDER_ID, ProviderSettingsView,
+    ANTHROPIC_PROVIDER_ID, ApiKeyConnectionStatus, AuthenticateError, IconOrSvg,
+    LanguageModelProvider, LanguageModelRegistry, OPEN_AI_PROVIDER_ID, ProviderSettingsView,
 };
+use settings::SettingsStore;
 use ui::{ButtonLink, prelude::*};
 use ui_input::InputField;
 use util::ResultExt as _;
@@ -62,10 +63,12 @@ pub(crate) fn render_api_keys_page(
 struct ApiKeyEditor {
     provider: Arc<dyn LanguageModelProvider>,
     input: Entity<InputField>,
+    workspace: Option<Entity<InputField>>,
     loading: bool,
     saving: bool,
     error: Option<SharedString>,
     _input_subscription: Subscription,
+    _workspace_subscription: Option<Subscription>,
     _registry_subscription: Subscription,
     _task: Option<Task<()>>,
 }
@@ -77,6 +80,24 @@ impl ApiKeyEditor {
         cx: &mut Context<Self>,
     ) -> Self {
         let (input, input_subscription) = Self::new_input(window, cx);
+        let (workspace, workspace_subscription) = if provider.id() == ANTHROPIC_PROVIDER_ID {
+            let value = workspace_id(cx);
+            let input = cx
+                .new(|cx| InputField::new(window, cx, "Workspace ID · wrkspc_…").tab_index(0isize));
+            input.update(cx, |input, cx| input.set_text(&value, window, cx));
+            let weak_view = cx.weak_entity();
+            let editor = input.read(cx).editor().clone();
+            let subscription = editor.subscribe(
+                Box::new(move |_, _, cx| {
+                    weak_view.update(cx, |_, cx| cx.notify()).log_err();
+                }),
+                window,
+                cx,
+            );
+            (Some(input), Some(subscription))
+        } else {
+            (None, None)
+        };
         let registry_subscription = cx
             .subscribe(&LanguageModelRegistry::global(cx), |_, _, _, cx| {
                 cx.notify()
@@ -98,10 +119,12 @@ impl ApiKeyEditor {
         Self {
             provider,
             input,
+            workspace,
             loading: true,
             saving: false,
             error: None,
             _input_subscription: input_subscription,
+            _workspace_subscription: workspace_subscription,
             _registry_subscription: registry_subscription,
             _task: Some(task),
         }
@@ -134,6 +157,62 @@ impl ApiKeyEditor {
             return;
         }
         self.store(Some(key), window, cx);
+    }
+
+    fn save_workspace(&mut self, cx: &mut Context<Self>) {
+        if self.loading || self.saving {
+            return;
+        }
+        let Some(input) = &self.workspace else {
+            return;
+        };
+        let value = input.read(cx).text(cx).trim().to_owned();
+        if !valid_workspace_id(&value) {
+            self.error = Some("Enter a workspace ID beginning with wrkspc_, or leave this blank for a key scoped to one workspace.".into());
+            cx.notify();
+            return;
+        }
+        let update = settings::update_settings_file_with_completion(
+            <dyn fs::Fs>::global(cx),
+            cx,
+            move |settings, _| {
+                set_workspace_id(settings, value);
+            },
+        );
+        self.saving = true;
+        self.error = None;
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let result = update.await;
+            this.update(cx, |this, cx| {
+                this.saving = false;
+                if !matches!(result, Ok(Ok(()))) {
+                    this.error = Some(
+                        "Couldn't save the workspace ID. Check your settings file and try again."
+                            .into(),
+                    );
+                }
+                cx.notify();
+            })
+            .log_err();
+        }));
+        cx.notify();
+    }
+
+    fn check_connection(&mut self, cx: &mut Context<Self>) {
+        if self.loading || self.saving {
+            return;
+        }
+        self.error = None;
+        let authentication = self.provider.authenticate(cx);
+        self._task = Some(cx.spawn(async move |this, cx| {
+            if authentication.await.is_err() {
+                this.update(cx, |this, cx| {
+                    this.error = Some("Couldn't read the saved key. Check your system keychain access and try again.".into());
+                    cx.notify();
+                }).log_err();
+            }
+        }));
+        cx.notify();
     }
 
     fn store(&mut self, key: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
@@ -186,6 +265,13 @@ impl Render for ApiKeyEditor {
         let disabled = self.loading || self.saving || config.is_from_env_var;
         self.input
             .update(cx, |input, cx| input.editor().set_read_only(disabled, cx));
+        if let Some(workspace) = &self.workspace {
+            workspace.update(cx, |input, cx| {
+                input
+                    .editor()
+                    .set_read_only(self.loading || self.saving, cx)
+            });
+        }
         let status = if self.loading {
             "Checking keychain…"
         } else if config.is_from_env_var {
@@ -254,6 +340,31 @@ impl Render for ApiKeyEditor {
                     .color(Color::Muted),
                 )
             })
+            .when_some(self.workspace.clone(), |this, workspace| {
+                let changed = workspace.read(cx).text(cx).trim() != workspace_id(cx);
+                this.child(v_flex().gap_2()
+                    .child(Label::new("Personal API keys are supported. Leave the workspace blank when your key is scoped to one workspace. Otherwise, copy its ID from Claude Console → Settings → Workspaces.").size(LabelSize::Small).color(Color::Muted))
+                    .child(h_flex().gap_2()
+                        .child(div().flex_1().child(workspace))
+                        .child(Button::new("save-api-workspace", "Save Workspace")
+                            .tab_index(0isize)
+                            .disabled(self.loading || self.saving || !changed)
+                            .on_click(cx.listener(|this, _, _, cx| this.save_workspace(cx)))))
+                    .child(ButtonLink::new("Find your workspace ID", "https://platform.claude.com/settings/workspaces").label_size(LabelSize::Small)))
+            })
+            .when_some(config.connection_status, |this, status| {
+                this.child(Label::new(status.message()).size(LabelSize::Small).color(match status {
+                    ApiKeyConnectionStatus::Checking => Color::Muted,
+                    ApiKeyConnectionStatus::Connected => Color::Success,
+                    _ => Color::Error,
+                }))
+            })
+            .when(self.provider.id() == ANTHROPIC_PROVIDER_ID && config.has_key, |this| {
+                this.child(Button::new("check-api-connection", "Check Connection")
+                    .tab_index(0isize)
+                    .disabled(self.loading || self.saving || config.connection_status == Some(ApiKeyConnectionStatus::Checking))
+                    .on_click(cx.listener(|this, _, _, cx| this.check_connection(cx))))
+            })
             .when_some(self.error.clone(), |this, error| {
                 this.child(Label::new(error).size(LabelSize::Small).color(Color::Error))
             })
@@ -261,7 +372,54 @@ impl Render for ApiKeyEditor {
                 ButtonLink::new(format!("Get a {name} API key"), config.api_key_url)
                     .label_size(LabelSize::Small),
             )
-            .on_action(cx.listener(|this, _: &menu::Confirm, window, cx| this.save(window, cx)))
+            .on_action(cx.listener(|this, _: &menu::Confirm, window, cx| {
+                if this.workspace.as_ref().is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window)) {
+                    this.save_workspace(cx);
+                } else {
+                    this.save(window, cx);
+                }
+            }))
             .into_any_element()
+    }
+}
+
+fn workspace_id(cx: &App) -> String {
+    SettingsStore::global(cx)
+        .merged_settings()
+        .language_models
+        .as_ref()
+        .and_then(|models| models.anthropic.as_ref())
+        .and_then(|provider| provider.custom_headers.as_ref())
+        .and_then(|headers| {
+            headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("anthropic-workspace-id"))
+        })
+        .map(|(_, value)| value.clone())
+        .unwrap_or_default()
+}
+
+fn valid_workspace_id(value: &str) -> bool {
+    value.is_empty()
+        || (value.len() <= 128
+            && value.strip_prefix("wrkspc_").is_some_and(|suffix| {
+                !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            }))
+}
+
+fn set_workspace_id(settings: &mut settings::SettingsContent, value: String) {
+    let provider = settings
+        .language_models
+        .get_or_insert_default()
+        .anthropic
+        .get_or_insert(settings::AnthropicSettingsContent {
+            api_url: None,
+            available_models: None,
+            custom_headers: None,
+        });
+    let headers = provider.custom_headers.get_or_insert_default();
+    headers.retain(|name, _| !name.eq_ignore_ascii_case("anthropic-workspace-id"));
+    if !value.is_empty() {
+        headers.insert("anthropic-workspace-id".into(), value);
     }
 }

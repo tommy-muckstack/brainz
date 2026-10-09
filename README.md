@@ -313,6 +313,14 @@ request leaves the local page working and shows a Retry button. API usage is
 billed by the provider. Brainz works without keys, and adding one does not
 replace the separate Claude or Codex subscription sign-ins.
 
+Personal Anthropic keys are supported. A key scoped to one workspace works with
+just the key. For a key that can access multiple workspaces, add its workspace ID
+in the same API Keys settings page; find it under Claude Console → Settings →
+Workspaces. Brainz uses that ID for model discovery and API requests, without
+requiring an admin key or organization-management permissions. Connection checks
+explain missing workspace IDs, invalid keys, and credit issues. The workspace ID
+is a non-secret setting; the API key stays in the system keychain.
+
 Claude and Codex connect through the existing ACP integration, with their own
 authentication and permissions. Their adapters install from the ACP registry on
 first use. Brainz gives each one its own config directory

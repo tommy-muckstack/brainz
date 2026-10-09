@@ -10,9 +10,9 @@ use chrono::Local;
 use futures::{FutureExt, StreamExt};
 use gpui::{App, AppContext, Context, Entity, Global, Subscription, Task, WeakEntity};
 use language_model::{
-    ANTHROPIC_PROVIDER_ID, LanguageModel, LanguageModelCompletionEvent, LanguageModelProvider,
-    LanguageModelRegistry, LanguageModelRequest, LanguageModelRequestMessage, OPEN_AI_PROVIDER_ID,
-    Role,
+    ANTHROPIC_PROVIDER_ID, ApiKeyConnectionStatus, LanguageModel, LanguageModelCompletionEvent,
+    LanguageModelProvider, LanguageModelRegistry, LanguageModelRequest,
+    LanguageModelRequestMessage, OPEN_AI_PROVIDER_ID, ProviderSettingsView, Role,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -259,9 +259,15 @@ impl Insight {
         self.provider = Some(provider_id.clone());
         self.enabled = true;
         let Some(model) = background_model(&provider, cx) else {
-            self.error = Some(
+            let status = match provider.settings_view(cx) {
+                Some(ProviderSettingsView::ApiKey(configuration)) => {
+                    configuration.connection_status
+                }
+                _ => None,
+            };
+            self.error = Some(status.map(ApiKeyConnectionStatus::message).unwrap_or(
                 "Couldn't load an AI model. Check your API key and connection. Your local data is still available.",
-            );
+            ));
             cx.notify();
             return;
         };
