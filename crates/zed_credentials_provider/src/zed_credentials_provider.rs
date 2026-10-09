@@ -42,6 +42,10 @@ pub fn global(cx: &App) -> Arc<dyn CredentialsProvider> {
         .unwrap_or_else(|| new(cx))
 }
 
+pub fn system_keychain() -> Arc<dyn CredentialsProvider> {
+    Arc::new(KeychainCredentialsProvider)
+}
+
 fn new(cx: &App) -> Arc<dyn CredentialsProvider> {
     let use_development_provider = match ReleaseChannel::try_global(cx) {
         Some(ReleaseChannel::Dev) => {

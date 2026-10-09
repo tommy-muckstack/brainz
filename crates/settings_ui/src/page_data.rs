@@ -13,9 +13,9 @@ use crate::{
     ActionLink, DynamicItem, PROJECT, SettingField, SettingItem, SettingsFieldMetadata,
     SettingsPage, SettingsPageItem, SubPageLink, USER, active_language, all_language_names,
     pages::{
-        open_audio_test_window, render_edit_prediction_setup_page, render_external_agents_page,
-        render_llm_providers_page, render_mcp_servers_page, render_sandbox_settings_page,
-        render_skills_setup_page, render_tool_permissions_setup_page,
+        open_audio_test_window, render_api_keys_page, render_edit_prediction_setup_page,
+        render_external_agents_page, render_llm_providers_page, render_mcp_servers_page,
+        render_sandbox_settings_page, render_skills_setup_page, render_tool_permissions_setup_page,
     },
 };
 
@@ -8614,7 +8614,7 @@ fn collaboration_page() -> SettingsPage {
 }
 
 fn ai_page(cx: &App) -> SettingsPage {
-    fn general_section() -> [SettingsPageItem; 8] {
+    fn general_section() -> [SettingsPageItem; 9] {
         [
             SettingsPageItem::SectionHeader("General"),
             SettingsPageItem::SettingItem(SettingItem {
@@ -8705,6 +8705,25 @@ fn ai_page(cx: &App) -> SettingsPage {
                 }),
                 metadata: None,
                 files: USER,
+            }),
+            SettingsPageItem::SubPageLink(SubPageLink {
+                title: "API Keys (Optional)".into(),
+                r#type: Default::default(),
+                json_path: Some("api_keys"),
+                description: Some(
+                    "Add your own OpenAI or Claude API key. Brainz works without one.".into(),
+                ),
+                search_aliases: &[
+                    "openai",
+                    "claude",
+                    "anthropic",
+                    "api key",
+                    "keychain",
+                    "optional",
+                ],
+                in_json: false,
+                files: USER,
+                render: render_api_keys_page,
             }),
             SettingsPageItem::SubPageLink(SubPageLink {
                 title: "LLM Providers".into(),

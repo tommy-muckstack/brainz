@@ -299,6 +299,14 @@ GitHub" and the button becomes **Pull from GitHub**, a rebase with autostash so
 local edits survive. With work on both sides, Sync pulls first. Errors open a
 popup; success shows a toast that fades on its own.
 
+**Optional API keys.** In Settings → AI → API Keys (Optional), each user can add,
+replace, or remove their own OpenAI or Claude (Anthropic) API key. Inputs are
+masked, and keys are stored in the system keychain, including in source builds;
+they are never written to notes or settings files, or included in the installer.
+Saving a key makes it available to the existing direct model provider. API usage
+is billed by that provider. Brainz does not require an API key, and adding one
+does not replace the separate Claude or Codex subscription sign-ins.
+
 Claude and Codex connect through the existing ACP integration, with their own
 authentication and permissions. Their adapters install from the ACP registry on
 first use. Brainz gives each one its own config directory

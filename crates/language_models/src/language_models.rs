@@ -35,7 +35,9 @@ use crate::provider::x_ai_subscribed::XAiSubscribedProvider;
 pub use crate::settings::*;
 
 pub fn init(user_store: Entity<UserStore>, client: Arc<Client>, cx: &mut App) {
-    let credentials_provider = client.credentials_provider();
+    // Brainz's packaged builds use the dev release channel too. Model keys must
+    // never fall back to that channel's plaintext development credentials file.
+    let credentials_provider = zed_credentials_provider::system_keychain();
     let registry = LanguageModelRegistry::global(cx);
     registry.update(cx, |registry, cx| {
         register_language_model_providers(
@@ -328,7 +330,7 @@ fn register_language_model_providers(
     registry.register_provider(
         Arc::new(XAiSubscribedProvider::new(
             client.http_client(),
-            credentials_provider.clone(),
+            client.credentials_provider(),
             cx,
         )),
         cx,
@@ -345,7 +347,7 @@ fn register_language_model_providers(
     registry.register_provider(
         Arc::new(OpenAiSubscribedProvider::new(
             client.http_client(),
-            credentials_provider,
+            client.credentials_provider(),
             cx,
         )),
         cx,

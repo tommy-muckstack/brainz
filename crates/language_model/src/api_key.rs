@@ -3,7 +3,6 @@ use credentials_provider::CredentialsProvider;
 use env_var::EnvVar;
 use futures::{FutureExt, future};
 use gpui::{AsyncApp, Context, SharedString, Task};
-use gpui_util::ResultExt as _;
 use std::{
     fmt::{Display, Formatter},
     sync::Arc,
@@ -30,10 +29,19 @@ pub enum LoadStatus {
     Loaded(ApiKey),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ApiKey {
     source: ApiKeySource,
     key: Arc<str>,
+}
+
+impl std::fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKey")
+            .field("source", &self.source)
+            .field("key", &"[redacted]")
+            .finish()
+    }
 }
 
 impl ApiKeyState {
@@ -113,10 +121,9 @@ impl ApiKeyState {
             if let Some(key) = &key {
                 provider
                     .write_credentials(&url, "Bearer", key.as_bytes(), cx)
-                    .await
-                    .log_err();
+                    .await?;
             } else {
-                provider.delete_credentials(&url, cx).await.log_err();
+                provider.delete_credentials(&url, cx).await?;
             }
             ent.update(cx, |ent, cx| {
                 let this = get_this(ent);
@@ -195,10 +202,16 @@ impl ApiKeyState {
         cx.spawn(async move |ent, cx| {
             task.await;
             ent.update(cx, |ent, _cx| {
-                get_this(ent).load_status.clone().into_authenticate_result()
+                // Local model providers also load optional keys, so an absent
+                // key is a successful lookup. Storage errors still reach the UI.
+                match &get_this(ent).load_status {
+                    LoadStatus::Error(error) => {
+                        Err(AuthenticateError::Other(anyhow!(error.clone())))
+                    }
+                    LoadStatus::NotPresent | LoadStatus::Loaded(_) => Ok(()),
+                }
             })
-            .ok();
-            Ok(())
+            .map_err(AuthenticateError::Other)?
         })
     }
 
@@ -294,5 +307,187 @@ impl Display for ApiKeySource {
             ApiKeySource::EnvVar(var) => write!(f, "environment variable {}", var),
             ApiKeySource::SystemKeychain => write!(f, "system keychain"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{AppContext as _, TestAppContext};
+    use parking_lot::Mutex;
+    use std::collections::HashMap;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Default)]
+    struct TestCredentials {
+        keys: Mutex<HashMap<String, Vec<u8>>>,
+        fail: AtomicBool,
+    }
+
+    impl CredentialsProvider for TestCredentials {
+        fn read_credentials<'a>(
+            &'a self,
+            url: &'a str,
+            _cx: &'a AsyncApp,
+        ) -> Pin<Box<dyn Future<Output = Result<Option<(String, Vec<u8>)>>> + 'a>> {
+            async move {
+                anyhow::ensure!(!self.fail.load(Ordering::SeqCst), "keychain unavailable");
+                Ok(self
+                    .keys
+                    .lock()
+                    .get(url)
+                    .cloned()
+                    .map(|key| ("Bearer".into(), key)))
+            }
+            .boxed_local()
+        }
+
+        fn write_credentials<'a>(
+            &'a self,
+            url: &'a str,
+            _username: &'a str,
+            password: &'a [u8],
+            _cx: &'a AsyncApp,
+        ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+            async move {
+                anyhow::ensure!(!self.fail.load(Ordering::SeqCst), "keychain unavailable");
+                self.keys.lock().insert(url.into(), password.to_vec());
+                Ok(())
+            }
+            .boxed_local()
+        }
+
+        fn delete_credentials<'a>(
+            &'a self,
+            url: &'a str,
+            _cx: &'a AsyncApp,
+        ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+            async move {
+                anyhow::ensure!(!self.fail.load(Ordering::SeqCst), "keychain unavailable");
+                self.keys.lock().remove(url);
+                Ok(())
+            }
+            .boxed_local()
+        }
+    }
+
+    fn state() -> ApiKeyState {
+        ApiKeyState::new(
+            "https://api.example.test".into(),
+            EnvVar {
+                name: "BRAINZ_TEST_API_KEY".into(),
+                value: None,
+            },
+        )
+    }
+
+    #[gpui::test]
+    async fn stored_keys_reload_and_can_be_removed(cx: &mut TestAppContext) {
+        let credentials = Arc::new(TestCredentials::default());
+        let owner = cx.new(|_| state());
+        owner
+            .update(cx, |state, cx| {
+                state.store(
+                    state.url.clone(),
+                    Some("test-secret".into()),
+                    |state| state,
+                    credentials.clone(),
+                    cx,
+                )
+            })
+            .await
+            .expect("save test key");
+
+        let reopened = cx.new(|_| state());
+        reopened
+            .update(cx, |state, cx| {
+                state.load_if_needed(state.url.clone(), |state| state, credentials.clone(), cx)
+            })
+            .await
+            .expect("reload test key");
+        reopened.read_with(cx, |state, _| {
+            assert_eq!(state.key(&state.url).as_deref(), Some("test-secret"));
+            assert!(state.key("https://different.example.test").is_none());
+            assert!(!format!("{:?}", state.load_status).contains("test-secret"));
+        });
+
+        reopened
+            .update(cx, |state, cx| {
+                state.store(
+                    state.url.clone(),
+                    None,
+                    |state| state,
+                    credentials.clone(),
+                    cx,
+                )
+            })
+            .await
+            .expect("remove test key");
+        assert!(!reopened.read_with(cx, |state, _| state.has_key()));
+        assert!(credentials.keys.lock().is_empty());
+    }
+
+    #[gpui::test]
+    async fn failed_keychain_changes_preserve_saved_state(cx: &mut TestAppContext) {
+        let credentials = Arc::new(TestCredentials::default());
+        let owner = cx.new(|_| state());
+        owner
+            .update(cx, |state, cx| {
+                state.store(
+                    state.url.clone(),
+                    Some("original-test-secret".into()),
+                    |state| state,
+                    credentials.clone(),
+                    cx,
+                )
+            })
+            .await
+            .expect("save initial test key");
+
+        credentials.fail.store(true, Ordering::SeqCst);
+        for replacement in [Some("replacement-test-secret".into()), None] {
+            assert!(
+                owner
+                    .update(cx, |state, cx| {
+                        state.store(
+                            state.url.clone(),
+                            replacement,
+                            |state| state,
+                            credentials.clone(),
+                            cx,
+                        )
+                    })
+                    .await
+                    .is_err()
+            );
+            owner.read_with(cx, |state, _| {
+                assert_eq!(
+                    state.key(&state.url).as_deref(),
+                    Some("original-test-secret")
+                );
+            });
+        }
+    }
+
+    #[gpui::test]
+    async fn missing_keys_are_optional_and_read_errors_are_reported(cx: &mut TestAppContext) {
+        let credentials = Arc::new(TestCredentials::default());
+        let owner = cx.new(|_| state());
+        let result = owner
+            .update(cx, |state, cx| {
+                state.load_if_needed(state.url.clone(), |state| state, credentials.clone(), cx)
+            })
+            .await;
+        assert!(result.is_ok());
+        assert!(!owner.read_with(cx, |state, _| state.has_key()));
+
+        credentials.fail.store(true, Ordering::SeqCst);
+        let result = owner
+            .update(cx, |state, cx| {
+                state.load_if_needed(state.url.clone(), |state| state, credentials.clone(), cx)
+            })
+            .await;
+        assert!(matches!(result, Err(AuthenticateError::Other(_))));
     }
 }
