@@ -19,6 +19,7 @@ use workspace::{Item, OpenOptions, OpenVisible, Workspace};
 
 use crate::{
     brain_config::BrainConfig,
+    insights::{Feature, Insight},
     themes_signals::{self as signals, Signals, Theme, ThemeCategory, ThemeFilters},
 };
 
@@ -264,6 +265,7 @@ pub struct ThemesView {
     has_repo: bool,
     config: BrainConfig,
     signals: Option<Signals>,
+    insight: Option<Entity<Insight>>,
     filters: ThemeFilters,
     error: Option<String>,
     /// Passes re-run after a failed load before the error is shown.
@@ -338,6 +340,7 @@ impl ThemesView {
             focus_handle: cx.focus_handle(),
             workspace,
             themes_md_modified: signals::themes_md_modified(&repo, &config),
+            insight: has_repo.then(|| Insight::for_repo(&repo, Feature::Themes, cx)),
             repo,
             has_repo,
             config,
@@ -367,6 +370,7 @@ impl ThemesView {
         self.config = BrainConfig::load(&repo);
         self.themes_md_modified = signals::themes_md_modified(&repo, &self.config);
         self.repo = repo;
+        self.insight = Some(Insight::for_repo(&self.repo, Feature::Themes, cx));
         self.has_repo = true;
         self.reload(cx);
         cx.notify();
@@ -389,6 +393,10 @@ impl ThemesView {
                         // refresh it once rather than show stale shapes.
                         if signals.schema < signals::SCHEMA {
                             this.run_now(cx);
+                        }
+                        if let Some(insight) = &this.insight {
+                            let context = crate::insights::themes_context(&signals);
+                            insight.update(cx, |insight, cx| insight.set_context(context, cx));
                         }
                         this.signals = Some(signals);
                         this.error = None;
@@ -1019,6 +1027,9 @@ impl Render for ThemesView {
             );
 
         let mut body: Vec<AnyElement> = Vec::new();
+        if let Some(insight) = &self.insight {
+            body.push(insight.clone().into_any_element());
+        }
         if !self.has_repo {
             body.push(
                 v_flex()

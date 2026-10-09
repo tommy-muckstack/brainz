@@ -13,6 +13,7 @@ path = "src/brainz_calendar.rs"
 
 [dependencies]
 anyhow.workspace = true
+brainz_ai.workspace = true
 chrono.workspace = true
 gpui.workspace = true
 log.workspace = true

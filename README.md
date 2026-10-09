@@ -303,9 +303,15 @@ popup; success shows a toast that fades on its own.
 replace, or remove their own OpenAI or Claude (Anthropic) API key. Inputs are
 masked, and keys are stored in the system keychain, including in source builds;
 they are never written to notes or settings files, or included in the installer.
-Saving a key makes it available to the existing direct model provider. API usage
-is billed by that provider. Brainz does not require an API key, and adding one
-does not replace the separate Claude or Codex subscription sign-ins.
+Saving a key automatically enables AI insights in Brief, Themes, and To-Do.
+Brainz sends a bounded snapshot of the page's data to Anthropic when its key is
+available, or OpenAI otherwise, using a fast model. These summaries suggest
+priorities and connections without editing notes or completing tasks. Results
+are cached locally outside the brain; unchanged snapshots are reused for a day,
+and automatic requests happen at most once per page every 30 minutes. A failed
+request leaves the local page working and shows a Retry button. API usage is
+billed by the provider. Brainz works without keys, and adding one does not
+replace the separate Claude or Codex subscription sign-ins.
 
 Claude and Codex connect through the existing ACP integration, with their own
 authentication and permissions. Their adapters install from the ACP registry on

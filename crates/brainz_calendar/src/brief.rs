@@ -21,6 +21,7 @@ use crate::{
     LoadState,
     brain_config::BrainConfig,
     brain_match::BrainIndex,
+    insights::{Feature, Insight},
     myman, open_loops,
     prep::OpenClaudePrefilled,
     status_decay::{self, Decay},
@@ -333,6 +334,7 @@ pub struct BriefView {
     brief: Brief,
     /// The narrative block as a Markdown entity, rebuilt on every refresh.
     narrative: Option<Entity<Markdown>>,
+    insight: Entity<Insight>,
     loading: bool,
     _refresh_loop: Task<()>,
     _load: Option<Task<()>>,
@@ -370,6 +372,7 @@ impl BriefView {
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             workspace,
+            insight: Insight::for_repo(&repo, Feature::Brief, cx),
             repo,
             brief: Brief::default(),
             narrative: None,
@@ -399,6 +402,9 @@ impl BriefView {
                         cx.new(|cx| Markdown::new(text, None, None, cx))
                     });
                 this.brief = brief;
+                let context = crate::insights::brief_context(&this.brief);
+                this.insight
+                    .update(cx, |insight, cx| insight.set_context(context, cx));
                 this.loading = false;
                 cx.notify();
             })
@@ -483,7 +489,7 @@ impl BriefView {
         }
     }
 
-    fn narrative_style(window: &Window, cx: &App) -> MarkdownStyle {
+    pub(crate) fn narrative_style(window: &Window, cx: &App) -> MarkdownStyle {
         let colors = cx.theme().colors();
         let mut text_style = window.text_style();
         text_style.refine(&TextStyleRefinement {
@@ -1185,6 +1191,7 @@ impl Render for BriefView {
             );
 
         let mut body: Vec<AnyElement> = Vec::new();
+        body.push(self.insight.clone().into_any_element());
         body.extend(self.render_narrative(window, cx));
         body.extend(self.render_events(cx));
         body.extend(self.render_recordings(cx));

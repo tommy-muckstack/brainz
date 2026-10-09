@@ -2414,10 +2414,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "brainz_ai"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "futures 0.3.34",
+ "gpui",
+ "language_model",
+ "log",
+ "paths",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "util",
+]
+
+[[package]]
 name = "brainz_calendar"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "brainz_ai",
  "chrono",
  "collections",
  "db",

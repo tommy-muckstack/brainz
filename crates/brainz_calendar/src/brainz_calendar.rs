@@ -5,6 +5,7 @@ pub mod brain_config;
 pub mod brain_match;
 pub mod brief;
 pub mod github_sync;
+mod insights;
 pub mod launcher;
 pub mod mcp;
 pub mod memory_share;

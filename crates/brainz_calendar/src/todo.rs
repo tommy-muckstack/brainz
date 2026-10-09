@@ -9,12 +9,13 @@ use std::{path::PathBuf, time::Duration};
 
 use anyhow::{Context as _, Result};
 use chrono::Local;
-use gpui::{App, EventEmitter, FocusHandle, Focusable, Task, WeakEntity, Window, actions};
+use gpui::{App, Entity, EventEmitter, FocusHandle, Focusable, Task, WeakEntity, Window, actions};
 use ui::{Tooltip, prelude::*};
 use workspace::{Item, OpenOptions, OpenVisible, Workspace};
 
 use crate::{
     brain_config::BrainConfig,
+    insights::{Feature, Insight},
     myman, open_loops,
     themes::runner,
     themes_signals::{self as signals, OpenLoop},
@@ -178,6 +179,7 @@ pub struct TodoView {
     relative: String,
     owner: String,
     board: TodoBoard,
+    insight: Entity<Insight>,
     /// ⏳ and ⏰ lines from notes, oldest first, from the last signals pass.
     loops: Vec<OpenLoop>,
     /// Open tasks My Man pulled out of meetings and notes, not yet on the
@@ -232,6 +234,7 @@ impl TodoView {
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             workspace,
+            insight: Insight::for_repo(&repo, Feature::Todo, cx),
             repo,
             path,
             relative,
@@ -270,6 +273,15 @@ impl TodoView {
                 }
                 this.loops = loops;
                 this.myman_tasks = myman_tasks;
+                let context = crate::insights::todo_context(
+                    &this.board,
+                    &this.loops,
+                    &this.myman_tasks,
+                    &this.relative,
+                    this.error.is_some(),
+                );
+                this.insight
+                    .update(cx, |insight, cx| insight.set_context(context, cx));
                 cx.notify();
             })
             .ok();
@@ -746,6 +758,7 @@ impl Render for TodoView {
             );
 
         let mut body: Vec<gpui::AnyElement> = Vec::new();
+        body.push(self.insight.clone().into_any_element());
         if let Some(error) = &self.error {
             body.push(
                 v_flex()

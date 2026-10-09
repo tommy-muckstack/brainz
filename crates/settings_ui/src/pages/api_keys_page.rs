@@ -45,7 +45,7 @@ pub(crate) fn render_api_keys_page(
                 .gap_2()
                 .child(Label::new("Brainz works without API keys."))
                 .child(
-                    Label::new("Add your own key for direct model access. Your Claude and Codex subscription sign-ins stay separate.")
+                    Label::new("With a key, Brief, Themes, and To-Do automatically add AI insights using a snapshot of their data. Claude is preferred when both keys are available. Your chat subscription sign-ins stay separate.")
                         .color(Color::Muted)
                         .size(LabelSize::Small),
                 )
