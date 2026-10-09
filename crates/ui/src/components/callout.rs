@@ -28,6 +28,7 @@ pub enum CalloutBorderPosition {
 pub struct Callout {
     severity: Severity,
     icon: Option<IconName>,
+    icon_slot: Option<AnyElement>,
     title: Option<SharedString>,
     description: Option<SharedString>,
     description_slot: Option<AnyElement>,
@@ -44,6 +45,7 @@ impl Callout {
         Self {
             severity: Severity::Info,
             icon: None,
+            icon_slot: None,
             title: None,
             description: None,
             description_slot: None,
@@ -64,6 +66,12 @@ impl Callout {
     /// Sets the icon to display in the callout.
     pub fn icon(mut self, icon: IconName) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// Sets custom icon content, taking precedence over `icon`.
+    pub fn icon_slot(mut self, icon: impl IntoElement) -> Self {
+        self.icon_slot = Some(icon.into_any_element());
         self
     }
 
@@ -148,6 +156,15 @@ impl RenderOnce for Callout {
             ),
         };
 
+        let icon = self.icon_slot.or_else(|| {
+            self.icon.map(|_| {
+                Icon::new(icon)
+                    .size(IconSize::Small)
+                    .color(icon_color)
+                    .into_any_element()
+            })
+        });
+
         h_flex()
             .min_w_0()
             .w_full()
@@ -161,12 +178,13 @@ impl RenderOnce for Callout {
             .border_color(cx.theme().colors().border)
             .bg(bg_color)
             .overflow_x_hidden()
-            .when(self.icon.is_some(), |this| {
+            .when_some(icon, |this, icon| {
                 this.child(
                     h_flex()
+                        .flex_none()
                         .h(line_height)
                         .justify_center()
-                        .child(Icon::new(icon).size(IconSize::Small).color(icon_color)),
+                        .child(icon),
                 )
             })
             .child(

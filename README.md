@@ -235,13 +235,15 @@ never hand Claude a refresh token and the sign-in lapses daily. Once per launch
 Brainz checks each Claude HTTP connector without an `oauth` block and, when the
 authorization server advertises `offline_access`, pins `oauth.scopes` on the entry
 so the next sign-in sticks. Hosted connectors
-Brainz knows how to set up (Notion, Vercel, Wispr Flow, and the two My Man
+Brainz knows how to set up (Granola, Notion, Vercel, Wispr Flow, and the two My Man
 companions bundled in `~/MyManBrain/tools`: **My Man** for searching meetings,
 notes, screenshots, and dictations, **My Man actions** for taking screenshots,
 starting recordings, and saving notes through the running app) appear under
-**Available** in the tab, and when a conversation tries to connect one that isn't
-configured yet, a card offers to add it and sign in, since the agent cannot do
-that itself. My Man only acts for a named agent. My Man 1.1.108 and later issue
+**Available** in the tab. When a conversation asks to install one or reports it
+isn't connected, a **Connect** button in the chat adds it to the current agent
+and starts sign-in. Setup errors stay in the card with **Try again**. After
+sign-in, Brainz reloads the agent with the connector and resumes the request.
+My Man only acts for a named agent. My Man 1.1.108 and later issue
 one for Brainz at launch and leave its credential in a file only this login can
 read, which Brainz passes to both servers along with the folder and the machine
 id, so nothing needs pasting. With an older My Man, a card under the My Man

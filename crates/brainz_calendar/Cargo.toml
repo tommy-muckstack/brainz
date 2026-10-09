@@ -35,4 +35,9 @@ ui.workspace = true
 workspace.workspace = true
 
 [dev-dependencies]
+db = { workspace = true, features = ["test-support"] }
+settings = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
+theme.workspace = true
+theme_settings.workspace = true
+workspace = { workspace = true, features = ["test-support"] }

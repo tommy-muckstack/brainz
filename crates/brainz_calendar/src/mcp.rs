@@ -851,6 +851,14 @@ pub enum HostedTransport {
 
 pub const HOSTED_CONNECTORS: &[HostedConnector] = &[
     HostedConnector {
+        name: "granola",
+        label: "Granola",
+        transport: HostedTransport::Http {
+            url: "https://mcp.granola.ai/mcp",
+        },
+        blurb: "Search meeting notes and transcripts from Granola",
+    },
+    HostedConnector {
         name: "notion",
         label: "Notion",
         transport: HostedTransport::Http {
@@ -914,18 +922,38 @@ impl HostedConnector {
             .any(|server| Connector::key(server) == Connector::key(self.name))
     }
 
-    /// The hosted connectors a piece of text names that neither client has
-    /// configured yet.
-    pub fn mentioned_unconfigured(text: &str) -> Option<&'static HostedConnector> {
+    pub fn mentioned_needing_setup(
+        text: &str,
+        client: McpClient,
+    ) -> Option<&'static HostedConnector> {
+        let configured: Vec<String> = match client {
+            McpClient::Claude => read_claude_servers().keys().cloned().collect(),
+            McpClient::Codex => read_codex_servers().keys().cloned().collect(),
+        };
+        Self::mentioned_missing(text, &configured)
+    }
+
+    fn mentioned_missing(text: &str, configured: &[String]) -> Option<&'static HostedConnector> {
         let lower = text.to_lowercase();
-        let configured: Vec<String> = read_claude_servers()
-            .keys()
-            .cloned()
-            .chain(read_codex_servers().keys().cloned())
-            .collect();
+        if !["connect", "integrat", "mcp", "install", "plugin"]
+            .iter()
+            .any(|word| lower.contains(word))
+        {
+            return None;
+        }
+        let reported_unavailable = [
+            "isn't connected",
+            "isn’t connected",
+            "not connected",
+            "not installed",
+            "isn't installed",
+            "isn’t installed",
+        ]
+        .iter()
+        .any(|phrase| lower.contains(phrase));
         HOSTED_CONNECTORS.iter().find(|hosted| {
             (lower.contains(hosted.name) || lower.contains(&hosted.label.to_lowercase()))
-                && !hosted.is_configured(&configured)
+                && (!hosted.is_configured(configured) || reported_unavailable)
         })
     }
 
@@ -1361,10 +1389,19 @@ impl McpView {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.loading = true;
         cx.notify();
-        let myman = self.myman(cx);
+        let workspace = self.workspace.clone();
         self._load = Some(cx.spawn(async move |this, cx| {
+            // Opening or reactivating this tab holds the workspace's mutable
+            // lease, so read its root only after that action has returned.
+            let root = workspace
+                .read_with(cx, |workspace, cx| {
+                    workspace.root_paths(cx).first().cloned()
+                })
+                .ok()
+                .flatten();
             let (connectors, token_saved) = cx
                 .background_spawn(async move {
+                    let myman = crate::myman::MyMan::detect_for(root.as_deref());
                     if HostedConnector::legacy_myman_configured()
                         && let Err(error) = HostedConnector::refresh_configured(myman.as_ref())
                     {
@@ -2052,5 +2089,84 @@ impl Render for McpView {
                     .child(header)
                     .children(body),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offers_granola_from_install_and_connection_replies() {
+        for text in [
+            "You'll need to click Install for Granola and authorize your account to finish setup. It isn't connected yet.",
+            "Please install Granola",
+            "The Granola plugin is not installed",
+            "Can we connect Granola?",
+        ] {
+            let hosted = HostedConnector::mentioned_missing(text, &[])
+                .expect("Granola setup should offer an action");
+            assert_eq!(hosted.name, "granola");
+            assert_eq!(
+                hosted.transport,
+                HostedTransport::Http {
+                    url: "https://mcp.granola.ai/mcp"
+                }
+            );
+        }
+        assert!(HostedConnector::mentioned_missing("My Granola meeting notes", &[]).is_none());
+        assert!(
+            HostedConnector::mentioned_missing(
+                "Click Install for Granola. It isn't connected yet.",
+                &["granola".into()]
+            )
+            .is_some()
+        );
+        assert!(
+            HostedConnector::mentioned_missing("Granola is connected", &["granola".into()])
+                .is_none()
+        );
+        assert!(
+            HostedConnector::mentioned_missing("Install Granola", &["Granola".into()]).is_none()
+        );
+        assert!(
+            HostedConnector::mentioned_missing("Install Granola", &["notion".into()]).is_some()
+        );
+    }
+
+    #[gpui::test]
+    async fn opening_and_reopening_connectors_does_not_read_a_leased_workspace(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let settings = settings::SettingsStore::test(cx);
+            cx.set_global(settings);
+            cx.set_global(db::AppDatabase::test_new());
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+        let fs = project::FakeFs::new(cx.executor());
+        let project = project::Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            McpView::open(workspace, window, cx);
+            let first = workspace
+                .items_of_type::<McpView>(cx)
+                .next()
+                .expect("Connectors should open");
+            McpView::open(workspace, window, cx);
+            assert_eq!(workspace.items_of_type::<McpView>(cx).count(), 1);
+            assert_eq!(
+                workspace.active_item(cx).expect("active tab").item_id(),
+                first.entity_id()
+            );
+            first.update(cx, |view, _| {
+                assert!(view.loading);
+                // Keep the regression test independent of real connector
+                // credentials and config migrations on the test machine.
+                assert!(view._load.take().is_some());
+            });
+        });
     }
 }

@@ -82,7 +82,8 @@ pub fn render(workspace: &WeakEntity<Workspace>, cx: &mut App) -> gpui::AnyEleme
                 .relative()
                 .w_full()
                 .h(px(30.))
-                .px(px(5.))
+                .pl(px(13.))
+                .pr(px(5.))
                 .gap_2()
                 .items_center()
                 .rounded_md()
@@ -146,7 +147,8 @@ pub fn render_tree_heading(cx: &mut App) -> gpui::AnyElement {
     let _ = cx;
     div()
         .w_full()
-        .px(px(9.))
+        .pl(px(17.))
+        .pr(px(9.))
         .pt_3()
         .pb_1()
         .child(
