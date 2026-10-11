@@ -98,7 +98,11 @@ impl SessionCapabilities {
     }
 
     fn supported_modes(&self, has_thread_store: bool) -> Vec<PromptContextType> {
-        let mut supported = vec![PromptContextType::File, PromptContextType::Symbol];
+        let mut supported = vec![
+            PromptContextType::File,
+            PromptContextType::Canvas,
+            PromptContextType::Symbol,
+        ];
         if self.prompt_capabilities.embedded_context {
             if has_thread_store {
                 supported.push(PromptContextType::Thread);

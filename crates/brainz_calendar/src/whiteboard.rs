@@ -26,6 +26,22 @@ pub struct AttachCanvasToChat {
     pub png: Option<String>,
 }
 
+#[derive(Clone, PartialEq, Debug, Deserialize, schemars::JsonSchema, gpui::Action)]
+#[action(namespace = brainz_whiteboard)]
+pub struct ReferenceCanvas {
+    pub path: PathBuf,
+}
+
+pub fn canvas_title(path: &Path) -> Result<String> {
+    let document = read_document(path, false)?;
+    Ok(document
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or("Untitled canvas")
+        .to_owned())
+}
+
 fn canvas_file_references(paths: Vec<PathBuf>) -> Vec<Value> {
     let mut image_bytes = 0;
     let mut files = Vec::new();
@@ -288,6 +304,29 @@ pub fn init(cx: &mut App) {
                     viewport: None,
                 },
                 true,
+                None,
+                window,
+                cx,
+            );
+        });
+        workspace.register_action(|workspace, action: &ReferenceCanvas, window, cx| {
+            if !action.path.is_absolute()
+                || action
+                    .path
+                    .extension()
+                    .is_none_or(|extension| extension != "brainzboard")
+            {
+                return;
+            }
+            WhiteboardView::open(
+                workspace,
+                BoardTarget {
+                    path: action.path.clone(),
+                    object: None,
+                    viewport: None,
+                },
+                false,
+                Some(window.window_handle()),
                 window,
                 cx,
             );
@@ -304,6 +343,7 @@ pub struct WhiteboardView {
     storage: Arc<BoardStorage>,
     document: Option<Value>,
     error: Option<SharedString>,
+    chat_destination: Option<gpui::AnyWindowHandle>,
     _load: Task<()>,
     _subscriptions: Vec<Subscription>,
     bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
@@ -320,13 +360,14 @@ impl WhiteboardView {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
-        Self::open(workspace, target, false, window, cx);
+        Self::open(workspace, target, false, None, window, cx);
     }
 
     fn open(
         workspace: &mut Workspace,
         mut target: BoardTarget,
         allow_create: bool,
+        chat_destination: Option<gpui::AnyWindowHandle>,
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
@@ -341,6 +382,10 @@ impl WhiteboardView {
             existing.update(cx, |view, cx| {
                 view.target = target;
                 view.send(json!({"type": "focus", "target": view.target}));
+                if let Some(destination) = chat_destination {
+                    view.chat_destination = Some(destination);
+                    view.send(json!({"type": "attach"}));
+                }
                 cx.notify();
             });
             return;
@@ -383,6 +428,10 @@ impl WhiteboardView {
                         view.update(cx, |view, cx| {
                             view.target = target;
                             view.send(json!({"type":"focus", "target":view.target}));
+                            if let Some(destination) = chat_destination {
+                                view.chat_destination = Some(destination);
+                                view.send(json!({"type":"attach"}));
+                            }
                             cx.notify();
                         });
                         window.activate_window();
@@ -392,7 +441,11 @@ impl WhiteboardView {
             return;
         }
         let workspace_handle = cx.entity().downgrade();
-        let view = cx.new(|cx| Self::new(workspace_handle, target, allow_create, cx));
+        let view = cx.new(|cx| {
+            let mut view = Self::new(workspace_handle, target, allow_create, cx);
+            view.chat_destination = chat_destination;
+            view
+        });
         workspace.add_item_to_active_pane(Box::new(view), None, true, window, cx);
     }
 
@@ -450,6 +503,7 @@ impl WhiteboardView {
             storage,
             document: None,
             error: None,
+            chat_destination: None,
             _load: load,
             _subscriptions: subscriptions,
             bounds: Default::default(),
@@ -845,7 +899,7 @@ mod native {
         ) {
             match event {
                 NativeEvent::Message(Message::Ready) => self.send(
-                    json!({"type": "load", "document": self.document, "target": self.target}),
+                    json!({"type": "load", "document": self.document, "target": self.target, "attach": self.chat_destination.is_some()}),
                 ),
                 NativeEvent::Saved(Ok(revision)) => {
                     self.send(json!({"type": "saved", "revision": revision}))
@@ -918,7 +972,12 @@ mod native {
                         self.target.path.display()
                     );
                     self.hide();
-                    window.dispatch_action(Box::new(AttachCanvasToChat { text, png }), cx);
+                    let destination = self.chat_destination.take().unwrap_or_else(|| window.window_handle());
+                    cx.defer(move |cx| {
+                        destination.update(cx, |_, window, cx| {
+                            window.dispatch_action(Box::new(AttachCanvasToChat { text, png }), cx);
+                        }).log_err();
+                    });
                 }
                 NativeEvent::Message(Message::PickFiles) => {
                     let paths = cx.prompt_for_paths(PathPromptOptions {

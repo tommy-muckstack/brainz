@@ -83,6 +83,10 @@ your messages, the current place in the sidebar, the prep banner, the pills.
 Headings are plain text, body and meta copy share one scale, and every tab
 reads in the same centred column as the chat.
 
+PDF pages fit the available pane width and adapt when chat or the sidebar is resized.
+Use the PDF toolbar to zoom in or out, or return to **Fit width**. Pages render
+at higher resolution so receipt text stays clearer when enlarged.
+
 **Canvas**, directly below To-Do, is an infinite BlockSuite whiteboard. Draw
 rounded boxes, sticky notes, text, freehand strokes and attached connectors.
 Click once to select and drag; double-click a note or box to edit its text.
@@ -104,6 +108,10 @@ and deep links refer to paths on your Mac; they do not upload the board or
 make local files publicly accessible. Moving a linked file requires replacing
 its card. The engine and integration source live in the
 [Brainz BlockSuite fork](https://github.com/tommy-muckstack/brainz-blocksuite/tree/brainz-whiteboard/brainz).
+
+Type **/** in chat and choose a canvas by name to reference it, alongside files.
+The picker opens the board, captures its latest state, and returns the context
+to the current draft without sending. **Use in chat** does the same from the canvas toolbar.
 
 **Use in chat** adds the canvas to the current Claude or Codex draft: an image
 plus a structured map of object IDs, text, positions, groups, file references,

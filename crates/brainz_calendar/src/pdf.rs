@@ -21,9 +21,9 @@ use workspace::{
     item::{ItemEvent, ProjectItem, TabContentParams},
 };
 
-const PAGE_RENDER_WIDTH: u32 = 1400;
+const PAGE_RENDER_WIDTH: u32 = 2800;
 const MAX_PAGES: u32 = 200;
-const DISPLAY_WIDTH: f32 = 820.;
+const PAGE_GUTTER: f32 = 24.;
 
 /// The model side: which file, resolved to an absolute path.
 pub struct PdfItem {
@@ -116,6 +116,7 @@ fn cache_dir(pdf: &Path) -> Result<PathBuf> {
     let metadata = std::fs::metadata(pdf).with_context(|| format!("reading {}", pdf.display()))?;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     pdf.hash(&mut hasher);
+    PAGE_RENDER_WIDTH.hash(&mut hasher);
     metadata.len().hash(&mut hasher);
     if let Ok(modified) = metadata.modified()
         && let Ok(since) = modified.duration_since(std::time::UNIX_EPOCH)
@@ -191,6 +192,8 @@ pub struct PdfView {
     project: Entity<Project>,
     state: State,
     scroll: ScrollHandle,
+    viewport_width: f32,
+    zoom: f32,
     _load: Task<()>,
 }
 
@@ -219,6 +222,8 @@ impl PdfView {
             project,
             state: State::Loading,
             scroll: ScrollHandle::new(),
+            viewport_width: 900.,
+            zoom: 1.,
             _load: load,
         }
     }
@@ -255,6 +260,43 @@ impl PdfView {
                 Label::new(summary)
                     .size(LabelSize::Small)
                     .color(Color::Muted),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .items_center()
+                    .child(
+                        IconButton::new("pdf-zoom-out", IconName::Dash)
+                            .tooltip(Tooltip::text("Zoom out"))
+                            .disabled(self.zoom <= 0.5)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.zoom = (this.zoom / 1.25).max(0.5);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Label::new(format!("{}%", (self.zoom * 100.).round() as u32))
+                            .size(LabelSize::Small),
+                    )
+                    .child(
+                        IconButton::new("pdf-zoom-in", IconName::Plus)
+                            .tooltip(Tooltip::text("Zoom in"))
+                            .disabled(self.zoom >= 3.)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.zoom = (this.zoom * 1.25).min(3.);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("pdf-fit-width", "Fit width")
+                            .style(ButtonStyle::Subtle)
+                            .label_size(LabelSize::Small)
+                            .tooltip(Tooltip::text("Fit the page to the available pane width"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.zoom = 1.;
+                                cx.notify();
+                            })),
+                    ),
             )
             .child(
                 Button::new("brainz-pdf-open-default", "Open in Default App")
@@ -304,42 +346,80 @@ impl Render for PdfView {
             }
             State::Ready { pages, .. } => {
                 let pages = pages.clone();
-                v_flex()
+                let display_width = (self.viewport_width - PAGE_GUTTER * 2.).max(160.) * self.zoom;
+                let content_width = self.viewport_width.max(display_width + PAGE_GUTTER * 2.);
+                div()
                     .id("brainz-pdf-pages")
                     .size_full()
-                    .overflow_y_scroll()
+                    .overflow_scroll()
                     .track_scroll(&self.scroll)
-                    .items_center()
-                    .py_6()
-                    .gap_4()
-                    .children(pages.into_iter().enumerate().map(|(ix, page)| {
-                        let height = DISPLAY_WIDTH * page.height as f32 / page.width.max(1) as f32;
-                        div()
-                            .id(("brainz-pdf-page", ix))
-                            .flex_none()
-                            .w(px(DISPLAY_WIDTH))
-                            .h(px(height))
-                            .rounded_sm()
-                            .overflow_hidden()
-                            .bg(gpui::white())
-                            .shadow_md()
-                            .child(
-                                gpui::img(page.path)
-                                    .size_full()
-                                    .object_fit(gpui::ObjectFit::Contain),
-                            )
-                    }))
+                    .child(
+                        v_flex()
+                            .w(px(content_width))
+                            .items_center()
+                            .py_4()
+                            .gap_6()
+                            .children(pages.into_iter().enumerate().map(|(ix, page)| {
+                                let height =
+                                    display_width * page.height as f32 / page.width.max(1) as f32;
+                                div()
+                                    .id(("brainz-pdf-page", ix))
+                                    .flex_none()
+                                    .w(px(display_width))
+                                    .h(px(height))
+                                    .rounded_sm()
+                                    .overflow_hidden()
+                                    .bg(gpui::white())
+                                    .shadow_md()
+                                    .child(
+                                        gpui::img(page.path)
+                                            .size_full()
+                                            .object_fit(gpui::ObjectFit::Contain),
+                                    )
+                            })),
+                    )
                     .into_any_element()
             }
         };
+        let view = cx.weak_entity();
+        let measured_width = self.viewport_width;
+        let measure = gpui::canvas(
+            |_, _, _| (),
+            move |bounds, _, window, cx| {
+                let width = f32::from(bounds.size.width);
+                if (width - measured_width).abs() > 1. {
+                    let view = view.clone();
+                    window.defer(cx, move |_, cx| {
+                        if let Err(error) = view.update(cx, |this, cx| {
+                            if (this.viewport_width - width).abs() > 1. {
+                                this.viewport_width = width;
+                                cx.notify();
+                            }
+                        }) {
+                            log::debug!("PDF view closed during resize: {error}");
+                        }
+                    });
+                }
+            },
+        )
+        .absolute()
+        .size_full();
         v_flex()
             .id("brainz-pdf")
             .key_context("BrainzPdf")
             .track_focus(&self.focus_handle)
             .size_full()
             .bg(cx.theme().colors().editor_background)
-            .child(self.render_toolbar(cx))
-            .child(body)
+            .child(div().flex_none().child(self.render_toolbar(cx)))
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(measure)
+                    .child(body),
+            )
     }
 }
 

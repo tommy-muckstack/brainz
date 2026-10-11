@@ -485,8 +485,13 @@ pub fn init(cx: &mut App) {
                      cx| {
                         if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                             workspace.focus_panel::<AgentPanel>(window, cx);
-                            panel.update(cx, |panel, cx| {
-                                panel.attach_canvas_to_chat(action, window, cx)
+                            let action = action.clone();
+                            // Inserting message blocks reads the workspace. Release
+                            // the action handler's workspace lease before doing so.
+                            window.defer(cx, move |window, cx| {
+                                panel.update(cx, |panel, cx| {
+                                    panel.attach_canvas_to_chat(&action, window, cx)
+                                });
                             });
                         }
                     },
@@ -9171,7 +9176,7 @@ mod tests {
     async fn test_canvas_context_preserves_current_chat_draft_and_attaches_image(
         cx: &mut TestAppContext,
     ) {
-        let (panel, mut cx) = setup_panel(cx).await;
+        let (panel, mut cx) = setup_visible_panel(cx).await;
         open_thread_with_connection(&panel, StubAgentConnection::new(), &mut cx);
         let thread_id = active_thread_id(&panel, &cx);
         let (message_editor, thread) = panel.read_with(&cx, |panel, cx| {
@@ -9187,15 +9192,9 @@ mod tests {
             editor.set_cursor_offset(0, window, cx);
         });
         let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
-        panel.update_in(&mut cx, |panel, window, cx| {
-            panel.attach_canvas_to_chat(
-                &brainz_calendar::whiteboard::AttachCanvasToChat {
-                    text: "Canvas: Research -> Launch".into(),
-                    png: Some(png.into()),
-                },
-                window,
-                cx,
-            )
+        cx.dispatch_action(brainz_calendar::whiteboard::AttachCanvasToChat {
+            text: "Canvas: Research -> Launch".into(),
+            png: Some(png.into()),
         });
         cx.run_until_parked();
         assert_eq!(active_thread_id(&panel, &cx), thread_id);

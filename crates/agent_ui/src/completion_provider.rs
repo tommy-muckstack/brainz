@@ -157,6 +157,7 @@ impl PromptContextEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PromptContextType {
     File,
+    Canvas,
     Symbol,
     Fetch,
     Thread,
@@ -241,6 +242,7 @@ impl TryFrom<&str> for PromptContextType {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
             "file" => Ok(Self::File),
+            "canvas" => Ok(Self::Canvas),
             "symbol" => Ok(Self::Symbol),
             "fetch" => Ok(Self::Fetch),
             "thread" => Ok(Self::Thread),
@@ -256,6 +258,7 @@ impl PromptContextType {
     pub fn keyword(&self) -> &'static str {
         match self {
             Self::File => "file",
+            Self::Canvas => "canvas",
             Self::Symbol => "symbol",
             Self::Fetch => "fetch",
             Self::Thread => "thread",
@@ -268,6 +271,7 @@ impl PromptContextType {
     pub fn label(&self) -> &'static str {
         match self {
             Self::File => "Files & Directories",
+            Self::Canvas => "Canvases",
             Self::Symbol => "Symbols",
             Self::Fetch => "Fetch",
             Self::Thread => "Threads",
@@ -280,6 +284,7 @@ impl PromptContextType {
     pub fn icon(&self) -> IconName {
         match self {
             Self::File => IconName::File,
+            Self::Canvas => IconName::BrainzWhiteboard,
             Self::Symbol => IconName::Code,
             Self::Fetch => IconName::ToolWeb,
             Self::Thread => IconName::Thread,
@@ -292,6 +297,7 @@ impl PromptContextType {
 
 pub(crate) enum Match {
     File(FileMatch),
+    Canvas(CanvasMatch),
     Symbol(SymbolMatch),
     Thread(SessionMatch),
     RecentThread(SessionMatch),
@@ -299,6 +305,12 @@ pub(crate) enum Match {
     Skill(AvailableSkill),
     Entry(EntryMatch),
     BranchDiff(BranchDiffMatch),
+}
+
+pub(crate) struct CanvasMatch {
+    path: PathBuf,
+    title: String,
+    score: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -310,6 +322,7 @@ impl Match {
     pub fn score(&self) -> f64 {
         match self {
             Match::File(file) => file.mat.score,
+            Match::Canvas(canvas) => canvas.score,
             Match::Entry(mode) => mode.mat.as_ref().map(|mat| mat.score).unwrap_or(1.),
             Match::Thread(_) => 1.,
             Match::RecentThread(_) => 1.,
@@ -537,6 +550,32 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
                     selection,
                 )
             }
+        }
+    }
+
+    fn completion_for_canvas(canvas: CanvasMatch, source_range: Range<Anchor>) -> Completion {
+        Completion {
+            replace_range: source_range,
+            new_text: String::new(),
+            label: CodeLabel::plain(canvas.title, None),
+            documentation: Some(CompletionDocumentation::MultiLinePlainText(
+                "Attach this canvas, including its image and object connections, to the current draft.".into(),
+            )),
+            icon_path: Some(IconName::BrainzWhiteboard.path().into()),
+            icon_color: None,
+            source: project::CompletionSource::Custom,
+            match_start: None,
+            snippet_deduplication_key: None,
+            insert_text_mode: None,
+            confirm: Some(Arc::new(move |intent, window, cx| {
+                if intent != CompletionIntent::Compose {
+                    window.dispatch_action(Box::new(brainz_calendar::whiteboard::ReferenceCanvas {
+                        path: canvas.path.clone(),
+                    }), cx);
+                }
+                false
+            })),
+            group: None,
         }
     }
 
@@ -1100,14 +1139,32 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
             return Task::ready(Vec::default());
         };
         match mode {
+            Some(PromptContextType::Canvas) => {
+                search_canvases(query, cancellation_flag, &workspace, cx)
+            }
             Some(PromptContextType::File) => {
+                let canvases_task = search_canvases(
+                    query.trim_start_matches('/').to_owned(),
+                    cancellation_flag.clone(),
+                    &workspace,
+                    cx,
+                );
                 let search_files_task = search_files(query, cancellation_flag, &workspace, cx);
                 cx.background_spawn(async move {
-                    search_files_task
-                        .await
-                        .into_iter()
-                        .map(Match::File)
-                        .collect()
+                    let mut matches = canvases_task.await;
+                    matches.extend(
+                        search_files_task
+                            .await
+                            .into_iter()
+                            .filter(|file| {
+                                file.mat
+                                    .path
+                                    .extension()
+                                    .is_none_or(|extension| extension != "brainzboard")
+                            })
+                            .map(Match::File),
+                    );
+                    matches
                 })
             }
 
@@ -1161,6 +1218,8 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
 
             None if query.is_empty() => {
                 let recent_task = self.recent_context_picker_entries(&workspace, cx);
+                let canvases_task =
+                    search_canvases(String::new(), cancellation_flag, &workspace, cx);
                 let entries = self
                     .available_context_picker_entries(&workspace, cx)
                     .into_iter()
@@ -1183,6 +1242,7 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
 
                 cx.spawn(async move |_cx| {
                     let mut matches = recent_task.await;
+                    matches.extend(canvases_task.await);
                     matches.extend(entries);
 
                     if let Some(branch_diff_task) = branch_diff_task {
@@ -1197,6 +1257,8 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
             None => {
                 let executor = cx.background_executor().clone();
 
+                let canvases_task =
+                    search_canvases(query.clone(), cancellation_flag.clone(), &workspace, cx);
                 let search_files_task =
                     search_files(query.clone(), cancellation_flag, &workspace, cx);
 
@@ -1223,6 +1285,7 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
                         .map(Match::File)
                         .collect::<Vec<_>>();
 
+                    matches.extend(canvases_task.await);
                     let entry_matches = fuzzy::match_strings(
                         &entry_candidates,
                         &query,
@@ -1363,6 +1426,7 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
     ) -> Vec<PromptContextEntry> {
         let mut entries = vec![
             PromptContextEntry::Mode(PromptContextType::File),
+            PromptContextEntry::Mode(PromptContextType::Canvas),
             PromptContextEntry::Mode(PromptContextType::Symbol),
         ];
 
@@ -1694,7 +1758,9 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
                     }
                 }
 
-                let show_section_headers = mode.is_none() && argument.is_none();
+                let show_section_headers = (mode.is_none() && argument.is_none())
+                    || mode == Some(PromptContextType::File)
+                    || mode == Some(PromptContextType::Canvas);
                 let query = argument.unwrap_or_default();
                 let search_task =
                     self.search_mentions(mode, query, Arc::<AtomicBool>::default(), cx);
@@ -1750,6 +1816,10 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
                                             key: "recent".into(),
                                             label: None,
                                         }),
+                                        Match::Canvas(_) => Some(CompletionGroup {
+                                            key: "canvases".into(),
+                                            label: Some("Canvases".into()),
+                                        }),
                                         Match::Entry(_) | Match::BranchDiff(_) => {
                                             Some(CompletionGroup {
                                                 key: "context".into(),
@@ -1762,6 +1832,10 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
                                     None
                                 };
                                 let mut completion = match mat {
+                                    Match::Canvas(canvas) => Some(Self::completion_for_canvas(
+                                        canvas,
+                                        source_range.clone(),
+                                    )),
                                     Match::File(FileMatch { mat, is_recent }) => {
                                         let project_path = ProjectPath {
                                             worktree_id: WorktreeId::from_usize(mat.worktree_id),
@@ -2279,6 +2353,93 @@ pub(crate) fn pluralize(noun: &str, count: usize) -> String {
     } else {
         format!("{noun}s")
     }
+}
+
+fn search_canvases(
+    query: String,
+    cancellation: Arc<AtomicBool>,
+    workspace: &Entity<Workspace>,
+    cx: &App,
+) -> Task<Vec<Match>> {
+    let workspace = workspace.read(cx);
+    let mut paths = std::collections::BTreeSet::new();
+    for worktree in workspace.visible_worktrees(cx) {
+        let worktree = worktree.read(cx);
+        if !worktree.is_local() {
+            continue;
+        }
+        paths.insert(worktree.abs_path().join(".brainz/whiteboard.brainzboard"));
+        for entry in worktree.entries(true, 0) {
+            if entry
+                .path
+                .extension()
+                .is_some_and(|extension| extension == "brainzboard")
+            {
+                paths.insert(worktree.absolutize(&entry.path));
+            }
+        }
+    }
+    if paths.is_empty() {
+        paths.insert(paths::data_dir().join("whiteboards/Personal.brainzboard"));
+    }
+    let executor = cx.background_executor().clone();
+    cx.background_spawn(async move {
+        let mut canvases = Vec::new();
+        for path in paths.into_iter().take(200) {
+            if cancellation.load(std::sync::atomic::Ordering::Relaxed) {
+                return Vec::new();
+            }
+            if let Ok(title) = brainz_calendar::whiteboard::canvas_title(&path) {
+                canvases.push(CanvasMatch {
+                    path,
+                    title,
+                    score: 1.,
+                });
+            }
+        }
+        if query.is_empty() {
+            return canvases.into_iter().map(Match::Canvas).collect();
+        }
+        let candidates = canvases
+            .iter()
+            .enumerate()
+            .map(|(index, canvas)| {
+                StringMatchCandidate::new(
+                    index,
+                    &format!(
+                        "{} canvas {}",
+                        canvas.title,
+                        canvas
+                            .path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        let matches = fuzzy::match_strings(
+            &candidates,
+            &query,
+            false,
+            true,
+            50,
+            &cancellation,
+            executor,
+        )
+        .await;
+        matches
+            .into_iter()
+            .filter_map(|matched| {
+                let canvas = canvases.get(matched.candidate_id)?;
+                Some(Match::Canvas(CanvasMatch {
+                    path: canvas.path.clone(),
+                    title: canvas.title.clone(),
+                    score: matched.score,
+                }))
+            })
+            .collect()
+    })
 }
 
 pub(crate) fn search_files(
@@ -3388,6 +3549,58 @@ mod tests {
         let results = task.await;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session_id, alpha.session_id);
+    }
+
+    #[gpui::test]
+    async fn test_canvas_search_finds_hidden_board_by_title(cx: &mut TestAppContext) {
+        use workspace::{AppState, MultiWorkspace};
+        let directory = tempfile::tempdir().expect("temporary canvas workspace");
+        let root = directory.path();
+        std::fs::create_dir_all(root.join(".brainz")).expect("canvas directory");
+        let board = serde_json::json!({
+            "format": "brainz-whiteboard", "version": 1,
+            "title": "Release flow", "data": "test document",
+        })
+        .to_string();
+        std::fs::write(root.join(".brainz/whiteboard.brainzboard"), &board).expect("canvas");
+        let state = cx.update(|cx| {
+            let state = AppState::test(cx);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+            state
+        });
+        state.fs.as_fake().insert_tree(root, serde_json::json!({".brainz": {"whiteboard.brainzboard": board}, "notes.md": "notes"})).await;
+        let project = Project::test(state.fs.clone(), [root], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
+        let workspace = multi_workspace.read_with(cx, |workspace, _| workspace.workspace().clone());
+        let matches = cx
+            .update(|_, cx| {
+                search_canvases(
+                    "release".into(),
+                    Arc::new(AtomicBool::default()),
+                    &workspace,
+                    cx,
+                )
+            })
+            .await;
+        assert_eq!(matches.len(), 1);
+        let Match::Canvas(canvas) = &matches[0] else {
+            panic!("expected a canvas")
+        };
+        assert_eq!(canvas.title, "Release flow");
+        assert_eq!(canvas.path, root.join(".brainz/whiteboard.brainzboard"));
+        let cancelled = cx
+            .update(|_, cx| {
+                search_canvases(
+                    String::new(),
+                    Arc::new(AtomicBool::new(true)),
+                    &workspace,
+                    cx,
+                )
+            })
+            .await;
+        assert!(cancelled.is_empty());
     }
 
     #[gpui::test]
