@@ -85,13 +85,18 @@ reads in the same centred column as the chat.
 
 **Canvas**, directly below To-Do, is an infinite BlockSuite whiteboard. Draw
 rounded boxes, sticky notes, text, freehand strokes and attached connectors.
+Click once to select and drag; double-click a note or box to edit its text.
+Canvas text uses Gellix when installed on the Mac, with bundled DM Sans as
+the fallback. The view controls share Brainz's expand/collapse icons.
 Use Pan or Space + drag to move around, pinch to zoom, and Fit to content to
 find everything. Capture lets you drag an area, pan beyond any edge while
 holding the mouse, and copy the result directly as a PNG. Escape cancels.
 Captures omit controls and support up to 8,192 pixels per side / 32 megapixels.
 
 Drop a local file (or choose Add file) to create a card opening the original
-in Brainz. Add link accepts Brainz, My Man and web links. Copy object link
+in Brainz. PNG, JPEG, WebP and GIF images under 8 MB are embedded in the board
+and remain visible after reopening; larger images stay linked files.
+Add link accepts Brainz, My Man and web links. Copy object link
 returns to a selected object; Copy view link returns to the current area.
 Boards save automatically and atomically to `.brainz/whiteboard.brainzboard`
 in the workspace (or Brainz's data folder when no workspace is open). Files
@@ -99,6 +104,15 @@ and deep links refer to paths on your Mac; they do not upload the board or
 make local files publicly accessible. Moving a linked file requires replacing
 its card. The engine and integration source live in the
 [Brainz BlockSuite fork](https://github.com/tommy-muckstack/brainz-blocksuite/tree/brainz-whiteboard/brainz).
+
+**Use in chat** adds the canvas to the current Claude or Codex draft: an image
+plus a structured map of object IDs, text, positions, groups, file references,
+and connector endpoints and arrowheads. Review or add your question, then send
+using the chat's existing connection. No additional API key is required.
+The companion `.brainz/whiteboard.canvas.json` updates automatically for local
+agents to read, including objects outside the current viewport. Very large
+boards attach a viewport image alongside the full map. Canvas data remains
+local until you send it through chat or sync your workspace.
 
 **Brief** is the first item in the sidebar.
 At the top is the day's read: the narrative block of the brain's brief file

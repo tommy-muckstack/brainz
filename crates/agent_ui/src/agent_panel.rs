@@ -478,6 +478,19 @@ pub fn init(cx: &mut App) {
                         panel.update(cx, |panel, cx| panel.capture_clipboard(window, cx));
                     }
                 })
+                .register_action(
+                    |workspace,
+                     action: &brainz_calendar::whiteboard::AttachCanvasToChat,
+                     window,
+                     cx| {
+                        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                            workspace.focus_panel::<AgentPanel>(window, cx);
+                            panel.update(cx, |panel, cx| {
+                                panel.attach_canvas_to_chat(action, window, cx)
+                            });
+                        }
+                    },
+                )
                 .register_action(|workspace, _: &crate::BrainzResetThread, window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                         panel.update(cx, |panel, cx| panel.reset_active_thread(window, cx));
@@ -4644,6 +4657,49 @@ impl AgentPanel {
             editor.focus_handle(cx).focus(window, cx);
             editor.paste(&editor::actions::Paste, window, cx);
         });
+    }
+
+    fn attach_canvas_to_chat(
+        &mut self,
+        action: &brainz_calendar::whiteboard::AttachCanvasToChat,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(
+            action.text.clone(),
+        ))];
+        if let Some(png) = &action.png {
+            blocks.push(acp::ContentBlock::Image(acp::ImageContent::new(
+                png.clone(),
+                "image/png",
+            )));
+        }
+        if let Some(thread_view) = self
+            .active_conversation_view()
+            .and_then(|conversation| conversation.read(cx).root_thread_view())
+        {
+            let editor = thread_view.read(cx).message_editor.clone();
+            editor.update(cx, |editor, cx| {
+                editor.set_cursor_offset(editor.text(cx).len(), window, cx);
+                editor.append_message(blocks, Some("\n\n"), window, cx);
+                editor.focus_handle(cx).focus(window, cx);
+            });
+        } else {
+            self.external_thread(
+                Some(self.selected_agent.clone()),
+                None,
+                None,
+                None,
+                Some(AgentInitialContent::ContentBlock {
+                    blocks,
+                    auto_submit: false,
+                }),
+                true,
+                AgentThreadSource::AgentPanel,
+                window,
+                cx,
+            );
+        }
     }
 
     /// Brainz: a fresh Claude conversation with `text` waiting in the
@@ -9109,6 +9165,57 @@ mod tests {
             },
             other => panic!("expected Resource block, got {:?}", other),
         }
+    }
+
+    #[gpui::test]
+    async fn test_canvas_context_preserves_current_chat_draft_and_attaches_image(
+        cx: &mut TestAppContext,
+    ) {
+        let (panel, mut cx) = setup_panel(cx).await;
+        open_thread_with_connection(&panel, StubAgentConnection::new(), &mut cx);
+        let thread_id = active_thread_id(&panel, &cx);
+        let (message_editor, thread) = panel.read_with(&cx, |panel, cx| {
+            let view = panel
+                .active_thread_view(cx)
+                .expect("active conversation")
+                .read(cx);
+            (view.message_editor.clone(), view.thread.clone())
+        });
+        let entries_before = thread.read_with(&cx, |thread, _| thread.entries().len());
+        message_editor.update_in(&mut cx, |editor, window, cx| {
+            editor.set_text("How can I improve this flow?", window, cx);
+            editor.set_cursor_offset(0, window, cx);
+        });
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+        panel.update_in(&mut cx, |panel, window, cx| {
+            panel.attach_canvas_to_chat(
+                &brainz_calendar::whiteboard::AttachCanvasToChat {
+                    text: "Canvas: Research -> Launch".into(),
+                    png: Some(png.into()),
+                },
+                window,
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert_eq!(active_thread_id(&panel, &cx), thread_id);
+        assert_eq!(
+            thread.read_with(&cx, |thread, _| thread.entries().len()),
+            entries_before,
+            "attaching context must not send a prompt"
+        );
+        let blocks =
+            message_editor.read_with(&cx, |editor, cx| editor.draft_content_blocks_snapshot(cx));
+        let text = blocks
+            .iter()
+            .filter_map(|block| match block {
+                acp::ContentBlock::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert!(text.starts_with("How can I improve this flow?"));
+        assert!(text.contains("Canvas: Research -> Launch"));
+        assert!(blocks.iter().any(|block| matches!(block, acp::ContentBlock::Image(image) if image.data == png && image.mime_type == "image/png")));
     }
 
     #[gpui::test]

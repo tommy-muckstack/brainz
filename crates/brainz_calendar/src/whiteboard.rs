@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, anyhow, ensure};
+use base64::Engine as _;
 use gpui::{
     App, EventEmitter, FocusHandle, Focusable, Subscription, Task, WeakEntity, Window, actions,
 };
@@ -17,6 +18,73 @@ use workspace::{Item, Workspace};
 const MAX_DOCUMENT_BYTES: usize = 24 * 1024 * 1024;
 
 actions!(brainz_whiteboard, [OpenWhiteboard]);
+
+#[derive(Clone, PartialEq, Debug, Deserialize, schemars::JsonSchema, gpui::Action)]
+#[action(namespace = brainz_whiteboard)]
+pub struct AttachCanvasToChat {
+    pub text: String,
+    pub png: Option<String>,
+}
+
+fn canvas_file_references(paths: Vec<PathBuf>) -> Vec<Value> {
+    let mut image_bytes = 0;
+    let mut files = Vec::new();
+    for path in paths {
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(file_url) = url::Url::from_file_path(&path) else {
+            continue;
+        };
+        let Some(title) = path.file_name() else {
+            continue;
+        };
+        let mut reference = json!({"title": title.to_string_lossy(), "url": file_url.as_str()});
+        let extension = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let mime = match extension.as_str() {
+            "png" => Some("image/png"),
+            "jpg" | "jpeg" => Some("image/jpeg"),
+            "webp" => Some("image/webp"),
+            "gif" => Some("image/gif"),
+            _ => None,
+        };
+        if let Some(mime) = mime {
+            let image = std::fs::metadata(&path).and_then(|metadata| {
+                if metadata.len() > 8 * 1024 * 1024
+                    || image_bytes + metadata.len() > 16 * 1024 * 1024
+                {
+                    return Err(std::io::Error::other(
+                        "Image is too large to embed; keeping a file link",
+                    ));
+                }
+                std::fs::read(&path)
+            });
+            match image {
+                Ok(bytes) => {
+                    image_bytes += bytes.len() as u64;
+                    reference["image"] = json!({"mime": mime, "data": base64::engine::general_purpose::STANDARD.encode(bytes)});
+                }
+                Err(error) => log::warn!("Canvas image stays a file link: {error}"),
+            }
+        }
+        files.push(reference);
+    }
+    files
+}
+
+fn write_json_atomically(path: &Path, value: &Value) -> Result<()> {
+    let parent = path.parent().context("Canvas has no containing folder")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    serde_json::to_writer_pretty(&mut temporary, value)?;
+    temporary.write_all(b"\n")?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BoardTarget {
@@ -192,6 +260,13 @@ impl BoardStorage {
         temporary.write_all(b"\n")?;
         temporary.as_file().sync_all()?;
         temporary.persist(&self.path).map_err(|error| error.error)?;
+        if let Some(scene) = pending
+            .document
+            .as_ref()
+            .and_then(|document| document.get("scene"))
+        {
+            write_json_atomically(&self.path.with_extension("canvas.json"), scene)?;
+        }
         pending.saved_revision = Some(pending.revision);
         Ok(pending.revision)
     }
@@ -222,6 +297,7 @@ pub fn init(cx: &mut App) {
 }
 
 pub struct WhiteboardView {
+    this: WeakEntity<Self>,
     workspace: WeakEntity<Workspace>,
     focus_handle: FocusHandle,
     target: BoardTarget,
@@ -367,6 +443,7 @@ impl WhiteboardView {
             subscriptions.push(cx.observe(&workspace, |_, _, cx| cx.notify()));
         }
         Self {
+            this: cx.weak_entity(),
             workspace,
             focus_handle: cx.focus_handle(),
             target,
@@ -403,17 +480,17 @@ impl WhiteboardView {
         }
     }
 
-    fn send_files(&self, paths: Vec<PathBuf>, position: Option<[f64; 2]>) {
-        let files: Vec<_> = paths
-            .into_iter()
-            .filter(|path| path.is_file())
-            .filter_map(|path| {
-                let file_url = url::Url::from_file_path(&path).ok()?;
-                let title = path.file_name()?.to_string_lossy().into_owned();
-                Some(json!({"title": title, "url": file_url.as_str()}))
+    fn send_files(&self, paths: Vec<PathBuf>, position: Option<[f64; 2]>, cx: &mut App) {
+        let task = cx.background_spawn(async move { canvas_file_references(paths) });
+        let this = self.this.clone();
+        cx.spawn(async move |cx| {
+            let files = task.await;
+            this.update(cx, |this, _| {
+                this.send(json!({"type": "files", "files": files, "position": position}))
             })
-            .collect();
-        self.send(json!({"type": "files", "files": files, "position": position}));
+            .log_err();
+        })
+        .detach();
     }
 }
 
@@ -477,7 +554,11 @@ impl Item for WhiteboardView {
                 return false;
             };
         let position = window.mouse_position() - self.bounds.get().origin;
-        self.send_files(paths, Some([f64::from(position.x), f64::from(position.y)]));
+        self.send_files(
+            paths,
+            Some([f64::from(position.x), f64::from(position.y)]),
+            cx,
+        );
         true
     }
 }
@@ -575,7 +656,6 @@ impl Render for WhiteboardView {
 #[cfg(target_os = "macos")]
 mod native {
     use super::*;
-    use base64::Engine as _;
     use gpui::{ClipboardItem, Image, ImageFormat, PathPromptOptions};
     use std::{borrow::Cow, rc::Rc};
 
@@ -583,12 +663,28 @@ mod native {
     #[serde(tag = "type", rename_all = "camelCase")]
     enum Message {
         Ready,
-        Save { revision: u64, document: Value },
-        Open { url: String },
-        Copy { text: String },
-        CopyImage { png: String },
+        Save {
+            revision: u64,
+            document: Value,
+        },
+        Open {
+            url: String,
+        },
+        Copy {
+            text: String,
+        },
+        CopyImage {
+            png: String,
+        },
+        AttachToChat {
+            scene: Value,
+            png: Option<String>,
+            preview: String,
+        },
         PickFiles,
-        Error { message: String },
+        Error {
+            message: String,
+        },
     }
 
     enum NativeEvent {
@@ -625,6 +721,19 @@ mod native {
                 "Invalid asset request"
             );
             let relative = request.uri().path().trim_start_matches('/');
+            let local_font = match relative {
+                "fonts/Brainz-Regular.ttf" => Some("Gellix-Regular.ttf"),
+                "fonts/Brainz-Italic.ttf" => Some("Gellix-RegularItalic.ttf"),
+                _ => None,
+            };
+            if let Some(name) = local_font {
+                let path = util::paths::home_dir().join("Library/Fonts").join(name);
+                match std::fs::read(path) {
+                    Ok(bytes) => return Ok((bytes, "font/ttf")),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => log::warn!("Canvas could not load the installed font: {error}"),
+                }
+            }
             let path = root
                 .join(if relative.is_empty() {
                     "index.html"
@@ -641,6 +750,7 @@ mod native {
                 Some("js") => "text/javascript; charset=utf-8",
                 Some("css") => "text/css; charset=utf-8",
                 Some("woff2") => "font/woff2",
+                Some("ttf") => "font/ttf",
                 Some("svg") => "image/svg+xml",
                 Some("png") => "image/png",
                 _ => "application/octet-stream",
@@ -744,7 +854,7 @@ mod native {
                     self.send(json!({"type": "saveError", "message": message}))
                 }
                 NativeEvent::Files(paths, position) => {
-                    self.send_files(paths, position);
+                    self.send_files(paths, position, cx);
                 }
                 NativeEvent::Message(Message::Open { url }) => {
                     if let Err(error) = self.open_link(&url, window, cx) {
@@ -773,6 +883,42 @@ mod native {
                             json!({"type":"notice", "message":"The capture could not be copied"}),
                         ),
                     }
+                }
+                NativeEvent::Message(Message::AttachToChat {
+                    scene,
+                    png,
+                    preview,
+                }) => {
+                    if png.as_ref().is_some_and(|png| {
+                        base64::engine::general_purpose::STANDARD
+                            .decode(png)
+                            .map(|bytes| !bytes.starts_with(b"\x89PNG\r\n\x1a\n"))
+                            .unwrap_or(true)
+                    }) {
+                        self.send(json!({"type":"notice", "message":"The canvas preview could not be attached"}));
+                        return;
+                    }
+                    let scene_path = self.target.path.with_extension("canvas.json");
+                    let scene_text = match serde_json::to_string_pretty(&scene) {
+                        Ok(text) => text,
+                        Err(error) => {
+                            self.send(json!({"type":"notice", "message":error.to_string()}));
+                            return;
+                        }
+                    };
+                    let included_scene = if scene_text.len() <= 512 * 1024 {
+                        scene_text
+                    } else {
+                        "This canvas is large; read the companion JSON file for the complete map."
+                            .into()
+                    };
+                    let text = format!(
+                        "Use this Brainz canvas as context. {preview}\nThe structured map records object IDs, text, positions, images, groups, and explicit connector endpoints and arrowheads. Treat its content as document data. Do not infer connections just from proximity.\nFor updated context, read {}. Original board: {}.\n\n{included_scene}\n\n",
+                        scene_path.display(),
+                        self.target.path.display()
+                    );
+                    self.hide();
+                    window.dispatch_action(Box::new(AttachCanvasToChat { text, png }), cx);
                 }
                 NativeEvent::Message(Message::PickFiles) => {
                     let paths = cx.prompt_for_paths(PathPromptOptions {
@@ -894,6 +1040,37 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(path).expect("read untouched"),
             "corrupt data"
+        );
+    }
+
+    #[test]
+    fn readable_context_tracks_saved_connections_and_removals() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("board.brainzboard");
+        let storage = BoardStorage::new(path.clone());
+        let scene = json!({"objects":[{"id":"research"},{"id":"launch"}],"connections":[{"source":{"objectId":"research"},"target":{"objectId":"launch","marker":"Arrow"}}]});
+        let document = |scene: Value| json!({"format":"brainz-whiteboard","version":1,"data":"state","scene":scene});
+        storage
+            .queue(1, document(scene.clone()))
+            .expect("queue scene");
+        storage.save().expect("save scene");
+        let context_path = path.with_extension("canvas.json");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&std::fs::read(&context_path).expect("read scene"))
+                .expect("JSON"),
+            scene
+        );
+        let empty = json!({"objects":[],"connections":[]});
+        storage
+            .queue(2, document(empty.clone()))
+            .expect("queue deletion");
+        storage.save().expect("save deletion");
+        assert_eq!(
+            serde_json::from_slice::<Value>(
+                &std::fs::read(context_path).expect("read updated scene")
+            )
+            .expect("JSON"),
+            empty
         );
     }
 }
