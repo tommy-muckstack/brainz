@@ -92,18 +92,25 @@ rounded boxes, sticky notes, text, freehand strokes and attached connectors.
 Click once to select and drag; double-click a note or box to edit its text.
 Canvas text uses Gellix when installed on the Mac, with bundled DM Sans as
 the fallback. The view controls share Brainz's expand/collapse icons.
+Selecting Connector shows attachment dots on every visible connectable object.
 Use Pan or Space + drag to move around, pinch to zoom, and Fit to content to
 find everything. Capture lets you drag an area, pan beyond any edge while
 holding the mouse, and copy the result directly as a PNG. Escape cancels.
 Captures omit controls and support up to 8,192 pixels per side / 32 megapixels.
+**Copy PNG** in the selection toolbar (and its menu) copies only the selected
+objects, including group/frame contents, with 32 pixels of padding on every side.
 
 Drop a local file (or choose Add file) to create a card opening the original
 in Brainz. PNG, JPEG, WebP and GIF images under 8 MB are embedded in the board
 and remain visible after reopening; larger images stay linked files.
 Add link accepts Brainz, My Man and web links. Copy object link
 returns to a selected object; Copy view link returns to the current area.
-Boards save automatically and atomically to `.brainz/whiteboard.brainzboard`
-in the workspace (or Brainz's data folder when no workspace is open). Files
+Use the menu beside the canvas name to create another canvas or move it to a
+folder. `.brainzboard` files appear in the sidebar with the canvas icon and open
+in the canvas editor. Sidebar renames and folder moves update the open board's
+save location. New workspaces start with `Canvases/Untitled.brainzboard`; existing
+`.brainz/whiteboard.brainzboard` boards remain available. Boards save automatically
+and atomically (or use Brainz's data folder when no workspace is open). Files
 and deep links refer to paths on your Mac; they do not upload the board or
 make local files publicly accessible. Moving a linked file requires replacing
 its card. The engine and integration source live in the
@@ -117,7 +124,7 @@ to the current draft without sending. **Use in chat** does the same from the can
 plus a structured map of object IDs, text, positions, groups, file references,
 and connector endpoints and arrowheads. Review or add your question, then send
 using the chat's existing connection. No additional API key is required.
-The companion `.brainz/whiteboard.canvas.json` updates automatically for local
+The companion `<canvas name>.canvas.json` updates automatically for local
 agents to read, including objects outside the current viewport. Very large
 boards attach a viewport image alongside the full map. Canvas data remains
 local until you send it through chat or sync your workspace.

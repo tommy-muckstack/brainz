@@ -7,13 +7,15 @@ use std::{
 use anyhow::{Context as _, Result, anyhow, ensure};
 use base64::Engine as _;
 use gpui::{
-    App, EventEmitter, FocusHandle, Focusable, Subscription, Task, WeakEntity, Window, actions,
+    App, Entity, EventEmitter, FocusHandle, Focusable, Subscription, Task, WeakEntity, Window,
+    actions,
 };
+use project::{Project, ProjectEntryId, ProjectPath};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ui::prelude::*;
 use util::ResultExt;
-use workspace::{Item, Workspace};
+use workspace::{Item, Pane, Workspace, item::ProjectItem};
 
 const MAX_DOCUMENT_BYTES: usize = 24 * 1024 * 1024;
 
@@ -111,6 +113,59 @@ pub struct BoardTarget {
     pub viewport: Option<[f64; 3]>,
 }
 
+pub struct CanvasFile {
+    project: WeakEntity<Project>,
+    path: ProjectPath,
+    entry_id: Option<ProjectEntryId>,
+    absolute_path: PathBuf,
+}
+
+impl project::ProjectItem for CanvasFile {
+    fn try_open(
+        project: &Entity<Project>,
+        path: &ProjectPath,
+        cx: &mut App,
+    ) -> Option<Task<Result<Entity<Self>>>> {
+        if !project.read(cx).is_local() || path.path.extension() != Some("brainzboard") {
+            return None;
+        }
+        let absolute_path = project.read(cx).absolute_path(path, cx)?;
+        let item = Self {
+            project: project.downgrade(),
+            path: path.clone(),
+            absolute_path,
+            entry_id: project
+                .read(cx)
+                .entry_for_path(path, cx)
+                .map(|entry| entry.id),
+        };
+        Some(Task::ready(Ok(cx.new(|_| item))))
+    }
+
+    fn entry_id(&self, cx: &App) -> Option<ProjectEntryId> {
+        let project = self.project.upgrade()?;
+        project
+            .read(cx)
+            .entry_for_path(&self.path, cx)
+            .map(|entry| entry.id)
+            .or(self.entry_id)
+    }
+
+    fn project_path(&self, cx: &App) -> Option<ProjectPath> {
+        self.project
+            .upgrade()
+            .and_then(|project| {
+                self.entry_id
+                    .and_then(|id| project.read(cx).path_for_entry(id, cx))
+            })
+            .or_else(|| Some(self.path.clone()))
+    }
+
+    fn is_dirty(&self) -> bool {
+        false
+    }
+}
+
 pub fn parse_link(value: &str) -> Result<BoardTarget> {
     let url = url::Url::parse(value)?;
     ensure!(
@@ -199,46 +254,56 @@ fn validate_document(document: &Value) -> Result<()> {
 
 #[derive(Default)]
 struct PendingDocument {
+    path: PathBuf,
+    file_lock: Option<std::fs::File>,
     revision: u64,
     document: Option<Value>,
     saved_revision: Option<u64>,
+    persisted: bool,
 }
 
 struct BoardStorage {
-    path: PathBuf,
     pending: Mutex<PendingDocument>,
-    file_lock: Mutex<Option<std::fs::File>>,
 }
 
 impl BoardStorage {
     fn new(path: PathBuf) -> Self {
         Self {
-            path,
-            pending: Mutex::new(PendingDocument::default()),
-            file_lock: Mutex::new(None),
+            pending: Mutex::new(PendingDocument {
+                path,
+                ..Default::default()
+            }),
         }
     }
 
     fn load(&self, allow_create: bool) -> Result<Value> {
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| anyhow!("Canvas storage is unavailable"))?;
         if allow_create {
             std::fs::create_dir_all(
-                self.path
+                pending
+                    .path
                     .parent()
                     .context("Canvas has no containing folder")?,
             )?;
         }
+        pending.file_lock = Some(Self::lock_file(&pending.path)?);
+        let document = read_document(&pending.path, allow_create)?;
+        pending.persisted = !document.is_null();
+        Ok(document)
+    }
+
+    fn lock_file(path: &Path) -> Result<std::fs::File> {
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(self.path.with_extension("brainzboard.lock"))?;
+            .open(path.with_extension("brainzboard.lock"))?;
         file.try_lock().context("This canvas is already open in another Brainz window. Close that tab before opening another copy.")?;
-        *self
-            .file_lock
-            .lock()
-            .map_err(|_| anyhow!("Canvas storage is unavailable"))? = Some(file);
-        read_document(&self.path, allow_create)
+        Ok(file)
     }
 
     fn queue(&self, revision: u64, document: Value) -> Result<()> {
@@ -265,10 +330,20 @@ impl BoardStorage {
             .pending
             .lock()
             .map_err(|_| anyhow!("Whiteboard storage is unavailable"))?;
+        Self::save_pending(&mut pending)
+    }
+
+    fn save_pending(pending: &mut PendingDocument) -> Result<u64> {
         if pending.saved_revision == Some(pending.revision) || pending.document.is_none() {
             return Ok(pending.revision);
         }
-        let parent = self
+        // A sidebar move is followed by a project rename event. Never recreate
+        // the old file while that event is still on its way to this view.
+        ensure!(
+            !pending.persisted || pending.path.is_file(),
+            "Canvas moved or deleted; waiting for its new location"
+        );
+        let parent = pending
             .path
             .parent()
             .context("Whiteboard has no containing folder")?;
@@ -277,27 +352,117 @@ impl BoardStorage {
         serde_json::to_writer(&mut temporary, &pending.document)?;
         temporary.write_all(b"\n")?;
         temporary.as_file().sync_all()?;
-        temporary.persist(&self.path).map_err(|error| error.error)?;
+        temporary
+            .persist(&pending.path)
+            .map_err(|error| error.error)?;
         if let Some(scene) = pending
             .document
             .as_ref()
             .and_then(|document| document.get("scene"))
         {
-            write_json_atomically(&self.path.with_extension("canvas.json"), scene)?;
+            write_json_atomically(&pending.path.with_extension("canvas.json"), scene)?;
         }
         pending.saved_revision = Some(pending.revision);
+        pending.persisted = true;
         Ok(pending.revision)
+    }
+
+    fn relocate(&self, destination: PathBuf, already_moved: bool) -> Result<()> {
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| anyhow!("Canvas storage is unavailable"))?;
+        if destination == pending.path {
+            return Ok(());
+        }
+        ensure!(
+            destination.is_absolute()
+                && destination
+                    .extension()
+                    .is_some_and(|extension| extension == "brainzboard"),
+            "Choose a .brainzboard file"
+        );
+        let parent = destination
+            .parent()
+            .context("Canvas has no containing folder")?;
+        std::fs::create_dir_all(parent)?;
+        // Moving a whole folder also moves its lock file. Retain our existing
+        // lock in that case instead of treating it as a competing canvas tab.
+        let mut retains_lock = false;
+        #[cfg(unix)]
+        if already_moved && let Some(file) = &pending.file_lock {
+            use std::os::unix::fs::MetadataExt;
+            match std::fs::metadata(destination.with_extension("brainzboard.lock")) {
+                Ok(metadata) => {
+                    let held = file.metadata()?;
+                    retains_lock = held.dev() == metadata.dev() && held.ino() == metadata.ino();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let lock = if retains_lock {
+            None
+        } else {
+            Some(Self::lock_file(&destination)?)
+        };
+        if already_moved {
+            read_document(&destination, false)?;
+        } else {
+            ensure!(
+                !destination.exists(),
+                "A canvas already exists at that location. Choose a different name."
+            );
+            Self::save_pending(&mut pending)?;
+            let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+            std::io::copy(&mut std::fs::File::open(&pending.path)?, &mut temporary)?;
+            temporary.as_file().sync_all()?;
+            temporary
+                .persist_noclobber(&destination)
+                .map_err(|error| error.error)?;
+            if let Err(error) = std::fs::remove_file(&pending.path) {
+                std::fs::remove_file(&destination).log_err();
+                return Err(error.into());
+            }
+        }
+        let old_scene = pending.path.with_extension("canvas.json");
+        pending.path = destination;
+        if let Some(lock) = lock {
+            pending.file_lock = Some(lock);
+        }
+        pending.saved_revision = None;
+        pending.persisted = true;
+        // The next frontend save rebuilds object links and the AI context using
+        // the new board path. Remove only the generated companion of this board.
+        if old_scene.is_file() {
+            std::fs::remove_file(old_scene).log_err();
+        }
+        Ok(())
     }
 }
 
 pub fn init(cx: &mut App) {
+    workspace::register_project_item::<WhiteboardView>(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenWhiteboard, window, cx| {
-            let path = workspace
-                .root_paths(cx)
-                .first()
-                .map(|root| root.join(".brainz/whiteboard.brainzboard"))
-                .unwrap_or_else(|| paths::data_dir().join("whiteboards/Personal.brainzboard"));
+            let open_canvas = workspace
+                .items_of_type::<WhiteboardView>(cx)
+                .last()
+                .map(|view| view.read(cx).target.path.clone());
+            let path = open_canvas.unwrap_or_else(|| {
+                workspace
+                    .root_paths(cx)
+                    .first()
+                    .map(|root| {
+                        let legacy = root.join(".brainz/whiteboard.brainzboard");
+                        if legacy.is_file() {
+                            legacy
+                        } else {
+                            root.join("Canvases/Untitled.brainzboard")
+                        }
+                    })
+                    .unwrap_or_else(|| paths::data_dir().join("whiteboards/Personal.brainzboard"))
+            });
             WhiteboardView::open(
                 workspace,
                 BoardTarget {
@@ -340,6 +505,8 @@ pub fn init(cx: &mut App) {
 pub struct WhiteboardView {
     this: WeakEntity<Self>,
     workspace: WeakEntity<Workspace>,
+    project: Entity<Project>,
+    file: Option<Entity<CanvasFile>>,
     focus_handle: FocusHandle,
     target: BoardTarget,
     storage: Arc<BoardStorage>,
@@ -443,8 +610,9 @@ impl WhiteboardView {
             return;
         }
         let workspace_handle = cx.entity().downgrade();
+        let project = workspace.project().clone();
         let view = cx.new(|cx| {
-            let mut view = Self::new(workspace_handle, target, allow_create, cx);
+            let mut view = Self::new(workspace_handle, project, target, allow_create, cx);
             view.chat_destination = chat_destination;
             view
         });
@@ -453,6 +621,7 @@ impl WhiteboardView {
 
     fn new(
         workspace: WeakEntity<Workspace>,
+        project: Entity<Project>,
         target: BoardTarget,
         allow_create: bool,
         cx: &mut Context<Self>,
@@ -494,12 +663,60 @@ impl WhiteboardView {
             }
         });
         let mut subscriptions = vec![quit, release];
+        subscriptions.push(cx.subscribe(&project, |this, _, event, cx| {
+            if let project::Event::EntryRenamed {
+                old_abs_path,
+                new_abs_path,
+                ..
+            } = event
+            {
+                if let Ok(relative) = this.target.path.strip_prefix(old_abs_path) {
+                    let destination = if relative.as_os_str().is_empty() {
+                        new_abs_path.clone()
+                    } else {
+                        new_abs_path.join(relative)
+                    };
+                    let storage = this.storage.clone();
+                    cx.spawn(async move |this, cx| {
+                        let path = destination.clone();
+                        let result = cx
+                            .background_spawn(async move { storage.relocate(path, true) })
+                            .await;
+                        this.update(cx, |this, cx| match result {
+                            Ok(()) => this.did_relocate(destination, cx),
+                            Err(error) => {
+                                this.send(json!({"type":"saveError", "message":error.to_string()}))
+                            }
+                        })
+                        .log_err();
+                    })
+                    .detach();
+                }
+            }
+        }));
         if let Some(workspace) = workspace.upgrade() {
             subscriptions.push(cx.observe(&workspace, |_, _, cx| cx.notify()));
         }
+        let file = project
+            .read(cx)
+            .find_project_path(&target.path, cx)
+            .map(|path| {
+                let entry_id = project
+                    .read(cx)
+                    .entry_for_path(&path, cx)
+                    .map(|entry| entry.id);
+                cx.new(|_| CanvasFile {
+                    project: project.downgrade(),
+                    path,
+                    entry_id,
+                    absolute_path: target.path.clone(),
+                })
+            });
         Self {
             this: cx.weak_entity(),
             workspace,
+            project,
+            file,
             focus_handle: cx.focus_handle(),
             target,
             storage,
@@ -514,6 +731,36 @@ impl WhiteboardView {
             #[cfg(target_os = "macos")]
             messages: None,
         }
+    }
+
+    fn did_relocate(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.target.path = path.clone();
+        if let Some(project_path) = self.project.read(cx).find_project_path(&path, cx) {
+            let entry_id = self
+                .project
+                .read(cx)
+                .entry_for_path(&project_path, cx)
+                .map(|entry| entry.id);
+            if let Some(file) = &self.file {
+                file.update(cx, |file, _| {
+                    file.path = project_path;
+                    file.entry_id = entry_id;
+                    file.absolute_path = path;
+                });
+            } else {
+                self.file = Some(cx.new(|_| CanvasFile {
+                    project: self.project.downgrade(),
+                    path: project_path,
+                    entry_id,
+                    absolute_path: path,
+                }));
+            }
+        } else {
+            self.file = None;
+        }
+        self.send(json!({"type":"relocated", "target":self.target}));
+        cx.emit(());
+        cx.notify();
     }
 
     fn send(&self, message: Value) {
@@ -532,6 +779,9 @@ impl WhiteboardView {
     fn hide(&self) {
         #[cfg(target_os = "macos")]
         if let Some(webview) = &self.webview {
+            // Hiding WKWebView does not return AppKit's first responder to GPUI.
+            // Without this, the chat can look focused while keys go to the canvas.
+            webview.focus_parent().log_err();
             webview.set_visible(false).log_err();
         }
     }
@@ -560,9 +810,37 @@ impl Focusable for WhiteboardView {
 
 impl Item for WhiteboardView {
     type Event = ();
-    fn to_item_events(_: &(), _: &mut dyn FnMut(workspace::item::ItemEvent)) {}
+    fn to_item_events(_: &(), emit: &mut dyn FnMut(workspace::item::ItemEvent)) {
+        emit(workspace::item::ItemEvent::UpdateTab);
+        emit(workspace::item::ItemEvent::UpdateBreadcrumbs);
+    }
     fn tab_content_text(&self, _: usize, _: &App) -> SharedString {
-        "Canvas".into()
+        self.document
+            .as_ref()
+            .and_then(|document| document.get("title"))
+            .and_then(Value::as_str)
+            .filter(|title| !title.trim().is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                self.target
+                    .path
+                    .file_stem()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "Canvas".into())
+            .into()
+    }
+    fn tab_tooltip_text(&self, _: &App) -> Option<SharedString> {
+        Some(self.target.path.to_string_lossy().into_owned().into())
+    }
+    fn for_each_project_item(
+        &self,
+        cx: &App,
+        visit: &mut dyn FnMut(gpui::EntityId, &dyn project::ProjectItem),
+    ) {
+        if let Some(file) = &self.file {
+            visit(file.entity_id(), file.read(cx));
+        }
     }
     fn tab_icon(&self, _: &Window, _: &App) -> Option<Icon> {
         Some(Icon::new(IconName::BrainzWhiteboard))
@@ -619,6 +897,29 @@ impl Item for WhiteboardView {
     }
 }
 
+impl ProjectItem for WhiteboardView {
+    type Item = CanvasFile;
+    fn for_project_item(
+        project: Entity<Project>,
+        _: Option<&Pane>,
+        item: Entity<CanvasFile>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let workspace = Workspace::for_window(window, cx)
+            .map(|workspace| workspace.downgrade())
+            .unwrap_or_else(WeakEntity::new_invalid);
+        let target = BoardTarget {
+            path: item.read(cx).absolute_path.clone(),
+            object: None,
+            viewport: None,
+        };
+        let mut view = Self::new(workspace, project, target, false, cx);
+        view.file = Some(item);
+        view
+    }
+}
+
 impl Render for WhiteboardView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(target_os = "macos")]
@@ -671,7 +972,7 @@ impl Render for WhiteboardView {
                 body = body.child(
                     gpui::canvas(
                         |_, _, _| {},
-                        move |bounds, _, _, _| {
+                        move |bounds, _, window, _| {
                             view_bounds.set(bounds);
                             use wry::dpi::{LogicalPosition, LogicalSize};
                             webview
@@ -689,6 +990,14 @@ impl Render for WhiteboardView {
                                 })
                                 .log_err();
                             webview.set_visible(true).log_err();
+                            let webview = webview.clone();
+                            window.on_mouse_event(
+                                move |event: &gpui::MouseDownEvent, phase, _, _| {
+                                    if phase.capture() && !bounds.contains(&event.position) {
+                                        webview.focus_parent().log_err();
+                                    }
+                                },
+                            );
                         },
                     )
                     .size_full(),
@@ -738,6 +1047,11 @@ mod native {
             preview: String,
         },
         PickFiles,
+        MoveCanvas,
+        NewCanvas,
+        TitleChanged {
+            title: String,
+        },
         Error {
             message: String,
         },
@@ -1003,6 +1317,15 @@ mod native {
                     })
                     .detach();
                 }
+                NativeEvent::Message(Message::MoveCanvas) => self.choose_canvas_location(false, window, cx),
+                NativeEvent::Message(Message::NewCanvas) => self.choose_canvas_location(true, window, cx),
+                NativeEvent::Message(Message::TitleChanged { title }) => {
+                    if let Some(document) = &mut self.document {
+                        document["title"] = json!(title.chars().take(120).collect::<String>());
+                        cx.emit(());
+                        cx.notify();
+                    }
+                }
                 NativeEvent::Message(Message::Error { message }) => {
                     self.error = Some(
                         format!(
@@ -1015,6 +1338,78 @@ mod native {
                 }
                 NativeEvent::Message(Message::Save { .. }) => {}
             }
+        }
+
+        fn choose_canvas_location(
+            &mut self,
+            new_canvas: bool,
+            window: &mut Window,
+            cx: &mut Context<Self>,
+        ) {
+            let directory = self
+                .workspace
+                .upgrade()
+                .and_then(|workspace| {
+                    workspace
+                        .read(cx)
+                        .root_paths(cx)
+                        .first()
+                        .map(|root| root.to_path_buf())
+                })
+                .unwrap_or_else(|| {
+                    self.target
+                        .path
+                        .parent()
+                        .unwrap_or(Path::new("/"))
+                        .to_path_buf()
+                });
+            let title = self
+                .document
+                .as_ref()
+                .and_then(|document| document.get("title"))
+                .and_then(Value::as_str)
+                .unwrap_or("Untitled canvas");
+            let filename = if new_canvas {
+                "Untitled canvas".to_owned()
+            } else {
+                title.replace(['/', ':', '\\'], "-")
+            };
+            let destination =
+                cx.prompt_for_new_path(&directory, Some(&format!("{filename}.brainzboard")));
+            self.hide();
+            let storage = self.storage.clone();
+            cx.spawn_in(window, async move |this, cx| {
+                let result: Result<Option<PathBuf>> = async {
+                    let Some(mut path) = destination.await?? else { return Ok(None); };
+                    if path.extension().is_none_or(|extension| extension != "brainzboard") { path.set_extension("brainzboard"); }
+                    let destination = path.clone();
+                    cx.background_spawn(async move {
+                        if new_canvas {
+                            ensure!(!destination.exists(), "A canvas already exists here. Choose a different name.");
+                        } else {
+                            storage.relocate(destination, false)?;
+                        }
+                        Ok::<(), anyhow::Error>(())
+                    }).await?;
+                    Ok(Some(path))
+                }.await;
+                this.update_in(cx, |this, window, cx| {
+                    match result {
+                        Ok(Some(path)) if new_canvas => {
+                            let workspace = this.workspace.clone();
+                            cx.defer_in(window, move |_, window, cx| {
+                                workspace.update(cx, |workspace, cx| {
+                                    Self::open(workspace, BoardTarget { path, object: None, viewport: None }, true, None, window, cx);
+                                }).log_err();
+                            });
+                        }
+                        Ok(Some(path)) => this.did_relocate(path, cx),
+                        Ok(None) => {},
+                        Err(error) => this.send(json!({"type":"notice", "message":format!("Could not file canvas: {error}")})),
+                    }
+                    cx.notify();
+                }).log_err();
+            }).detach();
         }
 
         fn open_link(
@@ -1103,6 +1498,90 @@ mod tests {
             std::fs::read_to_string(path).expect("read untouched"),
             "corrupt data"
         );
+    }
+
+    #[test]
+    fn filing_preserves_pending_edits_and_refuses_to_replace_another_canvas() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let original = directory.path().join("board.brainzboard");
+        let destination = directory.path().join("projects/Plan.brainzboard");
+        let storage = BoardStorage::new(original.clone());
+        storage.load(true).expect("open");
+        let document = |text| json!({"format":"brainz-whiteboard", "version":1,"data":text});
+        storage.queue(1, document("saved")).expect("queue");
+        storage.save().expect("save");
+        storage
+            .queue(2, document("latest edits"))
+            .expect("pending edits");
+        storage
+            .relocate(destination.clone(), false)
+            .expect("file canvas");
+        storage.save().expect("flush after move");
+        assert!(!original.exists());
+        assert_eq!(
+            read_document(&destination, false).expect("read"),
+            document("latest edits")
+        );
+        let other = directory.path().join("Existing.brainzboard");
+        write_json_atomically(&other, &document("someone else's board")).expect("existing board");
+        assert!(storage.relocate(other.clone(), false).is_err());
+        assert_eq!(
+            read_document(&other, false).expect("unchanged"),
+            document("someone else's board")
+        );
+        assert!(BoardStorage::new(destination.clone()).load(false).is_err());
+        drop(storage);
+        assert_eq!(
+            BoardStorage::new(destination).load(false).expect("reopen"),
+            document("latest edits")
+        );
+    }
+
+    #[test]
+    fn sidebar_move_keeps_autosave_from_recreating_the_old_canvas() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let original = directory.path().join("board.brainzboard");
+        let destination = directory.path().join("Renamed.brainzboard");
+        let storage = BoardStorage::new(original.clone());
+        storage.load(true).expect("open");
+        let document = |text| json!({"format":"brainz-whiteboard", "version":1,"data":text});
+        storage.queue(1, document("saved")).expect("queue");
+        storage.save().expect("save");
+        std::fs::rename(&original, &destination).expect("sidebar rename");
+        storage
+            .queue(2, document("pending"))
+            .expect("queue during rename");
+        assert!(storage.save().is_err());
+        assert!(!original.exists());
+        storage
+            .relocate(destination.clone(), true)
+            .expect("follow rename");
+        storage.save().expect("save pending to new path");
+        assert_eq!(
+            read_document(&destination, false).expect("read"),
+            document("pending")
+        );
+        assert!(!original.exists());
+    }
+
+    #[test]
+    fn moving_a_folder_retains_the_canvas_file_lock() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let original_folder = directory.path().join("Ideas");
+        let destination_folder = directory.path().join("Projects");
+        let storage = BoardStorage::new(original_folder.join("board.brainzboard"));
+        storage.load(true).expect("open");
+        let document = json!({"format":"brainz-whiteboard", "version":1,"data":"drawing"});
+        storage.queue(1, document.clone()).expect("queue");
+        storage.save().expect("save");
+        std::fs::rename(original_folder, &destination_folder).expect("move folder and lock");
+        let destination = destination_folder.join("board.brainzboard");
+        storage
+            .relocate(destination.clone(), true)
+            .expect("keep our lock");
+        storage.save().expect("save after move");
+        assert_eq!(read_document(&destination, false).expect("read"), document);
+        assert!(BoardStorage::new(destination).load(false).is_err());
     }
 
     #[test]

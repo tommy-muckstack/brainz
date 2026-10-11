@@ -6987,7 +6987,11 @@ impl ProjectPanel {
         let (chevron, icon) = match entry.kind {
             EntryKind::File => {
                 let icon = if show_file_icons {
-                    FileIcons::get_icon(entry.path.as_std_path(), cx)
+                    if entry.path.extension() == Some("brainzboard") {
+                        Some(IconName::BrainzWhiteboard.path().into())
+                    } else {
+                        FileIcons::get_icon(entry.path.as_std_path(), cx)
+                    }
                 } else {
                     None
                 };
@@ -7383,9 +7387,13 @@ fn item_width_estimate(depth: usize, item_text_chars: usize, is_symlink: bool) -
     item_width
 }
 
-/// Brainz: the brain's own layout file is plumbing, not a note.
+/// Keep generated canvas context and lock files out of the notes tree.
 fn brainz_is_config_file(path: &RelPath) -> bool {
-    path.file_name() == Some("brainz.toml")
+    path.file_name().is_some_and(|name| {
+        name == "brainz.toml"
+            || name.ends_with(".brainzboard.lock")
+            || name.ends_with(".canvas.json")
+    })
 }
 
 impl Render for ProjectPanel {
