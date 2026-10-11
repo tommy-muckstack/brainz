@@ -27,6 +27,11 @@ guard let document = CGPDFDocument(URL(fileURLWithPath: pdfPath) as CFURL) else 
 if document.isEncrypted && !document.isUnlocked {
     emit(["status": "encrypted", "pages": []])
 }
+// The native viewer keeps decoded pages available while scrolling. Preserve
+// its previous memory budget for long documents; short receipts can use Retina
+// resolution without loading hundreds of large bitmaps at once.
+let renderWidth = document.numberOfPages > 8 ? min(targetWidth, 1400) : targetWidth
+
 try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
 var pages: [[String: Any]] = []
@@ -40,7 +45,7 @@ for index in 1...max(count, 1) where index <= count {
     let pageWidth = rotated ? box.height : box.width
     let pageHeight = rotated ? box.width : box.height
     guard pageWidth > 0, pageHeight > 0 else { continue }
-    let scale = targetWidth / Double(pageWidth)
+    let scale = renderWidth / Double(pageWidth)
     let width = Int((Double(pageWidth) * scale).rounded())
     let height = Int((Double(pageHeight) * scale).rounded())
     guard let context = CGContext(
