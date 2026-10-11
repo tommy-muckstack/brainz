@@ -23,6 +23,8 @@ The supplied file artwork is `file.svg`, mapped to the generic file, document,
 Markdown, and book icons. The default file-tree theme uses it for generic files
 and Markdown documents, including preview tabs.
 The supplied copy artwork is `copy.svg`, mapped to `Copy`. The supplied
+Save artwork is `save.svg`, mapped to `Save` for Save buttons throughout the app.
+The supplied
 expand and collapse artwork is `expand.svg` and `collapse.svg`, mapped to
 `Maximize` and `Minimize` (message editor and panel full-screen toggles).
 The supplied rocket artwork is `launch.svg`, mapped to `Launch`, used by the
