@@ -393,7 +393,6 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
             .color(Color::Custom(ink))
             .into_any_element(),
     };
-    let text = format!("{server} needs reconnecting in {client_name}.");
     let action: gpui::AnyElement = if reconnecting {
         h_flex()
             .h(px(22.))
@@ -402,21 +401,24 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
             .child(ui::bouncing_dots("brainz-mcp-banner-dots", ink))
             .into_any_element()
     } else {
-        Button::new("brainz-mcp-banner-reconnect", "Reconnect")
-            .style(ButtonStyle::Filled)
-            .tooltip(Tooltip::text(
-                "Opens a short sign-in in the panel and finishes in your browser",
-            ))
-            .on_click({
-                let state = state.clone();
-                let workspace = workspace.clone();
-                move |_, window, cx| {
-                    state.update(cx, |state, cx| {
-                        state.reconnect(workspace.clone(), window, cx)
-                    });
-                }
-            })
-            .into_any_element()
+        Button::new(
+            "brainz-mcp-banner-reconnect",
+            format!("Reconnect in {client_name}"),
+        )
+        .style(ButtonStyle::Filled)
+        .tooltip(Tooltip::text(
+            "Opens a short sign-in in the panel and finishes in your browser",
+        ))
+        .on_click({
+            let state = state.clone();
+            let workspace = workspace.clone();
+            move |_, window, cx| {
+                state.update(cx, |state, cx| {
+                    state.reconnect(workspace.clone(), window, cx)
+                });
+            }
+        })
+        .into_any_element()
     };
     let buttons = h_flex()
         .gap_1p5()
@@ -452,12 +454,11 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
                     .bg(amber)
                     .child(
                         h_flex()
-                            .items_start()
+                            .items_center()
                             .gap_1p5()
                             .child(
                                 div()
                                     .flex_none()
-                                    .mt_0p5()
                                     .size_5()
                                     .rounded_sm()
                                     .bg(ink.opacity(0.85))
@@ -468,8 +469,9 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
                             )
                             .child(
                                 div().min_w_0().flex_1().child(
-                                    Label::new(text)
+                                    Label::new(server)
                                         .size(LabelSize::Small)
+                                        .truncate()
                                         .color(Color::Custom(ink)),
                                 ),
                             ),

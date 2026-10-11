@@ -120,6 +120,46 @@ pub struct CanvasFile {
     absolute_path: PathBuf,
 }
 
+#[derive(Default)]
+struct CanvasFiles(Vec<WeakEntity<CanvasFile>>);
+
+impl gpui::Global for CanvasFiles {}
+
+impl CanvasFile {
+    fn for_path(
+        project: &Entity<Project>,
+        path: ProjectPath,
+        absolute_path: PathBuf,
+        cx: &mut App,
+    ) -> Entity<Self> {
+        // Workspace deduplicates open tabs by the model entity, so repeated
+        // sidebar opens must share one model even while the view is loading.
+        cx.update_default_global(|files: &mut CanvasFiles, cx| {
+            files.0.retain(WeakEntity::is_upgradable);
+            for file in files.0.iter().filter_map(WeakEntity::upgrade) {
+                let model = file.read(cx);
+                if model.project.entity_id() == project.entity_id()
+                    && model.absolute_path == absolute_path
+                {
+                    return file;
+                }
+            }
+            let entry_id = project
+                .read(cx)
+                .entry_for_path(&path, cx)
+                .map(|entry| entry.id);
+            let file = cx.new(|_| Self {
+                project: project.downgrade(),
+                path,
+                entry_id,
+                absolute_path,
+            });
+            files.0.push(file.downgrade());
+            file
+        })
+    }
+}
+
 impl project::ProjectItem for CanvasFile {
     fn try_open(
         project: &Entity<Project>,
@@ -130,16 +170,12 @@ impl project::ProjectItem for CanvasFile {
             return None;
         }
         let absolute_path = project.read(cx).absolute_path(path, cx)?;
-        let item = Self {
-            project: project.downgrade(),
-            path: path.clone(),
+        Some(Task::ready(Ok(Self::for_path(
+            project,
+            path.clone(),
             absolute_path,
-            entry_id: project
-                .read(cx)
-                .entry_for_path(path, cx)
-                .map(|entry| entry.id),
-        };
-        Some(Task::ready(Ok(cx.new(|_| item))))
+            cx,
+        ))))
     }
 
     fn entry_id(&self, cx: &App) -> Option<ProjectEntryId> {
@@ -700,18 +736,7 @@ impl WhiteboardView {
         let file = project
             .read(cx)
             .find_project_path(&target.path, cx)
-            .map(|path| {
-                let entry_id = project
-                    .read(cx)
-                    .entry_for_path(&path, cx)
-                    .map(|entry| entry.id);
-                cx.new(|_| CanvasFile {
-                    project: project.downgrade(),
-                    path,
-                    entry_id,
-                    absolute_path: target.path.clone(),
-                })
-            });
+            .map(|path| CanvasFile::for_path(&project, path, target.path.clone(), cx));
         Self {
             this: cx.weak_entity(),
             workspace,
@@ -748,12 +773,7 @@ impl WhiteboardView {
                     file.absolute_path = path;
                 });
             } else {
-                self.file = Some(cx.new(|_| CanvasFile {
-                    project: self.project.downgrade(),
-                    path: project_path,
-                    entry_id,
-                    absolute_path: path,
-                }));
+                self.file = Some(CanvasFile::for_path(&self.project, project_path, path, cx));
             }
         } else {
             self.file = None;
@@ -841,6 +861,9 @@ impl Item for WhiteboardView {
         if let Some(file) = &self.file {
             visit(file.entity_id(), file.read(cx));
         }
+    }
+    fn buffer_kind(&self, _: &App) -> workspace::item::ItemBufferKind {
+        workspace::item::ItemBufferKind::Singleton
     }
     fn tab_icon(&self, _: &Window, _: &App) -> Option<Icon> {
         Some(Icon::new(IconName::BrainzWhiteboard))
@@ -1445,6 +1468,36 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    async fn repeated_sidebar_opens_share_the_canvas_model(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let settings = settings::SettingsStore::test(cx);
+            cx.set_global(settings);
+        });
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree("/canvas-test", json!({"Workflow.brainzboard":"{}"}))
+            .await;
+        let project = Project::test(fs, [Path::new("/canvas-test")], cx).await;
+        cx.update(|cx| {
+            let absolute_path = PathBuf::from("/canvas-test/Workflow.brainzboard");
+            let path = project
+                .read(cx)
+                .find_project_path(&absolute_path, cx)
+                .expect("project path");
+            let first = CanvasFile::for_path(&project, path.clone(), absolute_path.clone(), cx);
+            let second = CanvasFile::for_path(&project, path, absolute_path.clone(), cx);
+            assert_eq!(first.entity_id(), second.entity_id());
+            let moved = PathBuf::from("/canvas-test/Moved.brainzboard");
+            first.update(cx, |file, _| file.absolute_path = moved.clone());
+            let path = project
+                .read(cx)
+                .find_project_path(&moved, cx)
+                .expect("moved project path");
+            let reopened = CanvasFile::for_path(&project, path, moved, cx);
+            assert_eq!(first.entity_id(), reopened.entity_id());
+        });
+    }
 
     #[test]
     fn object_links_preserve_spaces_and_reject_invalid_coordinates() {
