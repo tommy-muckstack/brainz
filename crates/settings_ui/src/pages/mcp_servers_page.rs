@@ -1126,6 +1126,7 @@ fn render_form_actions(cx: &mut Context<SettingsWindow>) -> impl IntoElement {
         )
         .child(
             Button::new("mcp-form-save", "Save")
+                .start_icon(Icon::new(IconName::Save))
                 .style(ButtonStyle::Filled)
                 .on_click(cx.listener(|this, _, window, cx| {
                     save_mcp_server_form(this, window, cx);

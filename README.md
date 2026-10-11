@@ -104,9 +104,11 @@ Drop a local file (or choose Add file) to create a card opening the original
 in Brainz. PNG, JPEG, WebP and GIF images under 8 MB are embedded in the board
 and remain visible after reopening; larger images stay linked files.
 Add link accepts Brainz, My Man and web links. Copy object link
-returns to a selected object; Copy view link returns to the current area.
+returns to a selected object; Copy link returns to the current area.
 Use the menu beside the canvas name to create another canvas or move it to a
-folder. `.brainzboard` files appear in the sidebar with the canvas icon and open
+folder. Move to folder opens an in-app picker with the sidebar's folder icons and
+hierarchy. Type to find a nested folder, use the arrow keys to choose a result,
+and press Enter or Move here. `.brainzboard` files appear in the sidebar with the canvas icon and open
 in the canvas editor. Sidebar renames and folder moves update the open board's
 save location. New workspaces start with `Canvases/Untitled.brainzboard`; existing
 `.brainz/whiteboard.brainzboard` boards remain available. Boards save automatically

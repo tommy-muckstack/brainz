@@ -478,6 +478,7 @@ impl BoardStorage {
 }
 
 pub fn init(cx: &mut App) {
+    <crate::canvas_folder_picker::FolderSettings as settings::Settings>::register(cx);
     workspace::register_project_item::<WhiteboardView>(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenWhiteboard, window, cx| {
@@ -1397,19 +1398,59 @@ mod native {
             } else {
                 title.replace(['/', ':', '\\'], "-")
             };
-            let destination =
-                cx.prompt_for_new_path(&directory, Some(&format!("{filename}.brainzboard")));
             self.hide();
+            let destination: Task<Result<Option<PathBuf>>> = if new_canvas {
+                let destination =
+                    cx.prompt_for_new_path(&directory, Some(&format!("{filename}.brainzboard")));
+                cx.background_spawn(async move { Ok(destination.await??) })
+            } else {
+                let Some(workspace) = self.workspace.upgrade() else {
+                    self.send(
+                        json!({"type":"notice", "message":"Open your brain to choose a folder."}),
+                    );
+                    return;
+                };
+                let project = self.project.clone();
+                let current = self
+                    .target
+                    .path
+                    .parent()
+                    .unwrap_or(&directory)
+                    .to_path_buf();
+                let filename = format!("{filename}.brainzboard");
+                let picker_filename = filename.clone();
+                let (sender, receiver) = smol::channel::bounded(1);
+                workspace.update(cx, |workspace, cx| {
+                    workspace.toggle_modal(window, cx, |window, cx| {
+                        crate::canvas_folder_picker::CanvasFolderPicker::new(
+                            project,
+                            current,
+                            picker_filename,
+                            sender,
+                            window,
+                            cx,
+                        )
+                    });
+                });
+                cx.background_spawn(async move {
+                    Ok(receiver
+                        .recv()
+                        .await
+                        .ok()
+                        .map(|folder| folder.join(filename)))
+                })
+            };
             let storage = self.storage.clone();
             cx.spawn_in(window, async move |this, cx| {
                 let result: Result<Option<PathBuf>> = async {
-                    let Some(mut path) = destination.await?? else { return Ok(None); };
+                    let Some(mut path) = destination.await? else { return Ok(None); };
                     if path.extension().is_none_or(|extension| extension != "brainzboard") { path.set_extension("brainzboard"); }
                     let destination = path.clone();
                     cx.background_spawn(async move {
                         if new_canvas {
                             ensure!(!destination.exists(), "A canvas already exists here. Choose a different name.");
                         } else {
+                            ensure!(destination.parent().is_some_and(Path::is_dir), "This folder no longer exists. Choose another folder.");
                             storage.relocate(destination, false)?;
                         }
                         Ok::<(), anyhow::Error>(())
@@ -1426,7 +1467,10 @@ mod native {
                                 }).log_err();
                             });
                         }
-                        Ok(Some(path)) => this.did_relocate(path, cx),
+                        Ok(Some(path)) => {
+                            this.did_relocate(path, cx);
+                            this.send(json!({"type":"notice", "message":"Canvas moved"}));
+                        }
                         Ok(None) => {},
                         Err(error) => this.send(json!({"type":"notice", "message":format!("Could not file canvas: {error}")})),
                     }

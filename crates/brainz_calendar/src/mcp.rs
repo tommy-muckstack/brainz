@@ -1523,6 +1523,7 @@ impl McpView {
                     )
                     .child(
                         Button::new("brainz-mcp-myman-token-save", "Save")
+                            .start_icon(Icon::new(IconName::Save))
                             .style(ButtonStyle::Filled)
                             .label_size(LabelSize::Small)
                             .on_click(cx.listener(|this, _, _, cx| this.save_myman_token(cx))),

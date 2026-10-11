@@ -4,6 +4,7 @@
 pub mod brain_config;
 pub mod brain_match;
 pub mod brief;
+mod canvas_folder_picker;
 pub mod github_sync;
 mod insights;
 pub mod launcher;
