@@ -135,7 +135,7 @@ impl CanvasFile {
         // Workspace deduplicates open tabs by the model entity, so repeated
         // sidebar opens must share one model even while the view is loading.
         cx.update_default_global(|files: &mut CanvasFiles, cx| {
-            files.0.retain(WeakEntity::is_upgradable);
+            files.0.retain(|file| file.is_upgradable());
             for file in files.0.iter().filter_map(WeakEntity::upgrade) {
                 let model = file.read(cx);
                 if model.project.entity_id() == project.entity_id()
