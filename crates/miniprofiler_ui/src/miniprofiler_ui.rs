@@ -22,7 +22,7 @@ use workspace::{
     Workspace,
     ui::{
         ActiveTheme, Button, ButtonCommon, ButtonStyle, Checkbox, Clickable, ContextMenu, Divider,
-        DropdownMenu, ScrollAxes, ScrollableHandle as _, Scrollbars, ToggleState, Tooltip,
+        DropdownMenu, Icon, IconName, ScrollAxes, ScrollableHandle as _, Scrollbars, ToggleState, Tooltip,
         WithScrollbar, h_flex, v_flex,
     },
 };
