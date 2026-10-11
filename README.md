@@ -118,9 +118,7 @@ its card. The engine and integration source live in the
 
 Type **/** in chat and choose a canvas by name to reference it, alongside files.
 The picker opens the board, captures its latest state, and returns the context
-to the current draft without sending. **Use in chat** does the same from the canvas toolbar.
-
-**Use in chat** adds the canvas to the current Claude or Codex draft: an image
+to the current Claude or Codex draft without sending: an image
 plus a structured map of object IDs, text, positions, groups, file references,
 and connector endpoints and arrowheads. Review or add your question, then send
 using the chat's existing connection. No additional API key is required.
