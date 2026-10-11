@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repository=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+frontend="$repository/whiteboard/brainz"
+if [[ ! -f "$frontend/package-lock.json" ]]; then
+    git -C "$repository" submodule update --init whiteboard
+fi
+cd "$frontend"
+# Keep local rebuilds quick, while fresh checkouts use the exact committed lockfile.
+lock_hash=$(shasum -a 256 package-lock.json | cut -d ' ' -f 1)
+if [[ ! -f node_modules/.brainz-lock || "$(cat node_modules/.brainz-lock)" != "$lock_hash" ]]; then
+    npm ci --no-audit --no-fund
+    printf '%s' "$lock_hash" > node_modules/.brainz-lock
+fi
+npm run build

@@ -195,6 +195,7 @@ pub enum IconName {
     /// Brainz: MCP connectors tab button.
     BrainzMcp,
     BrainzTheme,
+    BrainzWhiteboard,
     /// Brainz: Open loops tab button (hourglass).
     BrainzLoops,
     /// Brainz: Brief tab button (sun).
@@ -346,6 +347,7 @@ impl IconName {
             Self::BrainzCalendar => return "icons/brainz/calendar.svg".into(),
             Self::BrainzMcp => return "icons/brainz/mcp.svg".into(),
             Self::BrainzTheme => return "icons/brainz/theme.svg".into(),
+            Self::BrainzWhiteboard => return "icons/brainz/whiteboard.svg".into(),
             Self::BrainzLoops => return "icons/brainz/loops.svg".into(),
             Self::BrainzBrief => return "icons/brainz/brief.svg".into(),
             Self::BrainzClaude => return "icons/brainz/claude.svg".into(),

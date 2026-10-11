@@ -1027,6 +1027,24 @@ fn handle_open_request(request: OpenRequest, app_state: Arc<AppState>, cx: &mut 
                 })
                 .detach_and_log_err(cx);
             }
+            OpenRequestKind::Whiteboard(target) => {
+                cx.spawn(async move |cx| {
+                    let multi_workspace =
+                        workspace::get_any_active_multi_workspace(app_state, cx.clone()).await?;
+                    multi_workspace.update(cx, |multi_workspace, window, cx| {
+                        multi_workspace
+                            .workspace()
+                            .clone()
+                            .update(cx, |workspace, cx| {
+                                brainz_calendar::whiteboard::WhiteboardView::open_target(
+                                    workspace, target, window, cx,
+                                );
+                            });
+                        window.activate_window();
+                    })
+                })
+                .detach_and_log_err(cx);
+            }
             OpenRequestKind::Extension { extension_id } => {
                 cx.spawn(async move |cx| {
                     let workspace =

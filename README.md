@@ -19,7 +19,8 @@ Restart uses the normal unsaved-work prompts; cancelling keeps the update availa
 
 **Build from source:** run `./script/brainz-local` on macOS to build and open
 `~/Applications/Brainz.app`. Source builds never auto-update.
-The first build requires Rust 1.98.1, Xcode, and CMake. The bundled UI font is
+The first build requires Rust 1.98.1, Xcode, CMake, and Node.js 20+. The build initializes the
+BlockSuite submodule and bundles the canvas with `script/brainz-whiteboard-build`. The bundled UI font is
 DM Sans (SIL Open Font License, in `assets/fonts/dm-sans/`). Gellix is a
 commercial font, so its files are excluded from Git; drop them into
 `assets/fonts/gellix/` and set `"ui_font_family": "Gellix"` in
@@ -73,7 +74,7 @@ Named links in chat replies also render as rounded, clickable pills, preserving
 their displayed titles and original file or web destinations.
 
 **Getting around.** The sidebar starts with one short list: Brief, Calendar,
-To-Do, Themes, Connectors, each with a name, the current one marked by an amber
+To-Do, Canvas, Themes, Connectors, each with a name, the current one marked by an amber
 bar that slides in. The file tree sits below it under a Notes heading and hides
 the plumbing (dotfiles, `brainz.toml`, the root folder itself). Lists arrive
 with a short fade-and-rise, later rows a beat after earlier ones; the newest
@@ -81,6 +82,23 @@ chat turns do the same. The accent colour is kept for what is alive or yours:
 your messages, the current place in the sidebar, the prep banner, the pills.
 Headings are plain text, body and meta copy share one scale, and every tab
 reads in the same centred column as the chat.
+
+**Canvas**, directly below To-Do, is an infinite BlockSuite whiteboard. Draw
+rounded boxes, sticky notes, text, freehand strokes and attached connectors.
+Use Pan or Space + drag to move around, pinch to zoom, and Fit to content to
+find everything. Capture lets you drag an area, pan beyond any edge while
+holding the mouse, and copy the result directly as a PNG. Escape cancels.
+Captures omit controls and support up to 8,192 pixels per side / 32 megapixels.
+
+Drop a local file (or choose Add file) to create a card opening the original
+in Brainz. Add link accepts Brainz, My Man and web links. Copy object link
+returns to a selected object; Copy view link returns to the current area.
+Boards save automatically and atomically to `.brainz/whiteboard.brainzboard`
+in the workspace (or Brainz's data folder when no workspace is open). Files
+and deep links refer to paths on your Mac; they do not upload the board or
+make local files publicly accessible. Moving a linked file requires replacing
+its card. The engine and integration source live in the
+[Brainz BlockSuite fork](https://github.com/tommy-muckstack/brainz-blocksuite/tree/brainz-whiteboard/brainz).
 
 **Brief** is the first item in the sidebar.
 At the top is the day's read: the narrative block of the brain's brief file
@@ -235,7 +253,7 @@ never hand Claude a refresh token and the sign-in lapses daily. Once per launch
 Brainz checks each Claude HTTP connector without an `oauth` block and, when the
 authorization server advertises `offline_access`, pins `oauth.scopes` on the entry
 so the next sign-in sticks. Hosted connectors
-Brainz knows how to set up (Granola, Notion, Vercel, Wispr Flow, and the two My Man
+Brainz knows how to set up (Granola, Notion, Vercel, Railway, Wispr Flow, and the two My Man
 companions bundled in `~/MyManBrain/tools`: **My Man** for searching meetings,
 notes, screenshots, and dictations, **My Man actions** for taking screenshots,
 starting recordings, and saving notes through the running app) appear under

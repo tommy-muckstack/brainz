@@ -1,5 +1,5 @@
 //! Brainz: the sidebar navigation. One short list at the top of the file
-//! tree (Brief, Calendar, To-Do, Themes, Connectors) replaces the row of
+//! tree (Brief, Calendar, To-Do, Canvas, Themes, Connectors) replaces the row of
 //! status-bar icons, so every place in the app is reachable from one spot
 //! and carries a name.
 
@@ -36,6 +36,16 @@ const ITEMS: &[NavItem] = &[
         icon: IconName::BrainzCheckboxChecked,
         action: || Box::new(crate::todo::OpenTodo),
         is_active: |item, _| item.downcast::<crate::todo::TodoView>().is_some(),
+    },
+    NavItem {
+        key: "whiteboard",
+        label: "Canvas",
+        icon: IconName::BrainzWhiteboard,
+        action: || Box::new(crate::whiteboard::OpenWhiteboard),
+        is_active: |item, _| {
+            item.downcast::<crate::whiteboard::WhiteboardView>()
+                .is_some()
+        },
     },
     NavItem {
         key: "themes",

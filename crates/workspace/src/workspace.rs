@@ -8518,7 +8518,7 @@ impl Workspace {
         div
     }
 
-    pub fn has_active_modal(&self, _: &mut Window, cx: &mut App) -> bool {
+    pub fn has_active_modal(&self, _: &mut Window, cx: &App) -> bool {
         self.modal_layer.read(cx).has_active_modal()
     }
 

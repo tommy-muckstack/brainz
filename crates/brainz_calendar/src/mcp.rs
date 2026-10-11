@@ -817,6 +817,8 @@ fn logo_for(name: &str) -> Option<&'static str> {
         Some("icons/brainz/logos/notion.png")
     } else if lower.contains("vercel") {
         Some("icons/brainz/logos/vercel.png")
+    } else if lower.contains("railway") {
+        Some("icons/brainz/logos/railway.png")
     } else if lower.contains("wispr") {
         Some("icons/brainz/logos/wisprflow.png")
     } else if lower.contains("myman") || lower.contains("my-man") || lower.contains("my_man") {
@@ -873,6 +875,14 @@ pub const HOSTED_CONNECTORS: &[HostedConnector] = &[
             url: "https://mcp.vercel.com",
         },
         blurb: "Projects, deployments, and logs on Vercel",
+    },
+    HostedConnector {
+        name: "railway",
+        label: "Railway",
+        transport: HostedTransport::Http {
+            url: "https://mcp.railway.com",
+        },
+        blurb: "Projects, services, deployments, and logs on Railway",
     },
     HostedConnector {
         name: "wisprflow",

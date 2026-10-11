@@ -1,0 +1,3 @@
+[submodule "whiteboard"]
+	path = whiteboard
+	url = https://github.com/tommy-muckstack/brainz-blocksuite.git

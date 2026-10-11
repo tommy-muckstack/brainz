@@ -13,6 +13,7 @@ path = "src/brainz_calendar.rs"
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
 brainz_ai.workspace = true
 chrono.workspace = true
 gpui.workspace = true
@@ -25,6 +26,7 @@ paths.workspace = true
 toml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 schemars.workspace = true
 util.workspace = true
 url.workspace = true
@@ -34,6 +36,9 @@ collections.workspace = true
 project.workspace = true
 ui.workspace = true
 workspace.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wry = { version = "=0.57.0", default-features = false, features = ["os-webview"] }
 
 [dev-dependencies]
 db = { workspace = true, features = ["test-support"] }

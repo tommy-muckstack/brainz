@@ -19,6 +19,8 @@ if [[ "${1:-}" != "--no-build" ]]; then
     "${HOME}/.cargo/bin/cargo" +1.98.1 build --locked -p zed -p cli --bin brainz --bin cli --features util/debug-embed,gpui_platform/runtime_shaders
 fi
 
+script/brainz-whiteboard-build
+
 application="${BRAINZ_APP_DIR:-${HOME}/Applications/Brainz.app}"
 python3 - "$repository" "$application" <<'PY'
 from pathlib import Path
@@ -43,6 +45,11 @@ themes.mkdir(parents=True, exist_ok=True)
 if not (themes / 'brainz.json').exists():
     shutil.copy2(repository / 'assets/themes/brainz/brainz.json', themes / 'brainz.json')
 shutil.copytree(repository / 'assets/brainz/shell', resources / 'shell', dirs_exist_ok=True)
+# Recreate hashed web assets so an older build cannot leave stale scripts behind.
+whiteboard = resources / 'whiteboard'
+if whiteboard.exists():
+    shutil.rmtree(whiteboard)
+shutil.copytree(repository / 'whiteboard/brainz/dist', whiteboard)
 # Replace the inode so a running Brainz process can keep its existing executable.
 import os
 staged_binary = executables / 'brainz.next'

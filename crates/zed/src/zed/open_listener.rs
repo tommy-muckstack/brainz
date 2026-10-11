@@ -54,6 +54,7 @@ pub enum OpenRequestKind {
         ),
     ),
     FocusApp,
+    Whiteboard(brainz_calendar::whiteboard::BoardTarget),
     Extension {
         extension_id: String,
     },
@@ -87,6 +88,7 @@ impl std::fmt::Debug for OpenRequestKind {
         match self {
             Self::CliConnection(_) => write!(f, "CliConnection(..)"),
             Self::FocusApp => write!(f, "FocusApp"),
+            Self::Whiteboard(target) => f.debug_tuple("Whiteboard").field(target).finish(),
             Self::Extension { extension_id } => f
                 .debug_struct("Extension")
                 .field("extension_id", extension_id)
@@ -155,7 +157,13 @@ impl OpenRequest {
         }
 
         for url in request.urls {
-            if let Some(server_name) = url.strip_prefix("zed-cli://") {
+            if url.starts_with("brainz://whiteboard") {
+                this.kind = Some(OpenRequestKind::Whiteboard(
+                    brainz_calendar::whiteboard::parse_link(&url)?,
+                ));
+            } else if let Some(file) = url.strip_prefix("brainz://file") {
+                this.parse_file_path(file)
+            } else if let Some(server_name) = url.strip_prefix("zed-cli://") {
                 this.kind = Some(OpenRequestKind::CliConnection(connect_to_cli(server_name)?));
             } else if let Some(action_index) = url.strip_prefix("zed-dock-action://") {
                 this.kind = Some(OpenRequestKind::DockMenuAction {

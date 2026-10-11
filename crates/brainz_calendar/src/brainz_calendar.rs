@@ -20,6 +20,7 @@ pub mod status_decay;
 pub mod themes;
 pub mod themes_signals;
 pub mod todo;
+pub mod whiteboard;
 
 use std::{path::PathBuf, time::Duration};
 
@@ -57,6 +58,7 @@ pub fn init(cx: &mut App) {
     brief::init(cx);
     status_decay::init(cx);
     pdf::init(cx);
+    whiteboard::init(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenCalendar, window, cx| {
             CalendarView::open(workspace, window, cx);
