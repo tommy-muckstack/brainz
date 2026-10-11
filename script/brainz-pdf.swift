@@ -57,8 +57,12 @@ for index in 1...max(count, 1) where index <= count {
     context.fill(CGRect(x: 0, y: 0, width: width, height: height))
     context.interpolationQuality = .high
     context.saveGState()
+    // getDrawingTransform can center without upscaling. Apply the raster
+    // scale explicitly, then normalize the crop origin and page rotation in
+    // PDF points so receipts fill their image instead of appearing tiny.
+    context.scaleBy(x: scale, y: scale)
     context.concatenate(page.getDrawingTransform(
-        .cropBox, rect: CGRect(x: 0, y: 0, width: width, height: height), rotate: 0, preserveAspectRatio: true))
+        .cropBox, rect: CGRect(x: 0, y: 0, width: pageWidth, height: pageHeight), rotate: 0, preserveAspectRatio: true))
     context.drawPDFPage(page)
     context.restoreGState()
     guard let image = context.makeImage() else { continue }

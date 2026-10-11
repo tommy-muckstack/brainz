@@ -2115,7 +2115,9 @@ impl MessageEditor {
             let image_preview = image_preview_task_for_mention(&mention);
             // Brainz: a bare path to a Markdown note in an older message gets
             // the note's heading as its pill label, as a fresh paste does.
+            let canvas_context = is_canvas_context_uri(&mention_uri);
             let crease_label: SharedString = match (&mention, &mention_uri) {
+                _ if canvas_context => "Canvas".into(),
                 (Mention::Link, MentionUri::File { abs_path }) => {
                     crate::google_doc_link::local_file_label(abs_path).into()
                 }
@@ -2125,7 +2127,11 @@ impl MessageEditor {
                 snapshot.anchor_to_buffer_anchor(anchor).unwrap().0,
                 range.end - range.start,
                 crease_label,
-                mention_uri.icon_path(cx),
+                if canvas_context {
+                    IconName::BrainzWhiteboard.path().into()
+                } else {
+                    mention_uri.icon_path(cx)
+                },
                 mention_uri.tooltip_text(),
                 Some(mention_uri.clone()),
                 Some(self.workspace.clone()),
@@ -2931,6 +2937,10 @@ fn image_preview_task_for_mention(
     )
 }
 
+fn is_canvas_context_uri(uri: &MentionUri) -> bool {
+    matches!(uri, MentionUri::File { abs_path } if abs_path.file_name().is_some_and(|name| name.to_string_lossy().ends_with(".canvas.json")))
+}
+
 fn mention_to_content_block(
     uri: &MentionUri,
     mention: Option<&Mention>,
@@ -2943,6 +2953,11 @@ fn mention_to_content_block(
             tracked_buffers: mention_tracked_buffers,
         }) => {
             tracked_buffers.extend(mention_tracked_buffers.iter().cloned());
+            if is_canvas_context_uri(uri) && !supports_embedded_context {
+                // Subscription agents that do not advertise embedded resources
+                // still need the diagram's relationships, not just a local URI.
+                return acp_v1::ContentBlock::Text(acp_v1::TextContent::new(content.clone()));
+            }
             if supports_embedded_context {
                 acp_v1::ContentBlock::Resource(acp_v1::EmbeddedResource::new(
                     acp_v1::EmbeddedResourceResource::TextResourceContents(

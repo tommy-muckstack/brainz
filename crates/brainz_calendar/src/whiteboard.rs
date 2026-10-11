@@ -24,6 +24,8 @@ actions!(brainz_whiteboard, [OpenWhiteboard]);
 pub struct AttachCanvasToChat {
     pub text: String,
     pub png: Option<String>,
+    #[serde(default)]
+    pub context_uri: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Debug, Deserialize, schemars::JsonSchema, gpui::Action)]
@@ -971,11 +973,12 @@ mod native {
                         scene_path.display(),
                         self.target.path.display()
                     );
+                    let context_uri = url::Url::from_file_path(&scene_path).ok().map(|url| url.to_string());
                     self.hide();
                     let destination = self.chat_destination.take().unwrap_or_else(|| window.window_handle());
                     cx.defer(move |cx| {
                         destination.update(cx, |_, window, cx| {
-                            window.dispatch_action(Box::new(AttachCanvasToChat { text, png }), cx);
+                            window.dispatch_action(Box::new(AttachCanvasToChat { text, png, context_uri }), cx);
                         }).log_err();
                     });
                 }

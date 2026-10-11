@@ -4670,9 +4670,16 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mut blocks = vec![acp::ContentBlock::Text(acp::TextContent::new(
-            action.text.clone(),
-        ))];
+        let context = if let Some(uri) = &action.context_uri {
+            acp::ContentBlock::Resource(acp::EmbeddedResource::new(
+                acp::EmbeddedResourceResource::TextResourceContents(
+                    acp::TextResourceContents::new(action.text.clone(), uri.clone()),
+                ),
+            ))
+        } else {
+            acp::ContentBlock::Text(acp::TextContent::new(action.text.clone()))
+        };
+        let mut blocks = vec![context];
         if let Some(png) = &action.png {
             blocks.push(acp::ContentBlock::Image(acp::ImageContent::new(
                 png.clone(),
@@ -9195,6 +9202,7 @@ mod tests {
         cx.dispatch_action(brainz_calendar::whiteboard::AttachCanvasToChat {
             text: "Canvas: Research -> Launch".into(),
             png: Some(png.into()),
+            context_uri: Some("file:///project/Launch.canvas.json".into()),
         });
         cx.run_until_parked();
         assert_eq!(active_thread_id(&panel, &cx), thread_id);
@@ -9203,12 +9211,25 @@ mod tests {
             entries_before,
             "attaching context must not send a prompt"
         );
+        let draft = message_editor.read_with(&cx, |editor, cx| editor.text(cx));
+        assert!(draft.starts_with("How can I improve this flow?"));
+        assert!(draft.contains("Launch.canvas.json"));
+        assert!(
+            !draft.contains("Canvas: Research -> Launch"),
+            "the diagram context belongs in a compact attachment, not the visible draft"
+        );
         let blocks =
             message_editor.read_with(&cx, |editor, cx| editor.draft_content_blocks_snapshot(cx));
         let text = blocks
             .iter()
             .filter_map(|block| match block {
                 acp::ContentBlock::Text(text) => Some(text.text.as_str()),
+                acp::ContentBlock::Resource(resource) => match &resource.resource {
+                    acp::EmbeddedResourceResource::TextResourceContents(text) => {
+                        Some(text.text.as_str())
+                    }
+                    _ => None,
+                },
                 _ => None,
             })
             .collect::<String>();

@@ -278,6 +278,11 @@ impl MentionSet {
             compute_disambiguated_labels(self.mentions.iter().map(|(id, (uri, _))| (*id, uri)));
 
         for (crease_id, new_label) in labels {
+            let new_label = if let Some(title) = new_label.strip_suffix(".canvas.json") {
+                format!("{title} · Canvas").into()
+            } else {
+                new_label
+            };
             if let Some(entity) = self.crease_entities.get(&crease_id) {
                 entity.update(cx, |loading_ctx, cx| {
                     if loading_ctx.label != new_label {

@@ -117,6 +117,8 @@ fn cache_dir(pdf: &Path) -> Result<PathBuf> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     pdf.hash(&mut hasher);
     PAGE_RENDER_WIDTH.hash(&mut hasher);
+    // Invalidate images rendered before the explicit PDF upscaling fix.
+    "pdf-raster-v2".hash(&mut hasher);
     metadata.len().hash(&mut hasher);
     if let Ok(modified) = metadata.modified()
         && let Ok(since) = modified.duration_since(std::time::UNIX_EPOCH)
