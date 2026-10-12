@@ -128,3 +128,6 @@ This file records implementation and validation; an unchecked item is not shippe
   includes staged edits, one-step undo/redo, rollback, screenshots, external
   merge/recovery, styling conflicts, frames, and grouping alongside the existing
   interaction suite.
+- Persistence follow-up: local viewport storage, zero document writes while
+  panning, one-time font migration, and live assistant reads with a labeled
+  saved-context fallback. The format-v2 delta log and external assets remain open.

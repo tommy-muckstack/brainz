@@ -60,6 +60,11 @@ units of padding on every side. Screenshot requests require the canvas to be
 open and time out after five seconds. Temporary images are removed after being
 read; the request cache is excluded from Git.
 
+Reads first request the open canvas's live context, including its current
+viewport and selection. If it does not respond within 700 ms, reads fall back to
+the last saved context. The response identifies this as `freshness: "live"` or
+`freshness: "saved"`.
+
 The readable context includes geometry, text, image asset references, groups,
 frames, object versions, selection, viewport, offscreen summaries, and explicit
 source/target endpoints with arrow markers. Spatial proximity does not imply a
@@ -143,6 +148,11 @@ saved beside each board as `.canvas.json`. Requests, results, and a bounded
 change log live under `.brainz/boards/<id>/`. External document updates merge
 through Yjs before autosave. If a file cannot be merged, Brainz preserves it and
 saves local work to a neighboring `*-recovered-*.brainzboard` copy.
+
+Pan and zoom positions are stored in Brainz's local application data, in
+`whiteboards/state.json`, keyed by the stable board ID. Panning does not rewrite
+the board or its readable context. Legacy viewport values are imported when
+opening older files. The canvas font migration runs once per document.
 
 This preview implements JSON batches, not streamed NDJSON. The built-in prompt
 composer, Mermaid and mind-map operations, image creation operations, comments,
