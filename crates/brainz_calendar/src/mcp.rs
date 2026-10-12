@@ -4,12 +4,14 @@
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use anyhow::{Context as _, Result, anyhow};
+use feature_flags::{BrainzCanvasAgentApi, FeatureFlagAppExt as _};
 use gpui::{
     App, Entity, EventEmitter, FocusHandle, Focusable, Global, Subscription, Task, WeakEntity,
     Window, actions,
 };
 use terminal_view::terminal_panel::TerminalPanel;
 use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
+use util::ResultExt as _;
 use workspace::{Item, Workspace, dock::DockPosition};
 
 /// Which CLI owns a connector's sign-in.
@@ -1296,11 +1298,20 @@ fn claude_to_codex(config: &serde_json::Value) -> toml::Value {
 }
 
 fn connect_claude(name: &str, config: serde_json::Value) -> anyhow::Result<()> {
-    let path = claude_config_path();
-    let mut json = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
+    connect_claude_at(&claude_config_path(), name, config)
+}
+
+fn connect_claude_at(path: &std::path::Path, name: &str, config: serde_json::Value) -> Result<()> {
+    let mut json = match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str::<serde_json::Value>(&text).with_context(|| {
+            format!(
+                "{} contains invalid JSON; it has not been changed",
+                path.display()
+            )
+        })?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(error) => return Err(error.into()),
+    };
     let object = json
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("{} is not a JSON object", path.display()))?;
@@ -1314,16 +1325,27 @@ fn connect_claude(name: &str, config: serde_json::Value) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, serde_json::to_string_pretty(&json)?)?;
-    Ok(())
+    brainz_canvas::atomic_json(path, &json)
 }
 
 fn connect_codex(name: &str, config: toml::Value) -> anyhow::Result<()> {
-    let path = codex_config_path();
-    let mut value = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| text.parse::<toml::Value>().ok())
-        .unwrap_or_else(|| toml::Value::Table(Default::default()));
+    connect_codex_at(&codex_config_path(), name, config)
+}
+
+fn connect_codex_at(path: &std::path::Path, name: &str, config: toml::Value) -> Result<()> {
+    use std::io::Write as _;
+    let mut value = match std::fs::read_to_string(path) {
+        Ok(text) => text.parse::<toml::Value>().with_context(|| {
+            format!(
+                "{} contains invalid TOML; it has not been changed",
+                path.display()
+            )
+        })?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            toml::Value::Table(Default::default())
+        }
+        Err(error) => return Err(error.into()),
+    };
     let table = value
         .as_table_mut()
         .ok_or_else(|| anyhow::anyhow!("{} is not a TOML table", path.display()))?;
@@ -1338,7 +1360,11 @@ fn connect_codex(name: &str, config: toml::Value) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&path, toml::to_string_pretty(&value)?)?;
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(path.parent().context("Config has no containing folder")?)?;
+    temporary.write_all(toml::to_string_pretty(&value)?.as_bytes())?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
     Ok(())
 }
 
@@ -1366,6 +1392,45 @@ enum Client {
 }
 
 impl McpView {
+    fn connect_canvas(&mut self, client: McpClient, cx: &mut Context<Self>) {
+        let Some(root) = self
+            .workspace
+            .upgrade()
+            .and_then(|workspace| workspace.read(cx).root_paths(cx).first().cloned())
+        else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move {
+                let root = root.canonicalize()?;
+                let executable = std::env::current_exe()?.parent().context("Brainz has no application folder")?.join("cli");
+                anyhow::ensure!(executable.is_file(), "Install the packaged Brainz app to connect its canvas helper");
+                let suffix = brainz_canvas::legacy_board_id(&root);
+                let name = format!("brainz-canvas-{}", suffix.chars().skip(7).take(12).collect::<String>());
+                let config = serde_json::json!({"type":"stdio","command":executable,"args":["canvas","--workspace",root,"mcp"]});
+                match client {
+                    McpClient::Claude => connect_claude(&name, config),
+                    McpClient::Codex => connect_codex(&name, claude_to_codex(&config)),
+                }
+            }).await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(()) => { this.error = None; this.refresh(cx); }
+                    Err(error) => { this.error = Some(format!("Couldn't connect Canvas: {error:#}")); cx.notify(); }
+                }
+            }).log_err();
+        }).detach();
+    }
+
+    fn render_canvas_connector(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex().w_full().gap_2().p_3().rounded_lg().border_1().border_color(cx.theme().colors().border)
+            .child(h_flex().gap_2().child(Icon::new(IconName::BrainzWhiteboard)).child(Label::new("Brainz Canvas").weight(gpui::FontWeight::SEMIBOLD)))
+            .child(Label::new("Let your assistant read this brain’s canvases and propose changes for you to review. Start a new chat after connecting.").size(LabelSize::Small).color(Color::Muted))
+            .child(h_flex().gap_2()
+                .child(Button::new("canvas-connect-claude", "Connect Claude").on_click(cx.listener(|this, _, _, cx| this.connect_canvas(McpClient::Claude, cx))))
+                .child(Button::new("canvas-connect-codex", "Connect Codex").on_click(cx.listener(|this, _, _, cx| this.connect_canvas(McpClient::Codex, cx)))))
+    }
+
     pub fn open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
         let existing = workspace.items_of_type::<McpView>(cx).next();
         if let Some(existing) = existing {
@@ -2031,6 +2096,14 @@ impl Render for McpView {
             ]
         } else {
             let mut rows: Vec<gpui::AnyElement> = Vec::new();
+            if cx.has_flag::<BrainzCanvasAgentApi>()
+                && self
+                    .workspace
+                    .upgrade()
+                    .is_some_and(|workspace| !workspace.read(cx).root_paths(cx).is_empty())
+            {
+                rows.push(self.render_canvas_connector(cx).into_any_element());
+            }
             if let Some(error) = &self.error {
                 rows.push(
                     Label::new(error.clone())
@@ -2108,6 +2181,39 @@ impl Render for McpView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connector_install_preserves_other_settings_and_refuses_invalid_config_files() {
+        let directory = tempfile::tempdir().expect("config directory");
+        let claude = directory.path().join("claude.json");
+        std::fs::write(
+            &claude,
+            r#"{"theme":"dark","mcpServers":{"existing":{"command":"safe"}}}"#,
+        )
+        .expect("fixture");
+        connect_claude_at(
+            &claude,
+            "canvas",
+            serde_json::json!({"type":"stdio","command":"brainz"}),
+        )
+        .expect("install");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&claude).expect("read")).expect("parse");
+        assert_eq!(saved["theme"], "dark");
+        assert_eq!(saved["mcpServers"]["existing"]["command"], "safe");
+        std::fs::write(&claude, b"{interrupted").expect("invalid JSON");
+        assert!(connect_claude_at(&claude, "canvas", serde_json::json!({})).is_err());
+        assert_eq!(std::fs::read(&claude).expect("preserved"), b"{interrupted");
+        let codex = directory.path().join("config.toml");
+        std::fs::write(&codex, b"model = [invalid").expect("invalid TOML");
+        assert!(
+            connect_codex_at(&codex, "canvas", toml::Value::Table(Default::default())).is_err()
+        );
+        assert_eq!(
+            std::fs::read(&codex).expect("preserved"),
+            b"model = [invalid"
+        );
+    }
 
     #[test]
     fn offers_granola_from_install_and_connection_replies() {

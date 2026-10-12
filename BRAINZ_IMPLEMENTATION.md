@@ -112,8 +112,19 @@ This file records implementation and validation; an unchecked item is not shippe
 - Local foundation checks: 22 updater tests (including wrong-signature rejection),
   three update notification tests, 22 client tests, nine flag tests, and three
   release-tool tests pass. The published 0.1.38 app and DMG pass the new smoke check.
-- First remote CI run: macOS passed; Linux test discovery, workflow lint, and
-  canvas rasterization differences are being corrected. Repository protection,
+- Remote CI: canvas, Linux, and workflow lint pass. macOS moved to Xcode 16.4
+  after Xcode 15.4 failed to compile the upstream WebRTC dependency; rerun pending.
+  Repository protection,
   inherited-workflow disabling, release secrets, and a clean signing rehearsal
   remain owner setup and validation tasks.
-- Canvas regression suite: 17 unit tests and 14 browser tests pass locally.
+- Canvas agent preview: local CLI/MCP list/read/apply/status/events/screenshot,
+  per-brain connector setup, schema-backed batches, staged Apply/Discard,
+  one-step undo, conflict checks, external Yjs merge, and durable recovery copies.
+  The full Canvas P0-1 epic remains open for the remaining operation vocabulary
+  and streamed protocol. These changes have not shipped in an installer yet.
+- CLI list/read/status/apply and stdio MCP smoke passed using a temporary brain.
+- Canvas planner and existing helpers: 26 unit tests pass. Native canvas/Brainz
+  tests: 83 passed, one existing ignored test. Clippy passes. Browser coverage
+  includes staged edits, one-step undo/redo, rollback, screenshots, external
+  merge/recovery, styling conflicts, frames, and grouping alongside the existing
+  interaction suite.
