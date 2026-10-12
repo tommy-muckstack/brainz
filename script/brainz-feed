@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+import argparse
+from pathlib import Path
+import sys
+from brainz_release import ROOT, feed, git, release_notes, version, write_json
+
+parser = argparse.ArgumentParser(description="Extract Brainz release notes or write a verified update feed.")
+parser.add_argument("--notes", metavar="VERSION")
+parser.add_argument("--artifact", type=Path)
+parser.add_argument("--url")
+parser.add_argument("--version", default=None)
+parser.add_argument("--commit")
+parser.add_argument("--output", type=Path)
+parser.add_argument("--rollout", type=int, default=100)
+parser.add_argument("--paused", action="store_true")
+arguments = parser.parse_args()
+try:
+    release = arguments.notes or arguments.version or version()
+    notes = release_notes((ROOT / "CHANGELOG.md").read_text(), release)
+    if arguments.notes:
+        print(notes, end="")
+    else:
+        if not all((arguments.artifact, arguments.url, arguments.output)):
+            parser.error("--artifact, --url, and --output are required when writing a feed")
+        result = feed(arguments.artifact, release, arguments.url, arguments.commit or git("rev-parse", "HEAD"), notes, arguments.rollout, arguments.paused)
+        write_json(arguments.output, result)
+except (ValueError, OSError) as error:
+    sys.exit(str(error))
