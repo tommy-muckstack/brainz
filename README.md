@@ -4,6 +4,7 @@
 # Brainz
 
 Canvas assistant development: [local CLI, MCP, and reviewable proposals](docs/brainz/CANVAS_AGENTS.md).
+Canvas persistence development: [incremental saves and external images](docs/brainz/CANVAS_STORAGE.md).
 
 A personal desktop workspace for a Markdown notes repo (your "brain"), built from Zed. Files on the left,
 Markdown reading in the center, and a terminal below, with Gellix typography and

@@ -11,6 +11,7 @@ use std::{
 pub mod mcp;
 pub mod requests;
 pub mod state;
+pub mod storage;
 
 pub const MAX_BATCH_BYTES: u64 = 2 * 1024 * 1024;
 pub const MAX_BOARD_BYTES: u64 = 24 * 1024 * 1024;
@@ -444,6 +445,16 @@ pub fn read_context(root: &Path, board: &Board, scope: &str) -> Result<Value> {
 }
 
 fn read_saved_context(root: &Path, board: &Board) -> Result<Value> {
+    let incremental = scoped_path(
+        root,
+        &PathBuf::from(".brainz/boards")
+            .join(&board.id)
+            .join("canvas.json"),
+        true,
+    )?;
+    if incremental.is_file() && read_json(&board.path, MAX_BOARD_BYTES)?["version"] == 2 {
+        return read_json(&incremental, MAX_BOARD_BYTES);
+    }
     let path = scoped_path(root, &board.path.with_extension("canvas.json"), true)?;
     Ok(if path.exists() {
         read_json(&path, MAX_BOARD_BYTES)?

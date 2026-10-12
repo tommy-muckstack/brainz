@@ -18,6 +18,7 @@
 - Merge external canvas changes and preserve a recovery copy when a file cannot be merged.
 - Save pan and zoom positions locally without rewriting canvas files or adding Git changes.
 - Read the live canvas selection and viewport through the assistant tools, with an explicit saved-context fallback for closed canvases.
+- Preview incremental canvas saves and separate image storage, with migration backups, recoverable image deletion, and protection against compacting unseen external edits.
 
 ## 0.1.38 (2026-10-11)
 
