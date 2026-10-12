@@ -115,6 +115,37 @@ fn write_json_atomically(path: &Path, value: &Value) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn recognize_canvas_image(data: &str, mime: &str) -> Result<String> {
+    static OCR: Mutex<()> = Mutex::new(());
+    let _guard = OCR
+        .lock()
+        .map_err(|_| anyhow!("Canvas text recognition is unavailable"))?;
+    let extension = match mime {
+        "image/png" => ".png",
+        "image/jpeg" => ".jpg",
+        "image/webp" => ".webp",
+        "image/gif" => ".gif",
+        _ => anyhow::bail!("Unsupported canvas image type"),
+    };
+    ensure!(
+        data.len() <= brainz_canvas::storage::MAX_ASSET_BYTES.div_ceil(3) * 4,
+        "Canvas image is too large"
+    );
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
+    ensure!(
+        bytes.len() <= brainz_canvas::storage::MAX_ASSET_BYTES,
+        "Canvas image is too large"
+    );
+    let mut image = tempfile::Builder::new()
+        .prefix("brainz-canvas-ocr-")
+        .suffix(extension)
+        .tempfile()?;
+    image.write_all(&bytes)?;
+    let text = crate::ocr::recognize_text(image.path())?;
+    Ok(text.chars().take(100_000).collect())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct BoardTarget {
     pub path: PathBuf,
@@ -1365,6 +1396,14 @@ mod native {
         SaveContext {
             context: Value,
         },
+        RecognizeImage {
+            #[serde(rename = "objectId")]
+            object_id: String,
+            #[serde(rename = "sourceId")]
+            source_id: String,
+            data: String,
+            mime: String,
+        },
         ExternalMerged {
             stamp: String,
         },
@@ -1569,6 +1608,15 @@ mod native {
                         Message::SaveContext { context } => {
                             let storage = storage.clone();
                             executor.spawn(async move { storage.save_context(context).log_err(); }).detach(); return;
+                        }
+                        Message::RecognizeImage { object_id, source_id, data, mime } => {
+                            let sender = ipc_sender.clone();
+                            executor.spawn(async move {
+                                match recognize_canvas_image(&data, &mime) {
+                                    Ok(text) => { sender.send(NativeEvent::StorageReply(json!({"type":"imageText","objectId":object_id,"sourceId":source_id,"text":text}))).await.log_err(); }
+                                    Err(error) => log::debug!("Canvas image text recognition failed: {error}"),
+                                }
+                            }).detach(); return;
                         }
                         Message::ExternalMerged { stamp } => {
                             let storage = storage.clone(); let sender = ipc_sender.clone();
@@ -1871,6 +1919,7 @@ mod native {
                     | Message::CompactStorage { .. }
                     | Message::PutAsset { .. }
                     | Message::SaveContext { .. }
+                    | Message::RecognizeImage { .. }
                     | Message::ExternalMerged { .. },
                 ) => {}
             }

@@ -137,3 +137,10 @@ This file records implementation and validation; an unchecked item is not shippe
   and reopening without redundant saves. Worker serialization, the incremental
   scene cache, thumbnails, and the native large-board open-time benchmark remain
   open, so the full P0-3 epic is not complete.
+- Drawing tools follow-up: keyboard shortcuts, repeat-tool lock, grouped command
+  search, immediate text entry, sticky and mind-map keyboard navigation, laser,
+  image paste, and local macOS OCR. The native OCR helper is separate from the
+  optional AI providers. Full P0-4 remains open for contextual styling,
+  quick-create, and connector polish.
+- Drawing validation: 34 browser checks, 29 unit checks, 81 native checks (one
+  existing ignored test), the production web build, and native Clippy pass.
