@@ -1,18 +1,23 @@
 ## Summary
 
-What problem does this solve, how, and why does this change matter?
-Use "Closes #123" for each issue resolved.
-Include artifacts produced when testing: before/after screenshots, GIFs, videos, benchmarks.
+Describe the problem and the resulting behavior.
+
+Changelog: <!-- Entry under Unreleased, or explain why no user-facing entry is needed. -->
+
+Flag: <!-- Feature flag, or none. -->
+
+## Screenshots
+
+<!-- Before/after screenshots or a short recording for UI changes. -->
 
 ## Testing
 
-Manually test your changes; report results, mention platforms if relevant.
-How can reviewers test this easily? Include setup and steps.
+List completed checks and any remaining limitations. Include steps to reproduce the changed flow.
 
 ## Self-review
 
 - [ ] I've reviewed my diff for quality, security, reliability, and performance.
-- [ ] UI changes follow the [checklist](https://zed.dev/docs/development/ui-checklist).
+- [ ] UI changes use Brainz's shared icons, typography, colors, and native controls.
 - [ ] Tests cover the new or changed behavior.
 
 Release Notes:

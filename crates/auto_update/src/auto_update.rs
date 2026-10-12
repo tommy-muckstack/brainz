@@ -1488,7 +1488,7 @@ mod tests {
                 let release_available = release_available.load(atomic::Ordering::Relaxed);
                 let dmg_rx = dmg_rx.clone();
                 async move {
-                if req.uri().path() == "/releases/stable/latest/asset" {
+                if req.uri().path() == "/brainz-latest.json" {
                     if release_available {
                         return Ok(Response::builder().status(200).body(
                             r#"{"version":"0.100.1","url":"https://test.example/new-download"}"#.into()
@@ -1524,14 +1524,10 @@ mod tests {
         cx.background_executor.advance_clock(POLL_INTERVAL);
         cx.background_executor.run_until_parked();
 
-        loop {
-            cx.background_executor.timer(Duration::from_millis(0)).await;
-            cx.run_until_parked();
-            let status = auto_updater.read_with(cx, |updater, _| updater.status());
-            if !matches!(status, AutoUpdateStatus::Idle) {
-                break;
-            }
-        }
+        cx.condition(&auto_updater, |updater, _| {
+            !matches!(updater.status(), AutoUpdateStatus::Idle)
+        })
+        .await;
         let status = auto_updater.read_with(cx, |updater, _| updater.status());
         assert_eq!(
             status,
@@ -1555,14 +1551,10 @@ mod tests {
             })));
         });
 
-        loop {
-            cx.background_executor.timer(Duration::from_millis(0)).await;
-            cx.run_until_parked();
-            let status = auto_updater.read_with(cx, |updater, _| updater.status());
-            if !matches!(status, AutoUpdateStatus::Downloading { .. }) {
-                break;
-            }
-        }
+        cx.condition(&auto_updater, |updater, _| {
+            !matches!(updater.status(), AutoUpdateStatus::Downloading { .. })
+        })
+        .await;
         let status = auto_updater.read_with(cx, |updater, _| updater.status());
         assert_eq!(
             status,

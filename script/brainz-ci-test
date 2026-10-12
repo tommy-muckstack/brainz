@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+cargo_bin="${CARGO:-cargo}"
+mode="${1:-all}"
+native_packages=(-p brainz_calendar -p brainz_ai -p auto_update -p auto_update_ui -p release_channel -p cli)
+
+lint() {
+    "$cargo_bin" fmt --all -- --check
+    script/check-keymaps
+    actionlint .github/workflows/brainz-*.yml
+    python3 - <<'PY'
+from pathlib import Path
+paths = [Path('CHANGELOG.md'), *Path('assets/brainz').rglob('*')]
+invalid = [str(path) for path in paths if path.is_file() and '\u2014' in path.read_text(errors='ignore')]
+if invalid:
+    raise SystemExit('Use plain punctuation in release copy: ' + ', '.join(invalid))
+PY
+}
+
+native() {
+    "$cargo_bin" test --locked "${native_packages[@]}" --lib
+    "$cargo_bin" test --locked -p agent_ui --lib canvas
+    CLIPPY_PROFILE=dev CLIPPY_DEFAULT_FEATURES=1 script/clippy --locked "${native_packages[@]}" -p icons
+}
+
+pure() {
+    "$cargo_bin" test --locked -p icons
+    python3 -m unittest discover -s script -p 'test_brainz_*.py'
+}
+
+canvas() {
+    (cd whiteboard/brainz && npm ci && npm run test:unit && npm run build && npm test)
+}
+
+case "$mode" in
+    lint) lint ;;
+    native) native ;;
+    pure) pure ;;
+    canvas) canvas ;;
+    all) lint; pure; native; canvas ;;
+    *) printf 'Usage: %s [all|lint|pure|native|canvas]\n' "$0" >&2; exit 2 ;;
+esac

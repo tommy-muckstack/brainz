@@ -6,8 +6,12 @@ if [[ ! " $* " == *" -p "* && ! " $* " == *" --package "* ]]; then
     set -- "$@" --workspace
 fi
 
+if [[ "${CLIPPY_DEFAULT_FEATURES:-0}" != 1 ]]; then
+    set -- "$@" --all-features
+fi
+
 set -x
-"${CARGO:-cargo}" clippy "$@" --release --all-targets --all-features -- --deny warnings
+"${CARGO:-cargo}" clippy "$@" --profile "${CLIPPY_PROFILE:-release}" --all-targets -- --deny warnings
 
 # If local, run other checks if we have the tools installed.
 if [[ -z "${GITHUB_ACTIONS+x}" ]]; then

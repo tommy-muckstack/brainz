@@ -692,7 +692,6 @@ impl WhiteboardView {
         let release = cx.on_release({
             let storage = storage.clone();
             move |_, cx| {
-                let storage = storage.clone();
                 cx.background_spawn(async move {
                     storage.save().log_err();
                 })
@@ -1014,7 +1013,6 @@ impl Render for WhiteboardView {
                                 })
                                 .log_err();
                             webview.set_visible(true).log_err();
-                            let webview = webview.clone();
                             window.on_mouse_event(
                                 move |event: &gpui::MouseDownEvent, phase, _, _| {
                                     if phase.capture() && !bounds.contains(&event.position) {
@@ -1207,7 +1205,6 @@ mod native {
                     }
                 })
                 .with_drag_drop_handler({
-                    let sender = sender.clone();
                     move |event| {
                         if let wry::DragDropEvent::Drop { paths, position } = event {
                             sender.try_send(NativeEvent::Files(paths, Some([position.0 as f64, position.1 as f64]))).log_err();
@@ -1402,7 +1399,7 @@ mod native {
             let destination: Task<Result<Option<PathBuf>>> = if new_canvas {
                 let destination =
                     cx.prompt_for_new_path(&directory, Some(&format!("{filename}.brainzboard")));
-                cx.background_spawn(async move { Ok(destination.await??) })
+                cx.background_spawn(async move { destination.await? })
             } else {
                 let Some(workspace) = self.workspace.upgrade() else {
                     self.send(
@@ -1530,7 +1527,7 @@ mod tests {
                 .find_project_path(&absolute_path, cx)
                 .expect("project path");
             let first = CanvasFile::for_path(&project, path.clone(), absolute_path.clone(), cx);
-            let second = CanvasFile::for_path(&project, path, absolute_path.clone(), cx);
+            let second = CanvasFile::for_path(&project, path, absolute_path, cx);
             assert_eq!(first.entity_id(), second.entity_id());
             let moved = PathBuf::from("/canvas-test/Moved.brainzboard");
             first.update(cx, |file, _| file.absolute_path = moved.clone());
@@ -1564,7 +1561,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary directory");
         let path = directory.path().join("board.brainzboard");
         let first = BoardStorage::new(path.clone());
-        let second = BoardStorage::new(path.clone());
+        let second = BoardStorage::new(path);
         first.load(true).expect("first tab opens");
         assert!(second.load(true).is_err());
         drop(first);
