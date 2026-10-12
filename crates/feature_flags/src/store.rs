@@ -163,6 +163,9 @@ impl FeatureFlagStore {
     /// order of precedence. Overrides are read directly from
     /// [`FeatureFlagsSettings`].
     pub fn try_flag_value<T: FeatureFlag>(&self, cx: &App) -> Option<T::Value> {
+        if T::NAME.starts_with("brainz-") {
+            return variant_from_key::<T::Value>(crate::brainz_flags::brainz_flag_key(T::NAME, cx));
+        }
         // `enabled_for_all` always wins, including over user overrides.
         if T::enabled_for_all() {
             return Some(T::Value::on_variant());
@@ -202,6 +205,9 @@ impl FeatureFlagStore {
     /// shows *something* selected — matching what
     /// [`crate::FeatureFlagAppExt::flag_value`] would return.
     pub fn resolved_key(&self, descriptor: &FeatureFlagDescriptor, cx: &App) -> &'static str {
+        if descriptor.name.starts_with("brainz-") {
+            return crate::brainz_flags::brainz_flag_key(descriptor.name, cx);
+        }
         let on_variant_key = (descriptor.on_variant_key)();
 
         if (descriptor.enabled_for_all)() {
@@ -309,6 +315,29 @@ mod tests {
                     .insert(name.to_string(), value.to_string());
             });
         });
+    }
+
+    #[gpui::test]
+    fn brainz_flags_are_local_and_explicit_overrides_win(cx: &mut App) {
+        init_settings_store(cx);
+        let mut store = FeatureFlagStore::default();
+        store.update_server_flags(true, vec![crate::BrainzSearch::NAME.into()]);
+        assert!(!store.has_flag::<crate::BrainzSearch>(cx));
+        set_override(crate::BrainzSearch::NAME, "on", cx);
+        assert!(store.has_flag::<crate::BrainzSearch>(cx));
+        SettingsStore::update_global(cx, |settings, cx| {
+            settings.update_user_settings(cx, |content| {
+                content
+                    .feature_flags
+                    .get_or_insert_default()
+                    .remove(crate::BrainzSearch::NAME);
+                content.brainz.get_or_insert_default().update_channel =
+                    Some(settings::BrainzUpdateChannel::Preview);
+            });
+        });
+        assert!(store.has_flag::<crate::BrainzSearch>(cx));
+        set_override(crate::BrainzSearch::NAME, "off", cx);
+        assert!(!store.has_flag::<crate::BrainzSearch>(cx));
     }
 
     #[gpui::test]

@@ -5,6 +5,7 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -29,7 +30,8 @@ jobs:
         run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
       - name: Check source and workflows
         run: |
-          export PATH="$(go env GOPATH)/bin:$PATH"
+          go_path=$(go env GOPATH)
+          export PATH="$go_path/bin:$PATH"
           script/brainz-ci-test lint
 
   test-linux:

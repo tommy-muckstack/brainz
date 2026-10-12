@@ -217,6 +217,9 @@ pub struct SettingsContent {
     /// Default: true
     pub auto_update: Option<bool>,
 
+    /// Brainz-specific update and privacy preferences.
+    pub brainz: Option<BrainzSettingsContent>,
+
     /// This base keymap settings adjusts the default keybindings in Zed to be similar
     /// to other common code editors. By default, Zed's keymap closely follows VSCode's
     /// keymap, with minor adjustments, this corresponds to the "VSCode" setting.
@@ -403,7 +406,7 @@ fallible_options::flattened_deserialize!(SettingsContent {
     sections: { project, theme, extension, workspace, editor, remote },
     options: {
         call_hierarchy, command_palette, file_finder, git_panel, tabs, tab_bar, status_bar, preview_tabs, agent,
-        agent_servers, audio, auto_update, base_keymap, collaboration_panel, debugger, diagnostics,
+        agent_servers, audio, auto_update, brainz, base_keymap, collaboration_panel, debugger, diagnostics,
         git,
         global_lsp_settings, image_viewer, markdown_preview, repl, helix_mode, hide_mouse,
         journal, log, line_indicator_format, language_models, outline_panel, project_panel,
@@ -413,6 +416,34 @@ fallible_options::flattened_deserialize!(SettingsContent {
     },
     defaults: {},
 });
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq)]
+pub struct BrainzSettingsContent {
+    pub update_channel: Option<BrainzUpdateChannel>,
+    pub send_crash_reports: Option<bool>,
+    pub send_health_reports: Option<bool>,
+}
+
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    MergeFrom,
+    PartialEq,
+    Eq,
+    strum::VariantArray,
+    strum::VariantNames,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BrainzUpdateChannel {
+    #[default]
+    Stable,
+    Preview,
+}
 
 fallible_options::flattened_deserialize!(UserSettingsContent {
     sections: { content, release_channel_overrides, platform_overrides },

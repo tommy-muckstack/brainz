@@ -17,12 +17,22 @@ set -euo pipefail
 #   BLOB_READ_WRITE_TOKEN   Vercel Blob token for the muckstack download store
 #   BRAINZ_BLOB_HOST        public blob host (default below)
 #
-# Usage: script/brainz-release VERSION [--skip-notarize] [--no-upload] [--no-github]
+# Usage: script/brainz-release [VERSION] [--dry-run] [--skip-notarize] [--no-upload] [--no-github]
 # Prereqs: Developer ID Application certificate in the login keychain,
 # `create-dmg` (brew), Node for `npx vercel blob`, Rust 1.98.1.
 
 repository=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repository"
+
+VERSION="$(script/brainz-version)"
+if [[ -n "${1:-}" && "$1" != --* ]]; then
+    if [[ "$1" != "$VERSION" ]]; then
+        echo "Requested version $1 does not match BRAINZ_VERSION ($VERSION)." >&2
+        exit 1
+    fi
+    shift
+fi
+script/brainz-feed --notes "$VERSION" >/dev/null
 
 if [[ -f script/brainz-local.env ]]; then
     set -a
@@ -31,23 +41,36 @@ if [[ -f script/brainz-local.env ]]; then
     set +a
 fi
 
-VERSION="${1:-}"
-if [[ -z "$VERSION" || "$VERSION" == --* ]]; then
-    echo "usage: script/brainz-release VERSION [--skip-notarize] [--no-upload] [--no-github]" >&2
-    exit 1
-fi
-shift
 SKIP_NOTARIZE=false
 NO_UPLOAD=false
 NO_GITHUB=false
+DRY_RUN=false
 for arg in "$@"; do
     case "$arg" in
         --skip-notarize) SKIP_NOTARIZE=true ;;
         --no-upload) NO_UPLOAD=true ;;
         --no-github) NO_GITHUB=true ;;
+        --dry-run) DRY_RUN=true; NO_UPLOAD=true; NO_GITHUB=true ;;
         *) echo "unknown flag: $arg" >&2; exit 1 ;;
     esac
 done
+if $SKIP_NOTARIZE && { ! $NO_UPLOAD || ! $NO_GITHUB; }; then
+    echo "Unsigned rehearsal builds require --no-upload and --no-github." >&2
+    exit 1
+fi
+if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+    echo "Commit source changes before building a release." >&2
+    exit 1
+fi
+if [[ -d assets/fonts/gellix ]] && [[ -n "$(find assets/fonts/gellix -type f -print -quit)" ]]; then
+    echo "Local Gellix assets are present and would be embedded."
+    if [[ "${BRAINZ_ALLOW_GELLIX:-0}" != 1 ]]; then
+        echo "Use a clean checkout for redistributable DM Sans builds, or set BRAINZ_ALLOW_GELLIX=1 after confirming redistribution rights." >&2
+        exit 1
+    fi
+else
+    echo "Bundled font: DM Sans; installed Gellix remains available at runtime."
+fi
 
 SLUG="brainz"
 APP_NAME="Brainz"
@@ -55,10 +78,20 @@ NOTARY_PROFILE="${BRAINZ_NOTARY_PROFILE:-mumbls-notary}"
 BLOB_HOST="${BRAINZ_BLOB_HOST:-https://ihvfw4x5q9iy9zx1.public.blob.vercel-storage.com}"
 BUILD_NUMBER="$(git rev-list --count HEAD)"
 RELEASE_COMMIT="$(git rev-parse HEAD)"
-DIST="$repository/target/release-dist"
+DIST="$repository/target/release-$VERSION"
 APP_DIR="$DIST/$APP_NAME.app"
 DMG_PATH="$DIST/$SLUG-$VERSION.dmg"
-FEED_PATH="$DIST/$SLUG-latest.json"
+CHANNEL=stable
+FEED_NAME="$SLUG-latest.json"
+if [[ "$VERSION" == *-preview.* ]]; then
+    CHANNEL=preview
+    FEED_NAME="$SLUG-preview.json"
+fi
+FEED_PATH="$DIST/$FEED_NAME"
+if [[ -e "$DIST" ]]; then
+    echo "Release output already exists: $DIST. Preserve or move it before rebuilding." >&2
+    exit 1
+fi
 
 export PATH="${HOME}/.cargo/bin:${PATH}"
 # notarytool and stapler need the full Xcode; cargo is happier with the
@@ -79,13 +112,12 @@ export SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
 # Panic locations and debug paths otherwise embed the builder's home folder
 # and the checkout path in the shipped binary; map them to neutral roots.
 REMAP_FLAGS="--remap-path-prefix=$repository=/brainz --remap-path-prefix=${HOME}/.cargo=/cargo --remap-path-prefix=${HOME}=/home"
-BRAINZ_VERSION="$VERSION" ZED_BUILD_ID="$BUILD_NUMBER" \
+BRAINZ_VERSION="$VERSION" ZED_BUILD_ID="$BUILD_NUMBER" ZED_COMMIT_SHA="$RELEASE_COMMIT" CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}" \
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$REMAP_FLAGS" \
     cargo +1.98.1 build --locked --release -p zed -p cli --bin brainz --bin cli \
     --features util/debug-embed,gpui_platform/runtime_shaders
 
 echo "==> Bundling $APP_NAME.app..."
-rm -rf "$DIST"
 mkdir -p "$DIST"
 BRAINZ_NO_OPEN=1 BRAINZ_APP_DIR="$APP_DIR" BRAINZ_BINARY="$repository/target/release/brainz" \
     BRAINZ_CLI_BINARY="$repository/target/release/cli" \
@@ -114,7 +146,11 @@ codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 notarize() {
     local path="$1" attempt
     for attempt in 1 2 3; do
-        if [[ -n "${APPLE_ID:-}" && -n "${APPLE_APP_PASSWORD:-}" ]]; then
+        if [[ -n "${BRAINZ_NOTARY_KEY:-}" ]]; then
+            DEVELOPER_DIR="$XCODE_DEV" xcrun notarytool submit "$path" \
+                --key "$BRAINZ_NOTARY_KEY" --key-id "$BRAINZ_NOTARY_KEY_ID" \
+                --issuer "$BRAINZ_NOTARY_ISSUER" --no-s3-acceleration --wait && return 0
+        elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_APP_PASSWORD:-}" ]]; then
             DEVELOPER_DIR="$XCODE_DEV" xcrun notarytool submit "$path" \
                 --apple-id "$APPLE_ID" --team-id "${APPLE_TEAM_ID:-K8NAZ76CBQ}" \
                 --password "$APPLE_APP_PASSWORD" --no-s3-acceleration --wait && return 0
@@ -171,23 +207,37 @@ if ! $SKIP_NOTARIZE; then
 fi
 
 VERSIONED_URL="$BLOB_HOST/$SLUG-$VERSION.dmg"
-printf '{"version": "%s", "url": "%s"}\n' "$VERSION" "$VERSIONED_URL" > "$FEED_PATH"
+script/brainz-feed --version "$VERSION" --artifact "$DMG_PATH" --url "$VERSIONED_URL" \
+    --commit "$RELEASE_COMMIT" --rollout "${BRAINZ_ROLLOUT:-100}" --output "$FEED_PATH"
+script/brainz-feed --notes "$VERSION" > "$DIST/release-notes.md"
+if ! $SKIP_NOTARIZE; then
+    script/brainz-smoke "$APP_DIR" "$DMG_PATH"
+fi
+
+verify_download() {
+    local url="$1" downloaded="$DIST/download-check.dmg" attempt
+    for attempt in 1 2 3 4 5 6; do
+        if curl --fail --silent --show-error --location --max-time 300 "$url" -o "$downloaded" && cmp -s "$DMG_PATH" "$downloaded"; then
+            rm -f "$downloaded"
+            return 0
+        fi
+        sleep 10
+    done
+    echo "Published artifact did not match the notarized DMG; feed left unchanged." >&2
+    return 1
+}
 
 if $NO_UPLOAD; then
     echo "==> Upload skipped (--no-upload)"
 elif [[ -n "${BLOB_READ_WRITE_TOKEN:-}" ]]; then
     echo "==> Uploading to Vercel Blob..."
     npx --yes vercel@51.6.1 blob put "$DMG_PATH" --pathname "$SLUG-$VERSION.dmg" \
-        --access public --allow-overwrite true --content-type application/x-apple-diskimage \
+        --access public --allow-overwrite false --content-type application/x-apple-diskimage \
         --cache-control-max-age 31536000
-    npx --yes vercel@51.6.1 blob put "$DMG_PATH" --pathname "$SLUG.dmg" \
-        --access public --allow-overwrite true --content-type application/x-apple-diskimage \
-        --cache-control-max-age 300
-    npx --yes vercel@51.6.1 blob put "$FEED_PATH" --pathname "$SLUG-latest.json" \
-        --access public --allow-overwrite true --content-type application/json \
-        --cache-control-max-age 300
+    verify_download "$VERSIONED_URL"
 else
-    echo "==> Upload skipped: BLOB_READ_WRITE_TOKEN not set"
+    echo "BLOB_READ_WRITE_TOKEN is required to publish. Use --no-upload for a local build." >&2
+    exit 1
 fi
 
 if ! $NO_GITHUB && command -v gh >/dev/null 2>&1; then
@@ -195,12 +245,25 @@ if ! $NO_GITHUB && command -v gh >/dev/null 2>&1; then
     GH_REPO="$(git remote get-url origin | sed -E 's#.*github.com[:/]##; s#\.git$##')"
     echo "==> Creating GitHub release v$VERSION on $GH_REPO..."
     if gh release view "v$VERSION" --repo "$GH_REPO" >/dev/null 2>&1; then
-        gh release upload "v$VERSION" "$DMG_PATH" --repo "$GH_REPO" --clobber
+        echo "Release v$VERSION already exists; refusing to overwrite it." >&2
+        exit 1
     else
+        prerelease_flag=()
+        if [[ "$CHANNEL" == preview ]]; then prerelease_flag=(--prerelease); fi
         gh release create "v$VERSION" "$DMG_PATH" --repo "$GH_REPO" --title "Brainz $VERSION" \
             --target "$RELEASE_COMMIT" \
-            --notes "Signed and notarized macOS build. Download the DMG, drag Brainz to Applications; the app updates itself from then on."
+            --notes-file "$DIST/release-notes.md" ${prerelease_flag[@]+"${prerelease_flag[@]}"}
     fi
+fi
+
+if ! $NO_UPLOAD; then
+    if [[ "$CHANNEL" == stable ]]; then
+        npx --yes vercel@51.6.1 blob put "$DMG_PATH" --pathname "$SLUG.dmg" \
+            --access public --allow-overwrite true --content-type application/x-apple-diskimage --cache-control-max-age 300
+        verify_download "$BLOB_HOST/$SLUG.dmg"
+    fi
+    npx --yes vercel@51.6.1 blob put "$FEED_PATH" --pathname "$FEED_NAME" \
+        --access public --allow-overwrite true --content-type application/json --cache-control-max-age 300
 fi
 
 echo ""

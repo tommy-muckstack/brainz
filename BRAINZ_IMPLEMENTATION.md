@@ -31,7 +31,7 @@ This file records implementation and validation; an unchecked item is not shippe
 ## Release basics
 
 - [ ] P0-1. CI for Brainz: PR and `main` checks, required before merge
-- [ ] P0-2. One version source and a changelog
+- [x] P0-2. One version source and a changelog
 - [ ] P0-3. Update feed v2: verification, channels, release notes, rollout
 - [ ] P0-4. Signed, notarized DMG in CI on tag
 - [ ] P0-5. Turn off Zed telemetry; nothing goes to zed.dev by default
@@ -104,3 +104,16 @@ This file records implementation and validation; an unchecked item is not shippe
 
 - 0.1.38: native picker interactions, canvas storage tests, icon checks, production build, in-app picker check, and Apple notarization passed.
 - Next release: pending implementation and validation.
+
+## Work in progress
+
+- Release foundations PR #58 adds CI, verified updates, stable/preview settings,
+  offline notes, private defaults, local Labs, and a shared release pipeline.
+- Local foundation checks: 22 updater tests (including wrong-signature rejection),
+  three update notification tests, 22 client tests, nine flag tests, and three
+  release-tool tests pass. The published 0.1.38 app and DMG pass the new smoke check.
+- First remote CI run: macOS passed; Linux test discovery, workflow lint, and
+  canvas rasterization differences are being corrected. Repository protection,
+  inherited-workflow disabling, release secrets, and a clean signing rehearsal
+  remain owner setup and validation tasks.
+- Canvas regression suite: 17 unit tests and 14 browser tests pass locally.

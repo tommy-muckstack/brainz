@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+app="${1:?Usage: brainz-smoke APP [DMG]}"
+requirement='=anchor apple generic and identifier "app.brainz.desktop" and certificate leaf[subject.OU] = "K8NAZ76CBQ"'
+/usr/bin/codesign --verify --deep --strict -R "$requirement" "$app"
+/usr/sbin/spctl --assess --type execute "$app"
+xcrun stapler validate "$app"
+for helper in brainz brainz-calendar brainz-ocr brainz-pdf cli; do
+    test -x "$app/Contents/MacOS/$helper"
+done
+if [[ -n "${2:-}" ]]; then
+    /usr/bin/codesign --verify --strict "$2"
+    xcrun stapler validate "$2"
+    /usr/sbin/spctl --assess --type open --context context:primary-signature "$2"
+fi
+echo 'Signatures, notarization, and bundled executables verified.'

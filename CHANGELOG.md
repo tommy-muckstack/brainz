@@ -5,6 +5,11 @@
 ### Improved
 
 - Run native and canvas regression checks automatically on proposed changes.
+- Verify downloaded updates against their checksum, Brainz signing identity, and Apple notarization before installation.
+- Choose Stable or Preview updates and read the installed version's release notes inside Brainz.
+- Wait for a pause in typing before showing an update reminder.
+- Keep inherited usage telemetry off, including with older opt-in settings.
+- Manage upcoming Brainz features through local Labs switches.
 
 ## 0.1.38 (2026-10-11)
 

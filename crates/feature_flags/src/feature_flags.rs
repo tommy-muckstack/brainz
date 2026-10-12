@@ -2,6 +2,7 @@
 // resolve when the macro is invoked inside this crate itself.
 extern crate self as feature_flags;
 
+mod brainz_flags;
 mod flags;
 mod settings;
 mod store;
@@ -12,6 +13,7 @@ use std::sync::LazyLock;
 
 use gpui::{App, Context, Global, Subscription, Window};
 
+pub use brainz_flags::*;
 pub use feature_flags_macros::EnumFeatureFlag;
 pub use flags::*;
 pub use settings::{FeatureFlagsSettings, generate_feature_flags_schema};

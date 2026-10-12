@@ -181,6 +181,7 @@ impl VsCodeSettings {
 
     pub fn settings_content(&self) -> SettingsContent {
         SettingsContent {
+            brainz: None,
             agent: self.agent_settings_content(),
             agent_servers: None,
             audio: None,

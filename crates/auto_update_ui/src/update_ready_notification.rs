@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use auto_update::{AutoUpdateStatus, AutoUpdater};
 use gpui::{DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Global, Task, WeakEntity};
@@ -10,6 +10,8 @@ use workspace::notifications::{
 };
 
 const REMINDER_DELAY: Duration = Duration::from_secs(60 * 60);
+const TYPING_DELAY: Duration = Duration::from_secs(3);
+const MAX_TYPING_DELAY: Duration = Duration::from_secs(60);
 
 struct GlobalUpdateReminder {
     _reminder: Entity<UpdateReminder>,
@@ -24,6 +26,10 @@ pub(super) fn init(cx: &mut App) {
     let reminder = cx.new(|cx| {
         cx.observe(&updater, |this: &mut UpdateReminder, updater, cx| {
             this.update_status(updater.read(cx).status(), cx);
+        })
+        .detach();
+        cx.observe_keystrokes(|this: &mut UpdateReminder, _, _, cx| {
+            this.last_keystroke = Some(cx.background_executor().now());
         })
         .detach();
         UpdateReminder::default()
@@ -41,6 +47,8 @@ struct UpdateReminder {
     version: Option<Version>,
     visible: bool,
     reminder_task: Option<Task<()>>,
+    last_keystroke: Option<Instant>,
+    deferred_since: Option<Instant>,
 }
 
 impl UpdateReminder {
@@ -62,6 +70,26 @@ impl UpdateReminder {
         let Some(version) = self.version.clone() else {
             return;
         };
+        let now = cx.background_executor().now();
+        let recently_typing = self
+            .last_keystroke
+            .is_some_and(|last| now.saturating_duration_since(last) < TYPING_DELAY);
+        let defer_limit_reached = self
+            .deferred_since
+            .is_some_and(|start| now.saturating_duration_since(start) >= MAX_TYPING_DELAY);
+        if recently_typing && !defer_limit_reached {
+            self.deferred_since.get_or_insert(now);
+            self.reminder_task = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(TYPING_DELAY).await;
+                this.update(cx, |this, cx| {
+                    this.reminder_task = None;
+                    this.show(cx);
+                })
+                .log_err();
+            }));
+            return;
+        }
+        self.deferred_since = None;
         self.visible = true;
         let reminder = cx.entity().downgrade();
         show_app_notification(
@@ -109,6 +137,17 @@ impl Focusable for UpdateReadyNotification {
 
 impl Render for UpdateReadyNotification {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let notes: Vec<String> = AutoUpdater::get(cx)
+            .and_then(|updater| {
+                updater.read(cx).pending_release_notes().map(|notes| {
+                    notes
+                        .lines()
+                        .filter_map(|line| line.trim().strip_prefix("- ").map(str::to_owned))
+                        .take(2)
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
         v_flex()
             .id("update-ready-notification")
             .occlude()
@@ -123,6 +162,11 @@ impl Render for UpdateReadyNotification {
                     .child(Label::new(format!("Brainz {} is ready", self.version))),
             )
             .child(Label::new("Restart to use the new version.").color(Color::Muted))
+            .children(
+                notes
+                    .into_iter()
+                    .map(|note| Label::new(note).size(LabelSize::Small).color(Color::Muted)),
+            )
             .child(
                 h_flex()
                     .justify_end()
@@ -153,6 +197,28 @@ impl Render for UpdateReadyNotification {
 mod tests {
     use super::*;
     use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn update_prompt_waits_until_typing_pauses(cx: &mut TestAppContext) {
+        let reminder = cx.new(|_| UpdateReminder::default());
+        reminder.update(cx, |this, cx| {
+            this.last_keystroke = Some(cx.background_executor().now());
+            this.update_status(
+                AutoUpdateStatus::Updated {
+                    version: Version::new(0, 2, 0),
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert!(!reminder.read_with(cx, |this, _| this.visible));
+        cx.executor().advance_clock(TYPING_DELAY);
+        cx.run_until_parked();
+        assert!(reminder.read_with(cx, |this, _| this.visible));
+        cx.update(|cx| {
+            dismiss_app_notification(&NotificationId::unique::<UpdateReadyNotification>(), cx)
+        });
+    }
 
     #[gpui::test]
     fn update_reminder_waits_for_install_and_survives_regular_checks(cx: &mut TestAppContext) {

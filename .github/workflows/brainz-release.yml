@@ -1,0 +1,113 @@
+name: Brainz Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and notarize without publishing downloads or feeds
+        type: boolean
+        default: true
+      rollout:
+        description: Automatic update rollout percentage
+        type: number
+        default: 100
+
+permissions:
+  contents: read
+
+concurrency:
+  group: brainz-release
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/brainz-ci.yml
+
+  release:
+    needs: checks
+    runs-on: macos-14
+    timeout-minutes: 120
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          fetch-depth: 0
+          submodules: true
+      - name: Verify release version
+        env:
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_EVENT: ${{ github.event_name }}
+        run: |
+          version=$(script/brainz-version)
+          if [[ "$RELEASE_EVENT" == push && "$RELEASE_REF" != "refs/tags/v$version" ]]; then
+            echo 'The tag does not match BRAINZ_VERSION.' >&2
+            exit 1
+          fi
+          script/brainz-feed --notes "$version"
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '20'
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+        with:
+          key: brainz-release-arm64
+      - name: Install packaging tools
+        run: brew install create-dmg
+      - name: Prepare signing and notarization
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+        run: |
+          set +x
+          test -n "$CERTIFICATE"
+          test -n "$CERTIFICATE_PASSWORD"
+          test -n "$NOTARY_KEY"
+          keychain="$RUNNER_TEMP/brainz-signing.keychain-db"
+          password=$(openssl rand -hex 32)
+          echo "::add-mask::$password"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/brainz-certificate.p12"
+          printf '%s' "$NOTARY_KEY" > "$RUNNER_TEMP/brainz-notary.p8"
+          chmod 600 "$RUNNER_TEMP/brainz-certificate.p12" "$RUNNER_TEMP/brainz-notary.p8"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 10800 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/brainz-certificate.p12" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+      - name: Build, sign, notarize, verify, and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          BRAINZ_NOTARY_KEY: ${{ runner.temp }}/brainz-notary.p8
+          BRAINZ_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          BRAINZ_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          BRAINZ_ROLLOUT: ${{ inputs.rollout }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+          CARGO_INCREMENTAL: '0'
+          CARGO_BUILD_JOBS: '2'
+        run: |
+          if [[ "$DRY_RUN" == true ]]; then
+            script/brainz-release --dry-run
+          else
+            script/brainz-release
+          fi
+      - name: Upload installer and verification metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: brainz-release
+          path: |
+            target/release-*/*.dmg
+            target/release-*/*.json
+            target/release-*/release-notes.md
+          retention-days: 14
+      - name: Remove signing credentials
+        if: always()
+        run: |
+          if [[ -f "$RUNNER_TEMP/brainz-signing.keychain-db" ]]; then
+            security delete-keychain "$RUNNER_TEMP/brainz-signing.keychain-db"
+          fi
+          rm -f "$RUNNER_TEMP/brainz-certificate.p12" "$RUNNER_TEMP/brainz-notary.p8"
