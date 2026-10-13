@@ -472,6 +472,24 @@ pub fn init(cx: &mut App) {
                         }
                     },
                 )
+                .register_action(
+                    |workspace, action: &brainz_calendar::palette::AskClaude, window, cx| {
+                        if action.text.trim().is_empty() {
+                            return;
+                        }
+                        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                            workspace.focus_panel::<AgentPanel>(window, cx);
+                            panel.update(cx, |panel, cx| {
+                                panel.new_claude_thread_with_initial_text(
+                                    action.text.clone(),
+                                    true,
+                                    window,
+                                    cx,
+                                )
+                            });
+                        }
+                    },
+                )
                 .register_action(|workspace, _: &crate::BrainzCaptureClipboard, window, cx| {
                     if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                         workspace.focus_panel::<AgentPanel>(window, cx);
@@ -4722,6 +4740,16 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.new_claude_thread_with_initial_text(text, false, window, cx);
+    }
+
+    fn new_claude_thread_with_initial_text(
+        &mut self,
+        text: String,
+        auto_submit: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.has_open_project(cx) {
             return;
         }
@@ -4734,7 +4762,7 @@ impl AgentPanel {
             None,
             Some(AgentInitialContent::ContentBlock {
                 blocks: vec![acp::ContentBlock::Text(acp::TextContent::new(text))],
-                auto_submit: false,
+                auto_submit,
             }),
             true,
             AgentThreadSource::AgentPanel,

@@ -67,8 +67,6 @@
       "ctrl-t": "editor::Transpose",
       "ctrl-k": "editor::KillRingCut",
       "ctrl-y": "editor::KillRingYank",
-      "cmd-k cmd-q": "editor::Rewrap",
-      "cmd-k q": "editor::Rewrap",
       "cmd-backspace": "editor::DeleteToBeginningOfLine",
       "cmd-delete": "editor::DeleteToEndOfLine",
       "alt-backspace": ["editor::DeleteToPreviousWordStart", { "ignore_newlines": false, "ignore_brackets": false }],
@@ -159,7 +157,6 @@
       "enter": "editor::Newline",
       "cmd-enter": "editor::NewlineBelow",
       "cmd-shift-enter": "editor::NewlineAbove",
-      "cmd-k z": "editor::ToggleSoftWrap",
       "cmd-f": "buffer_search::Deploy",
       "cmd-alt-l": ["buffer_search::Deploy", { "selection_search_enabled": true }],
       "cmd-e": "buffer_search::UseSelectionForFind",
@@ -548,11 +545,6 @@
       "cmd-w": ["pane::CloseActiveItem", { "close_pinned": false }],
       "alt-cmd-t": ["pane::CloseOtherItems", { "close_pinned": false }],
       "ctrl-alt-cmd-w": "workspace::CloseInactiveTabsAndPanes",
-      "cmd-k e": ["pane::CloseItemsToTheLeft", { "close_pinned": false }],
-      "cmd-k t": ["pane::CloseItemsToTheRight", { "close_pinned": false }],
-      "cmd-k u": ["pane::CloseCleanItems", { "close_pinned": false }],
-      "cmd-k w": ["pane::CloseAllItems", { "close_pinned": false }],
-      "cmd-k cmd-w": "workspace::CloseAllItemsAndPanes",
       "cmd-f": "project_search::ToggleFocus",
       "cmd-g": "search::SelectNextMatch",
       "cmd-shift-g": "search::SelectPreviousMatch",
@@ -562,7 +554,6 @@
       "alt-cmd-c": "search::ToggleCaseSensitive",
       "alt-cmd-w": "search::ToggleWholeWord",
       "alt-cmd-x": "search::ToggleRegex",
-      "cmd-k shift-enter": "pane::TogglePinTab",
     },
   },
   // Bindings from VS Code
@@ -590,16 +581,11 @@
       "cmd-d": ["editor::SelectNext", { "replace_newest": false }], // editor.action.addSelectionToNextFindMatch / find_under_expand
       "cmd-shift-l": "editor::SelectAllMatches", // Select all occurrences of current selection
       "cmd-f2": "editor::SelectAllMatches", // Select all occurrences of current word
-      "cmd-k cmd-d": ["editor::SelectNext", { "replace_newest": true }], // editor.action.moveSelectionToNextFindMatch / find_under_expand_skip
       // macOS binds `ctrl-cmd-d` to Show Dictionary which breaks these two binds
       // To use `ctrl-cmd-d` or `ctrl-k ctrl-cmd-d` in Zed you must execute this command and then restart:
       //   defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 70 '<dict><key>enabled</key><false/></dict>'
       "ctrl-cmd-d": ["editor::SelectPrevious", { "replace_newest": false }], // editor.action.addSelectionToPreviousFindMatch
-      "cmd-k ctrl-cmd-d": ["editor::SelectPrevious", { "replace_newest": true }], // editor.action.moveSelectionToPreviousFindMatch
-      "cmd-k cmd-i": "editor::Hover",
-      "cmd-k cmd-b": "editor::BlameHover",
       "cmd-/": ["editor::ToggleComments", { "advance_downwards": false, "comment_empty_lines": true }],
-      "cmd-k cmd-/": "editor::ToggleBlockComments",
       "shift-alt-a": "editor::ToggleBlockComments",
       "f8": ["editor::GoToDiagnostic", { "severity": { "min": "hint", "max": "error" } }],
       "shift-f8": ["editor::GoToPreviousDiagnostic", { "severity": { "min": "hint", "max": "error" } }],
@@ -610,32 +596,15 @@
       "shift-f12": "editor::GoToImplementation",
       "alt-cmd-f12": "editor::GoToTypeDefinitionSplit",
       "alt-shift-f12": "editor::FindAllReferences",
-      "cmd-k cmd-h": "call_hierarchy::ShowIncomingCalls",
       "cmd-|": "editor::MoveToEnclosingBracket",
       "ctrl-m": "editor::MoveToEnclosingBracket", // From Jetbrains
       "alt-cmd-[": "editor::Fold",
       "alt-cmd-]": "editor::UnfoldLines",
-      "cmd-k cmd-l": "editor::ToggleFold",
-      "cmd-k cmd-[": "editor::FoldRecursive",
-      "cmd-k cmd-]": "editor::UnfoldRecursive",
-      "cmd-k cmd-1": "editor::FoldAtLevel_1",
-      "cmd-k cmd-2": "editor::FoldAtLevel_2",
-      "cmd-k cmd-3": "editor::FoldAtLevel_3",
-      "cmd-k cmd-4": "editor::FoldAtLevel_4",
-      "cmd-k cmd-5": "editor::FoldAtLevel_5",
-      "cmd-k cmd-6": "editor::FoldAtLevel_6",
-      "cmd-k cmd-7": "editor::FoldAtLevel_7",
-      "cmd-k cmd-8": "editor::FoldAtLevel_8",
-      "cmd-k cmd-9": "editor::FoldAtLevel_9",
-      "cmd-k cmd-0": "editor::FoldAll",
-      "cmd-k cmd-j": "editor::UnfoldAll",
       // Using `ctrl-space` / `ctrl-shift-space` in Zed requires disabling the macOS global shortcut.
       // System Preferences->Keyboard->Keyboard Shortcuts->Input Sources->Select the previous input source (uncheck)
       "ctrl-space": "editor::ShowCompletions",
       "ctrl-shift-space": "editor::ShowWordCompletions",
       "cmd-.": "editor::ToggleCodeActions",
-      "cmd-k r": "editor::RevealInFileManager",
-      "cmd-k p": "editor::CopyPath",
       "cmd-\\": "pane::SplitRight",
     },
   },
@@ -643,7 +612,6 @@
     "context": "Editor && extension == md",
     "use_key_equivalents": true,
     "bindings": {
-      "cmd-k v": "markdown::OpenPreviewToTheSide",
       "cmd-shift-v": "markdown::OpenPreview",
     },
   },
@@ -651,7 +619,6 @@
     "context": "Editor && extension == svg",
     "use_key_equivalents": true,
     "bindings": {
-      "cmd-k v": "svg::OpenPreviewToTheSide",
       "cmd-shift-v": "svg::OpenPreview",
     },
   },
@@ -659,7 +626,6 @@
     "context": "Editor && (extension == csv || extension == tsv || extension == ssv || extension == psv || extension == jsonl || extension == ndjson)",
     "use_key_equivalents": true,
     "bindings": {
-      "cmd-k v": "tabular_data::OpenPreviewToTheSide",
       "cmd-shift-v": "tabular_data::OpenPreview",
     },
   },
@@ -718,7 +684,6 @@
       "cmd-ctrl-w": "git::Worktree",
       "ctrl-~": "workspace::NewTerminal",
       "cmd-s": "workspace::Save",
-      "cmd-k s": "workspace::SaveWithoutFormat",
       "alt-shift-enter": "toast::RunAction",
       "cmd-shift-s": "workspace::SaveAs",
       "cmd-shift-n": "workspace::NewWindow",
@@ -749,10 +714,6 @@
       "cmd-shift-f": "pane::DeploySearch",
       "cmd-shift-h": ["pane::DeploySearch", { "replace_enabled": true }],
       "cmd-shift-t": "pane::ReopenClosedItem",
-      "cmd-k cmd-p": "workspace::ReopenLastPicker",
-      "cmd-k cmd-s": "zed::OpenKeymap",
-      "cmd-k cmd-t": "theme_selector::Toggle",
-      "cmd-k cmd-shift-t": "theme::ToggleMode",
       "ctrl-alt-cmd-p": "settings_profile_selector::Toggle",
       "cmd-t": "project_symbols::Toggle",
       "cmd-p": "file_finder::Toggle",
@@ -766,18 +727,7 @@
       "cmd-shift-d": "brainz_calendar::OpenDailyNote",
       "cmd-?": "agent::ToggleFocus",
       "cmd-alt-s": "workspace::SaveAll",
-      "cmd-k n": "encoding_selector::Toggle",
-      "cmd-k m": "language_selector::Toggle",
-      "cmd-k cmd-m": "toolchain::AddToolchain",
       "escape": "workspace::Unfollow",
-      "cmd-k cmd-left": "workspace::ActivatePaneLeft",
-      "cmd-k cmd-right": "workspace::ActivatePaneRight",
-      "cmd-k cmd-up": "workspace::ActivatePaneUp",
-      "cmd-k cmd-down": "workspace::ActivatePaneDown",
-      "cmd-k shift-left": "workspace::SwapPaneLeft",
-      "cmd-k shift-right": "workspace::SwapPaneRight",
-      "cmd-k shift-up": "workspace::SwapPaneUp",
-      "cmd-k shift-down": "workspace::SwapPaneDown",
       "cmd-shift-x": "zed::Extensions",
       "f5": "debugger::Rerun",
       "cmd-w": ["pane::CloseActiveItem", { "close_pinned": false }],
@@ -789,6 +739,7 @@
     "use_key_equivalents": true,
     "bindings": {
       "cmd-n": "brainz_calendar::NewNote",
+      "cmd-k": "brainz_calendar::OpenPalette",
       "cmd-shift-r": "task::Spawn",
       // All task parameters are captured and unchanged between reruns by default.
       // Use the `"reevaluate_context"` parameter to control this.
@@ -879,10 +830,6 @@
     "context": "Pane",
     "use_key_equivalents": true,
     "bindings": {
-      "cmd-k up": "pane::SplitUp",
-      "cmd-k down": "pane::SplitDown",
-      "cmd-k left": "pane::SplitLeft",
-      "cmd-k right": "pane::SplitRight",
     },
   },
   // Bindings that should be unified with bindings for more general actions
@@ -1268,9 +1215,6 @@
     "context": "CallHierarchyPicker > Picker > Editor",
     "use_key_equivalents": true,
     "bindings": {
-      "cmd-k cmd-h": "call_hierarchy::ToggleDirection",
-      "cmd-k right": "menu::SelectChild",
-      "cmd-k left": "menu::SelectParent",
     },
   },
   {
@@ -1670,7 +1614,6 @@
       "cmd--": "image_viewer::ZoomOut",
       "cmd-0": "image_viewer::ResetZoom",
       "cmd-1": "image_viewer::ZoomToActualSize",
-      "cmd-k r": "editor::RevealInFileManager",
       "cmd-shift-0": "image_viewer::FitToView",
     },
   },
