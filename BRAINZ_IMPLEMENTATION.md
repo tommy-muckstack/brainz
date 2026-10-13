@@ -144,3 +144,15 @@ This file records implementation and validation; an unchecked item is not shippe
   quick-create, and connector polish.
 - Drawing validation: 34 browser checks, 29 unit checks, 81 native checks (one
   existing ignored test), the production web build, and native Clippy pass.
+- Interaction follow-up: four quick-create dots for shapes and stickies,
+  keyboard choices after dragging a connection, rounded elbows, live connection
+  rerouting, interior endpoint binding, and Command to disable snapping.
+  Selection actions now share one toolbar, with object filtering and sticky
+  Auto/Small/Medium/Large text. Link entry floats without blocking the canvas;
+  commands, right-click actions, and the shortcut sheet share one registry.
+  Curved-line midpoint controls, sketch recognition, and full arrangement
+  controls remain open within P0-4.
+- Interaction validation: 39 browser scenarios pass (38 in the full run, plus
+  the updated file-menu test), 29 unit tests pass, and the production build
+  passes. Coverage includes saved quick-create labels, creation undo, sticky
+  sizing after reopening, interior bindings, and rerouting during a drag.

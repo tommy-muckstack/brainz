@@ -9,6 +9,7 @@
 - Draw with shape, frame, mind-map, lasso, eraser, and laser tools; find tools through the searchable command menu.
 - Keep brainstorming with Tab to add a sticky or mind-map child, and Enter to add a mind-map sibling.
 - Paste screenshots directly onto the canvas, with local image text recognition available to assistants on macOS.
+- Add connected objects through four quick-create dots or a keyboard-operated picker.
 
 ### Improved
 
@@ -22,6 +23,9 @@
 - Save pan and zoom positions locally without rewriting canvas files or adding Git changes.
 - Read the live canvas selection and viewport through the assistant tools, with an explicit saved-context fallback for closed canvases.
 - Preview incremental canvas saves and separate image storage, with migration backups, recoverable image deletion, and protection against compacting unseen external edits.
+- Keep canvas actions in one selection toolbar, with object filtering, sticky text sizing, and file and link actions.
+- Use floating link entry, searchable shortcuts, rounded elbow connectors, and Command to temporarily disable snapping.
+- Preserve labels when moving from sticky editing to a new connected shape.
 
 ## 0.1.38 (2026-10-11)
 
