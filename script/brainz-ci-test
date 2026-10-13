@@ -22,6 +22,7 @@ PY
 native() {
     "$cargo_bin" test --locked "${native_packages[@]}" --lib
     "$cargo_bin" test --locked -p cli --bin cli
+    "$cargo_bin" test --locked -p ui --lib native_overlay_visibility
     "$cargo_bin" test --locked -p agent_ui --lib canvas
     "$cargo_bin" test --locked -p agent_ui --lib completion_provider
     "$cargo_bin" test --locked -p agent_ui --lib message_editor

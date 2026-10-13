@@ -1,13 +1,30 @@
 use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
-    Anchor, AnyElement, AnyView, App, Bounds, DismissEvent, DispatchPhase, Element, ElementId,
-    Entity, Focusable as _, GlobalElementId, HitboxBehavior, HitboxId, InteractiveElement,
-    IntoElement, LayoutId, Length, ManagedView, MouseDownEvent, ParentElement, Pixels, Point,
-    Style, Window, anchored, deferred, div, point, prelude::FluentBuilder, px, size,
+    Anchor, AnyElement, AnyView, AnyWeakEntity, App, Bounds, DismissEvent, DispatchPhase, Element,
+    ElementId, Entity, Focusable as _, GlobalElementId, HitboxBehavior, HitboxId,
+    InteractiveElement, IntoElement, LayoutId, Length, ManagedView, MouseDownEvent, ParentElement,
+    Pixels, Point, Style, Window, WindowId, anchored, deferred, div, point, prelude::FluentBuilder,
+    px, size,
 };
 
 use crate::prelude::*;
+
+#[derive(Default)]
+struct OpenPopovers(Vec<(WindowId, AnyWeakEntity)>);
+impl gpui::Global for OpenPopovers {}
+
+/// Whether a popover is displayed in this window. Native child views need to
+/// yield to these overlays because AppKit draws them above GPUI's entire scene.
+pub fn has_open_popover(window: &Window, cx: &App) -> bool {
+    let window_id = window.window_handle().window_id();
+    cx.try_global::<OpenPopovers>().is_some_and(|popovers| {
+        popovers
+            .0
+            .iter()
+            .any(|(owner, menu)| *owner == window_id && menu.is_upgradable())
+    })
+}
 
 pub trait PopoverTrigger: IntoElement + Clickable + Toggleable + 'static {}
 
@@ -283,9 +300,28 @@ fn show_menu<M: ManagedView>(
         return;
     };
     let menu2 = menu.clone();
+    let previous_id = menu.borrow().as_ref().map(Entity::entity_id);
+    let popovers = cx.default_global::<OpenPopovers>();
+    popovers
+        .0
+        .retain(|(_, menu)| menu.is_upgradable() && Some(menu.entity_id()) != previous_id);
+    popovers.0.push((
+        window.window_handle().window_id(),
+        new_menu.downgrade().into(),
+    ));
 
     window
         .subscribe(&new_menu, cx, move |modal, _: &DismissEvent, window, cx| {
+            cx.default_global::<OpenPopovers>()
+                .0
+                .retain(|(_, menu)| menu.entity_id() != modal.entity_id());
+            if menu2
+                .borrow()
+                .as_ref()
+                .is_none_or(|menu| menu.entity_id() != modal.entity_id())
+            {
+                return;
+            }
             if modal.focus_handle(cx).contains_focused(window, cx)
                 && let Some(previous_focus_handle) = previous_focus_handle.as_ref()
             {
@@ -504,5 +540,75 @@ impl<M: ManagedView> IntoElement for PopoverMenu<M> {
 
     fn into_element(self) -> Self::Element {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Context, EventEmitter, FocusHandle, Render, TestAppContext};
+
+    struct TestMenu(FocusHandle);
+    impl gpui::Focusable for TestMenu {
+        fn focus_handle(&self, _: &App) -> FocusHandle {
+            self.0.clone()
+        }
+    }
+    impl EventEmitter<DismissEvent> for TestMenu {}
+    impl Render for TestMenu {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().track_focus(&self.0)
+        }
+    }
+
+    #[gpui::test]
+    fn native_overlay_visibility_tracks_window_dismissal_replacement_and_release(
+        cx: &mut TestAppContext,
+    ) {
+        let other = cx
+            .add_empty_window()
+            .update(|window, _| window.window_handle());
+        let cx = cx.add_empty_window();
+        let menu = Rc::new(RefCell::new(None));
+        let builder: Rc<dyn Fn(&mut Window, &mut App) -> Option<Entity<TestMenu>>> =
+            Rc::new(|_, cx| Some(cx.new(|cx| TestMenu(cx.focus_handle()))));
+        let original = cx.update(|window, cx| {
+            assert!(!has_open_popover(window, cx));
+            show_menu(&builder, &menu, None, window, cx);
+            assert!(
+                has_open_popover(window, cx),
+                "visible before deferred focus"
+            );
+            menu.borrow().as_ref().expect("open menu").clone()
+        });
+        other
+            .update(cx, |_, window, cx| assert!(!has_open_popover(window, cx)))
+            .expect("second window");
+        cx.update(|window, cx| {
+            show_menu(&builder, &menu, None, window, cx);
+            original.update(cx, |_, cx| cx.emit(DismissEvent));
+        });
+        cx.update(|window, cx| {
+            assert!(
+                has_open_popover(window, cx),
+                "old dismissal keeps replacement open"
+            )
+        });
+        let replacement = menu.borrow().as_ref().expect("replacement").clone();
+        cx.update(|_, cx| replacement.update(cx, |_, cx| cx.emit(DismissEvent)));
+        cx.update(|window, cx| {
+            assert!(
+                !has_open_popover(window, cx),
+                "dismissal hides even a retained entity"
+            )
+        });
+        cx.update(|window, cx| show_menu(&builder, &menu, None, window, cx));
+        menu.borrow_mut().take();
+        cx.update(|window, cx| {
+            assert!(
+                !has_open_popover(window, cx),
+                "removed trigger does not block native views"
+            )
+        });
     }
 }

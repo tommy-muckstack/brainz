@@ -153,6 +153,10 @@ This file records implementation and validation; an unchecked item is not shippe
   check for Undo/reopen and read-only buffers; Clippy passes. Closed-file filling
   remains open. This has not shipped in an installer.
 
+- Canvas menu layering: native whiteboards yield while a GPUI popover is open,
+  keeping the pane's + and split menus visible. Tracking is scoped per window
+  and clears on dismissal, replacement, or release. Native regression coverage
+  includes all four lifecycles and runs in Brainz CI. Not yet released.
 - Brainz launcher: Cmd+K opens grouped, searchable note templates and the shared
   navigation tools. It uses local template overrides, recent ordering, live
   catalog refresh, and the existing creation form. Escape restores the draft;
