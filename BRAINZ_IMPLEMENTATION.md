@@ -112,7 +112,7 @@ This file records implementation and validation; an unchecked item is not shippe
   candidate also fixes a concurrent directory-creation race. 95 native tests,
   Clippy, and all four Brainz CI jobs passed (one existing native test ignored).
   [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.39)
-- Next update: template engine and native creation merged; slash insertion is being validated.
+- Next update: template engine, native creation, Markdown slash insertion, and chat template insertion merged; folder defaults and live refresh are being validated.
 
 ## Work in progress
 
@@ -120,7 +120,7 @@ This file records implementation and validation; an unchecked item is not shippe
   calendar-event selection, shared folder hierarchy, atomic no-overwrite saves,
   daily-note reopening, and direct edit-mode opening at the template caret.
   100 native/engine tests and the CLI creation checks pass, along with Clippy
-  and all four Brainz CI jobs. Empty-note default banners, live refresh, and skill integration remain open;
+  and all four Brainz CI jobs. Empty-note default banners and skill integration remain open;
   this UI has not shipped in an installer yet.
 - Markdown slash insertion: templates, dated callouts, tasks, dates, tables,
   Mermaid, and brain file/person links. Required-input forms preserve the source
@@ -136,6 +136,11 @@ This file records implementation and validation; an unchecked item is not shippe
 - Template defaults: shared configuration and glob precedence, custom daily IDs,
   folder-first/recent-first native ordering, and per-brain recent IDs in local
   app data. Changing the folder preserves the selected template and typed inputs.
+- Live template refresh: the open picker watches its configured directory and
+  configuration. Reloads preserve selection, typed inputs, and input focus.
+  Invalid or deleted selected templates block creation until repaired or replaced.
+  A FakeFs watcher test verifies edits, deletion, restoration, invalid configuration,
+  and switching the watched directory; five native picker/insertion tests pass.
   CLI creation uses automatic rules and respects explicit overrides; suggestion
   rules keep the new note blank. 88 native tests and 19 engine tests pass (one
   existing ignored test), along with three CLI template tests. Editor suggestion

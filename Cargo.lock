@@ -2471,6 +2471,8 @@ dependencies = [
  "editor",
  "feature_flags",
  "file_icons",
+ "fs",
+ "futures 0.3.34",
  "fuzzy",
  "gpui",
  "language",

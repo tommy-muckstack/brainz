@@ -6,6 +6,7 @@ use std::{
 
 use brainz_templates::{CreatePolicy, InsertMode, Registry, RenderRequest, Rendered, Template};
 use editor::{Editor, MultiBufferOffset, scroll::Autoscroll};
+use futures::StreamExt as _;
 use fuzzy::StringMatchCandidate;
 use gpui::{
     App, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Subscription, Task,
@@ -233,6 +234,8 @@ struct NotePicker {
     templates: Vec<Template>,
     selected: Option<usize>,
     selected_key: Option<String>,
+    catalog_error: Option<String>,
+    unavailable_template: Option<String>,
     request: RenderRequest,
     fields: Vec<(String, String, Entity<Editor>)>,
     preview: Entity<Markdown>,
@@ -252,6 +255,7 @@ struct NotePicker {
     subscriptions: Vec<Subscription>,
     field_subscriptions: Vec<Subscription>,
     _load: Task<()>,
+    _watch: Task<()>,
 }
 
 impl NotePicker {
@@ -395,6 +399,64 @@ impl NotePicker {
             })
             .log_err();
         });
+        let watch_root = root.clone();
+        let fs = project.read(cx).fs().clone();
+        let watch = cx.spawn_in(window, async move |this, cx| {
+            let (mut events, _watcher) = fs.watch(&watch_root, Duration::from_millis(250)).await;
+            while let Some(events) = events.next().await {
+                let Ok(directory) = this.read_with(cx, |this, _| {
+                    this.root.join(
+                        this.template_config
+                            .dir
+                            .as_deref()
+                            .unwrap_or(Path::new(".brainz/templates")),
+                    )
+                }) else {
+                    break;
+                };
+                if !events.iter().any(|event| {
+                    event.path.starts_with(&directory)
+                        || directory.starts_with(&event.path)
+                        || event.path == watch_root.join("brainz.toml")
+                }) {
+                    continue;
+                }
+                while this.read_with(cx, |this, _| this.loading).unwrap_or(false) {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(20))
+                        .await;
+                }
+                let root = watch_root.clone();
+                let loaded = cx
+                    .background_spawn(async move {
+                        Ok::<_, anyhow::Error>((
+                            Registry::load_brain(&root, None)?,
+                            brainz_templates::TemplatesConfig::load(&root)?,
+                        ))
+                    })
+                    .await;
+                if this
+                    .update_in(cx, |this, window, cx| {
+                        if this.saving {
+                            return;
+                        }
+                        match loaded {
+                            Ok((registry, config)) => {
+                                this.reload_templates(registry, config, window, cx)
+                            }
+                            Err(error) => {
+                                this.catalog_error =
+                                    Some(format!("Could not reload templates: {error:#}"));
+                                this.refresh_preview(cx);
+                            }
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         Self {
             root,
             project,
@@ -403,6 +465,8 @@ impl NotePicker {
             templates: Vec::new(),
             selected: None,
             selected_key: None,
+            catalog_error: None,
+            unavailable_template: None,
             request: RenderRequest {
                 folder,
                 ..Default::default()
@@ -425,6 +489,7 @@ impl NotePicker {
             subscriptions: vec![dismissed],
             field_subscriptions: Vec::new(),
             _load: load,
+            _watch: watch,
         }
     }
 
@@ -433,19 +498,44 @@ impl NotePicker {
             return;
         }
         self.selected = index.checked_sub(1);
+        let template_id = self
+            .selected
+            .and_then(|index| self.templates.get(index))
+            .map(|template| template.metadata.id.clone());
+        let preserve_inputs = template_id.as_ref().is_some_and(|id| {
+            self.selected_key
+                .as_ref()
+                .is_some_and(|key| key.starts_with(&format!("template:{id}:")))
+        });
         let key = self
             .selected
             .and_then(|index| self.templates.get(index))
-            .map(|template| format!("template:{}", template.metadata.id))
+            .map(|template| {
+                format!(
+                    "template:{}:{:?}",
+                    template.metadata.id, template.metadata.inputs
+                )
+            })
             .unwrap_or_else(|| "blank".into());
         if self.selected_key.as_ref() == Some(&key) {
             self.refresh_preview(cx);
             return;
         }
         self.selected_key = Some(key);
+        let focused_input = self.fields.iter().find_map(|(id, _, field)| {
+            field
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+                .then(|| id.clone())
+        });
+        if preserve_inputs {
+            self.capture_inputs(cx);
+        }
         self.fields.clear();
         self.field_subscriptions.clear();
-        self.request.input.clear();
+        if !preserve_inputs {
+            self.request.input.clear();
+        }
         let fields =
             if let Some(template) = self.selected.and_then(|index| self.templates.get(index)) {
                 template
@@ -471,6 +561,13 @@ impl NotePicker {
             let field = cx.new(|cx| {
                 let mut editor = Editor::single_line(window, cx);
                 editor.set_placeholder_text(&label, window, cx);
+                if let Some(value) = self.request.input.get(&id).and_then(|value| {
+                    value
+                        .as_str()
+                        .or_else(|| value.get("name").and_then(Value::as_str))
+                }) {
+                    editor.set_text(value, window, cx);
+                }
                 editor
             });
             self.field_subscriptions.push(cx.subscribe_in(
@@ -484,11 +581,42 @@ impl NotePicker {
             ));
             self.fields.push((id, label, field));
         }
+        if let Some(focused_input) = focused_input {
+            if let Some((_, _, field)) = self.fields.iter().find(|(id, _, _)| *id == focused_input)
+            {
+                window.focus(&field.focus_handle(cx), cx);
+            } else {
+                self.picker
+                    .update(cx, |picker, cx| picker.focus(window, cx));
+            }
+        }
         self.refresh_preview(cx);
     }
 
     fn refresh_preview(&mut self, cx: &mut Context<Self>) {
+        if let Some(error) = &self.catalog_error {
+            self.error = Some(error.clone());
+            self.rendered = None;
+            cx.notify();
+            return;
+        }
+        if let Some(template) = self.selected.and_then(|index| self.templates.get(index))
+            && self.unavailable_template.as_deref() == Some(&template.metadata.id)
+        {
+            self.error = Some(format!(
+                "{} is unavailable. Choose another template or fix its file.",
+                template.metadata.name
+            ));
+            self.rendered = None;
+            cx.notify();
+            return;
+        }
         self.error = None;
+        self.capture_inputs(cx);
+        self.render_preview(cx);
+    }
+
+    fn capture_inputs(&mut self, cx: &App) {
         for (id, _, field) in &self.fields {
             let text = field.read(cx).text(cx);
             let kind = self
@@ -512,6 +640,9 @@ impl NotePicker {
                 self.request.title = text;
             }
         }
+    }
+
+    fn render_preview(&mut self, cx: &mut Context<Self>) {
         let result =
             if let Some(template) = self.selected.and_then(|index| self.templates.get(index)) {
                 brainz_templates::render(template, &self.request)
@@ -757,8 +888,18 @@ impl NotePicker {
         });
         let preferred = self.selected.map_or(0, |index| index + 1);
         let mut names = vec![(
-            "Blank note".into(),
-            "Start writing in your current folder".into(),
+            if self.insertion.is_some() {
+                "Empty block"
+            } else {
+                "Blank note"
+            }
+            .into(),
+            if self.insertion.is_some() {
+                "Clear the slash command"
+            } else {
+                "Start writing in your current folder"
+            }
+            .into(),
         )];
         names.extend(self.templates.iter().map(|template| {
             (
@@ -777,6 +918,57 @@ impl NotePicker {
             picker.refresh(window, cx);
         });
         self.refresh_preview(cx);
+    }
+
+    fn reload_templates(
+        &mut self,
+        registry: Registry,
+        config: brainz_templates::TemplatesConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let previous = self
+            .selected
+            .and_then(|index| self.templates.get(index))
+            .cloned();
+        self.catalog_error = None;
+        self.unavailable_template = None;
+        let invalid_selected = previous.as_ref().is_some_and(|template| {
+            template
+                .file
+                .as_ref()
+                .is_some_and(|path| registry.errors.iter().any(|error| error.path == *path))
+        });
+        self.warnings = registry
+            .errors
+            .into_iter()
+            .map(|error| format!("{}: {}", error.path.display(), error.message))
+            .collect();
+        self.template_config = config;
+        self.templates = registry
+            .templates
+            .into_values()
+            .filter(|template| template.metadata.modes.contains(&self.request.mode))
+            .collect();
+        if let Some(previous) = &previous {
+            if invalid_selected
+                || !self
+                    .templates
+                    .iter()
+                    .any(|template| template.metadata.id == previous.metadata.id)
+            {
+                self.templates
+                    .retain(|template| template.metadata.id != previous.metadata.id);
+                self.unavailable_template = Some(previous.metadata.id.clone());
+                self.templates.push(previous.clone());
+            }
+        }
+        self.selected = previous.and_then(|previous| {
+            self.templates
+                .iter()
+                .position(|template| template.metadata.id == previous.metadata.id)
+        });
+        self.refresh_folder_suggestions(window, cx);
     }
     fn event_picker(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let template = self.selected.and_then(|index| self.templates.get(index))?;
@@ -1206,6 +1398,179 @@ impl PickerDelegate for TemplateDelegate {
 mod tests {
     use super::*;
     use gpui::UpdateGlobal as _;
+
+    #[gpui::test]
+    async fn template_watch_refreshes_forms_and_recovers_from_invalid_or_deleted_files(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let settings = settings::SettingsStore::test(cx);
+            cx.set_global(settings);
+            cx.set_global(db::AppDatabase::test_new());
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+        });
+        let root = tempfile::tempdir().expect("temporary brain");
+        let directory = root.path().join(".brainz/templates");
+        std::fs::create_dir_all(&directory).expect("template folder");
+        let path = directory.join("watch-test.md");
+        let original = "---\nname: Watch test\ninputs:\n  - id: title\n    label: Title\n---\n# {{input.title}}\nOriginal body\n";
+        std::fs::write(&path, original).expect("original template");
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            root.path(),
+            json!({".brainz": {"templates": {"watch-test.md": original}}}),
+        )
+        .await;
+        let project = Project::test(fs.clone(), [root.path()], cx).await;
+        let (workspace, _) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project.clone(), window, cx));
+        let (modal, cx) = cx.add_window_view(|window, cx| {
+            NotePicker::new(
+                root.path().to_path_buf(),
+                ".".into(),
+                project,
+                workspace.downgrade(),
+                false,
+                window,
+                cx,
+            )
+        });
+        modal.update_in(cx, |modal, window, cx| {
+            modal._load = Task::ready(());
+            modal.loading = false;
+            modal.reload_templates(
+                Registry::load_brain(root.path(), None).expect("registry"),
+                Default::default(),
+                window,
+                cx,
+            );
+            modal
+                .picker
+                .update(cx, |picker, cx| picker.focus(window, cx));
+        });
+        cx.run_until_parked();
+        cx.simulate_input("watch-test");
+        cx.run_until_parked();
+        let field = modal.read_with(cx, |modal, _| modal.fields[0].2.clone());
+        field.update_in(cx, |field, window, cx| {
+            window.focus(&field.focus_handle(cx), cx)
+        });
+        cx.simulate_input("Keep my title");
+        cx.run_until_parked();
+        let changed = original
+            .replace("Original body", "Updated body")
+            .replace("label: Title", "label: New title label");
+        std::fs::write(&path, changed).expect("edit template");
+        fs.emit_fs_event(&path, Some(fs::PathEventKind::Changed));
+        cx.run_until_parked();
+        modal.update_in(cx, |modal, window, cx| {
+            assert!(modal.error.is_none(), "{:?}", modal.error);
+            assert!(
+                modal
+                    .rendered
+                    .as_ref()
+                    .expect("updated preview")
+                    .body
+                    .contains("Updated body")
+            );
+            assert_eq!(modal.fields[0].1, "New title label");
+            assert_eq!(modal.fields[0].2.read(cx).text(cx), "Keep my title");
+            assert!(
+                modal.fields[0]
+                    .2
+                    .focus_handle(cx)
+                    .contains_focused(window, cx)
+            );
+        });
+        std::fs::write(&path, "---\nname: [broken\n---\nInvalid").expect("break template");
+        fs.emit_fs_event(&path, Some(fs::PathEventKind::Changed));
+        cx.run_until_parked();
+        modal.update_in(cx, |modal, window, cx| {
+            assert!(
+                modal
+                    .error
+                    .as_ref()
+                    .expect("visible error")
+                    .contains("unavailable")
+            );
+            assert!(modal.rendered.is_none());
+            modal.create(false, window, cx);
+            assert!(!modal.saving, "a broken template cannot be confirmed");
+            assert_eq!(modal.fields[0].2.read(cx).text(cx), "Keep my title");
+        });
+        std::fs::remove_file(&path).expect("remove fixture template");
+        fs.emit_fs_event(&path, Some(fs::PathEventKind::Removed));
+        cx.run_until_parked();
+        modal.read_with(cx, |modal, _| {
+            assert_eq!(modal.unavailable_template.as_deref(), Some("watch-test"));
+            assert!(modal.rendered.is_none());
+        });
+        std::fs::write(&path, original).expect("restore template");
+        fs.emit_fs_event(&path, Some(fs::PathEventKind::Created));
+        cx.run_until_parked();
+        modal.read_with(cx, |modal, cx| {
+            assert!(modal.error.is_none());
+            assert_eq!(modal.fields[0].2.read(cx).text(cx), "Keep my title");
+            assert!(
+                modal
+                    .rendered
+                    .as_ref()
+                    .expect("recovered")
+                    .body
+                    .contains("Original body")
+            );
+        });
+        let config = root.path().join("brainz.toml");
+        std::fs::write(&config, "[templates\n").expect("invalid configuration");
+        fs.emit_fs_event(&config, Some(fs::PathEventKind::Changed));
+        cx.run_until_parked();
+        modal.update_in(cx, |modal, window, cx| {
+            assert!(modal.catalog_error.is_some());
+            modal.create(false, window, cx);
+            assert!(!modal.saving);
+        });
+        std::fs::create_dir_all(root.path().join("custom-templates")).expect("custom folder");
+        let new_path = root.path().join("custom-templates/watch-test.md");
+        std::fs::write(
+            &new_path,
+            original.replace("Original body", "New directory"),
+        )
+        .expect("custom template");
+        std::fs::write(&config, "[templates]\ndir = 'custom-templates'\n")
+            .expect("custom configuration");
+        fs.emit_fs_event(&config, Some(fs::PathEventKind::Changed));
+        cx.run_until_parked();
+        modal.read_with(cx, |modal, _| {
+            assert!(modal.error.is_none());
+            assert!(
+                modal
+                    .rendered
+                    .as_ref()
+                    .expect("new directory preview")
+                    .body
+                    .contains("New directory")
+            );
+        });
+        std::fs::write(
+            &new_path,
+            original.replace("Original body", "Watched new directory"),
+        )
+        .expect("edit in custom folder");
+        fs.emit_fs_event(&new_path, Some(fs::PathEventKind::Changed));
+        cx.run_until_parked();
+        modal.read_with(cx, |modal, _| {
+            assert!(
+                modal
+                    .rendered
+                    .as_ref()
+                    .expect("custom directory watched")
+                    .body
+                    .contains("Watched new directory")
+            );
+        });
+        assert!(!root.path().join("keep-my-title.md").exists());
+    }
 
     #[test]
     fn template_order_prefers_folder_default_then_recents_then_name() {
