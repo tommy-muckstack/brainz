@@ -334,6 +334,7 @@ impl NotePicker {
                 cx,
             )
             .embedded()
+            .initial_width(rems(20.))
             .max_height(rems(20.))
         });
         let dismissed = cx.subscribe(&picker, |_, _, _: &DismissEvent, cx| cx.emit(DismissEvent));
@@ -1147,6 +1148,7 @@ impl Render for NotePicker {
             return picker.clone().into_any_element();
         }
         let event_picker = self.event_picker(cx);
+        let stacked = window.viewport_size().width < px(720.);
         v_flex()
             .key_context("BrainzNewNote")
             .on_action(
@@ -1155,6 +1157,7 @@ impl Render for NotePicker {
             .on_action(cx.listener(|_, _: &menu::Cancel, _, cx| cx.emit(DismissEvent)))
             .w(px(820.))
             .max_w(window.viewport_size().width - px(40.))
+            .max_h(window.viewport_size().height - px(100.))
             .rounded_lg()
             .overflow_hidden()
             .border_1()
@@ -1181,12 +1184,26 @@ impl Render for NotePicker {
             })
             .child(
                 h_flex()
+                    .id("note-template-body")
+                    .min_h_0()
+                    .overflow_y_scroll()
                     .items_start()
-                    .child(div().w(px(340.)).flex_shrink_0().child(self.picker.clone()))
+                    .when(stacked, |this| this.flex_col())
+                    .child(
+                        div()
+                            .debug_selector(|| "note-template-list".into())
+                            .w(rems(20.))
+                            .flex_shrink_0()
+                            .overflow_hidden()
+                            .child(self.picker.clone()),
+                    )
                     .child(
                         v_flex()
+                            .debug_selector(|| "note-template-form".into())
                             .flex_1()
                             .min_w_0()
+                            .when(stacked, |this| this.flex_none().w_full())
+                            .overflow_hidden()
                             .p_3()
                             .gap_3()
                             .children(event_picker)
@@ -1451,15 +1468,22 @@ impl PickerDelegate for TemplateDelegate {
                 .toggle_state(selected)
                 .child(
                     h_flex()
+                        .debug_selector(move || format!("note-template-result-{index}"))
+                        .w_full()
+                        .min_w_0()
                         .gap_2()
                         .child(Icon::new(IconName::File).color(Color::Muted))
                         .child(
-                            v_flex().min_w_0().child(Label::new(name.clone())).child(
-                                Label::new(description.clone())
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Muted)
-                                    .truncate(),
-                            ),
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(Label::new(name.clone()).truncate())
+                                .child(
+                                    Label::new(description.clone())
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted)
+                                        .truncate(),
+                                ),
                         ),
                 ),
         )
@@ -1984,6 +2008,30 @@ mod tests {
         });
         cx.simulate_input("Choose an offline format");
         cx.run_until_parked();
+        for width in [1024., 640.] {
+            cx.simulate_resize(gpui::size(px(width), px(900.)));
+            cx.run_until_parked();
+            let list = cx
+                .debug_bounds("note-template-list")
+                .expect("template list");
+            let form = cx
+                .debug_bounds("note-template-form")
+                .expect("template form");
+            let field_bounds =
+                field.read_with(cx, |editor, _| *editor.last_bounds().expect("input bounds"));
+            let result = cx
+                .debug_bounds("note-template-result-0")
+                .expect("template result");
+            assert!(result.right() <= list.right());
+            if width >= 720. {
+                assert!(form.left() >= list.right());
+            } else {
+                assert!(form.top() >= list.bottom());
+            }
+            assert!(field_bounds.left() >= form.left());
+            assert!(field_bounds.right() <= form.right());
+            assert!(form.right() <= px(width));
+        }
         modal.read_with(cx, |modal, _| {
             let rendered = modal.rendered.as_ref().expect("preview");
             assert!(rendered.body.contains("Choose an offline format"));
