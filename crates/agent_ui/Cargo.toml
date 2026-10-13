@@ -106,6 +106,7 @@ telemetry.workspace = true
 terminal.workspace = true
 terminal_view.workspace = true
 brainz_calendar.workspace = true
+brainz_templates.workspace = true
 text.workspace = true
 theme.workspace = true
 theme_settings.workspace = true

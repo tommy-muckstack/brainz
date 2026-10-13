@@ -126,7 +126,13 @@ This file records implementation and validation; an unchecked item is not shippe
   Mermaid, and brain file/person links. Required-input forms preserve the source
   note, reject changed or read-only targets, and apply as one undo step. URL,
   code-fence, inline-code, Unicode, link-escaping, caret, and native insertion
-  checks pass. Chat templates, AI actions, and skills remain separate work.
+  checks pass. AI actions and skills remain separate work.
+- Chat template insertion: `//` searches built-in/local templates by name,
+  description, and tags in a Brainz group alongside the existing agent commands.
+  The shared picker prepares an editable draft without sending; cancellation
+  preserves the original draft. Twelve chat-completion tests and three shared
+  native creation/insertion tests pass, as do all 47 message composer tests.
+  Chat completion/composer checks now run in CI. This has not shipped in an installer.
 
 - Delta source check (2026-10-13): Zed's official
   [Delta packaging repository](https://github.com/zed-industries/delta-nix)

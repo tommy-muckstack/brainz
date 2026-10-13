@@ -425,6 +425,7 @@ enum SlashCompletionCandidate {
     Skill(AvailableSkill),
     Command(AvailableCommand),
     LocalCommand(PromptLocalCommand),
+    Template(brainz_templates::Metadata),
 }
 
 impl SlashCompletionCandidate {
@@ -433,6 +434,7 @@ impl SlashCompletionCandidate {
             Self::Skill(skill) => &skill.name,
             Self::Command(command) => &command.name,
             Self::LocalCommand(command) => command.keyword(),
+            Self::Template(template) => &template.id,
         }
     }
 }
@@ -446,6 +448,7 @@ fn slash_completion_group_key(candidate: &SlashCompletionCandidate) -> u32 {
         SlashCompletionCandidate::Skill(_) => 0,
         SlashCompletionCandidate::Command(command) => 1 + command.category_order() as u32,
         SlashCompletionCandidate::LocalCommand(_) => 4,
+        SlashCompletionCandidate::Template(_) => 5,
     }
 }
 
@@ -1047,6 +1050,61 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
         }
     }
 
+    fn completion_for_template(
+        template: brainz_templates::Metadata,
+        range: Range<Anchor>,
+        typed_command: String,
+        editor: WeakEntity<Editor>,
+        workspace: WeakEntity<Workspace>,
+        show_header: bool,
+    ) -> Completion {
+        let template_id = template.id;
+        Completion {
+            replace_range: range.clone(),
+            new_text: typed_command.clone(),
+            label: CodeLabel::plain(format!("{} · {}", template_id, template.name), None),
+            documentation: Some(CompletionDocumentation::MultiLinePlainText(
+                template.description.into(),
+            )),
+            source: project::CompletionSource::Custom,
+            icon_path: Some(IconName::File.path().into()),
+            icon_color: None,
+            match_start: None,
+            snippet_deduplication_key: None,
+            insert_text_mode: Some(lsp::InsertTextMode::AS_IS),
+            confirm: Some(Arc::new(move |_, window, cx| {
+                let workspace = workspace.clone();
+                let editor = editor.clone();
+                let range = range.clone();
+                let expected = typed_command.clone();
+                let template_id = template_id.clone();
+                window.defer(cx, move |window, cx| {
+                    let Some(editor) = editor.upgrade() else {
+                        return;
+                    };
+                    workspace
+                        .update(cx, |workspace, cx| {
+                            brainz_calendar::new_note::insert_template_in_editor(
+                                workspace,
+                                &editor,
+                                range,
+                                expected,
+                                template_id,
+                                window,
+                                cx,
+                            );
+                        })
+                        .log_err();
+                });
+                false
+            })),
+            group: show_header.then(|| CompletionGroup {
+                key: "brainz-templates".into(),
+                label: Some("Brainz templates".into()),
+            }),
+        }
+    }
+
     fn search_slash_commands(
         &self,
         query: String,
@@ -1078,15 +1136,59 @@ impl<T: PromptCompletionProviderDelegate> PromptCompletionProvider<T> {
                 .into_iter()
                 .map(SlashCompletionCandidate::LocalCommand),
         );
-        if candidates.is_empty() {
-            return Task::ready(Vec::new());
-        }
+        let root = self.workspace.upgrade().and_then(|workspace| {
+            let workspace = workspace.read(cx);
+            workspace
+                .project()
+                .read(cx)
+                .is_local()
+                .then(|| {
+                    workspace
+                        .root_paths(cx)
+                        .first()
+                        .map(|root| root.to_path_buf())
+                })
+                .flatten()
+        });
+        let templates = cx.background_spawn(async move {
+            let Some(root) = root else { return Vec::new() };
+            match brainz_templates::Registry::load_brain(&root, None) {
+                Ok(registry) => registry
+                    .templates
+                    .into_values()
+                    .filter(|template| {
+                        template
+                            .metadata
+                            .modes
+                            .contains(&brainz_templates::InsertMode::Insert)
+                    })
+                    .map(|template| SlashCompletionCandidate::Template(template.metadata))
+                    .collect(),
+                Err(error) => {
+                    log::warn!("Could not load chat template completions: {error:#}");
+                    Vec::new()
+                }
+            }
+        });
 
         cx.spawn(async move |cx| {
+            candidates.extend(templates.await);
             let string_match_candidates = candidates
                 .iter()
                 .enumerate()
-                .map(|(id, candidate)| StringMatchCandidate::new(id, candidate.name()))
+                .map(|(id, candidate)| match candidate {
+                    SlashCompletionCandidate::Template(template) => StringMatchCandidate::new(
+                        id,
+                        &format!(
+                            "{} {} {} {}",
+                            template.id,
+                            template.name,
+                            template.description,
+                            template.tags.join(" ")
+                        ),
+                    ),
+                    _ => StringMatchCandidate::new(id, candidate.name()),
+                })
                 .collect::<Vec<_>>();
 
             let matches = fuzzy::match_strings(
@@ -1502,6 +1604,9 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
         let snapshot = buffer.read(cx).snapshot();
         let source_range = snapshot.anchor_before(state.source_range().start)
             ..snapshot.anchor_after(state.source_range().end);
+        let typed_command = snapshot
+            .text_for_range(source_range.clone())
+            .collect::<String>();
 
         let source = self.source.clone();
         let editor = self.editor.clone();
@@ -1531,6 +1636,8 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
                 );
                 let slash_candidates: Task<Vec<(SlashCompletionCandidate, Option<SkillInfo>)>> = {
                     let source = source.clone();
+                    let workspace = workspace.clone();
+                    let editor = editor.clone();
                     cx.spawn(async move |_this, cx| {
                         let candidates = search_task.await;
                         cx.update(|cx| {
@@ -1564,6 +1671,7 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
                                         )
                                     }
                                     SlashCompletionCandidate::Command(_)
+                                    | SlashCompletionCandidate::Template(_)
                                     | SlashCompletionCandidate::LocalCommand(_) => {
                                         (candidate, None)
                                     }
@@ -1589,6 +1697,16 @@ impl<T: PromptCompletionProviderDelegate> CompletionProvider for PromptCompletio
                     let completions = slash_candidates
                         .into_iter()
                         .map(|(candidate, skill_info)| match candidate {
+                            SlashCompletionCandidate::Template(template) => {
+                                Self::completion_for_template(
+                                    template,
+                                    source_range.clone(),
+                                    typed_command.clone(),
+                                    editor.clone(),
+                                    workspace.downgrade(),
+                                    show_section_headers,
+                                )
+                            }
                             SlashCompletionCandidate::Skill(skill) => {
                                 let label = build_slash_item_label(
                                     &skill.name,
@@ -3051,6 +3169,111 @@ fn completion_text_for_terminal_selections(
 mod tests {
     use super::*;
     use gpui::TestAppContext;
+
+    struct DraftTemplateDelegate(Arc<std::sync::atomic::AtomicUsize>);
+    impl PromptCompletionProviderDelegate for DraftTemplateDelegate {
+        fn supported_modes(&self, _: &App) -> Vec<PromptContextType> {
+            vec![PromptContextType::File, PromptContextType::Canvas]
+        }
+        fn supports_images(&self, _: &App) -> bool {
+            false
+        }
+        fn available_commands(&self, _: &App) -> Vec<AvailableCommand> {
+            vec![AvailableCommand {
+                name: "plan".into(),
+                description: "Agent planning".into(),
+                requires_argument: false,
+                source: None,
+                category: None,
+            }]
+        }
+        fn confirm_command(&self, _: &mut App) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[gpui::test]
+    async fn chat_templates_prepare_a_draft_without_sending(cx: &mut TestAppContext) {
+        use workspace::{AppState, MultiWorkspace};
+        let root = tempfile::tempdir().expect("temporary brain");
+        std::fs::create_dir_all(root.path().join(".brainz/templates")).expect("template folder");
+        std::fs::write(root.path().join(".brainz/templates/local-plan.md"), "---\nname: Local workshop\ndescription: Prepare an internal workshop\ntags: [retrospective]\n---\n# Plan\n\n{{cursor}}\n").expect("local template");
+        let state = cx.update(|cx| {
+            cx.set_global(db::AppDatabase::test_new());
+            let state = AppState::test(cx);
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+            editor::init(cx);
+            state
+        });
+        state
+            .fs
+            .as_fake()
+            .insert_tree(root.path(), serde_json::json!({"note.md":"Note"}))
+            .await;
+        let project = Project::test(state.fs.clone(), [root.path()], cx).await;
+        let (multi_workspace, cx) =
+            cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+        let workspace = multi_workspace.read_with(cx, |workspace, _| workspace.workspace().clone());
+        let buffer = cx.new(|cx| Buffer::local("A draft\n//decision", cx));
+        let editor =
+            cx.new_window_entity(|window, cx| Editor::for_buffer(buffer.clone(), None, window, cx));
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+            window.focus(&editor.focus_handle(cx), cx);
+        });
+        let mentions = cx.new(|_| MentionSet::new(project.downgrade(), None));
+        let sent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider = std::rc::Rc::new(PromptCompletionProvider::new(
+            DraftTemplateDelegate(sent.clone()),
+            editor.downgrade(),
+            mentions,
+            workspace.downgrade(),
+        ));
+        let candidates = cx
+            .update(|_, cx| provider.search_slash_commands(String::new(), cx))
+            .await;
+        assert!(
+            matches!(candidates.first(), Some(SlashCompletionCandidate::Command(command)) if command.name.as_ref() == "plan")
+        );
+        assert!(candidates.iter().any(|candidate| matches!(candidate, SlashCompletionCandidate::Template(template) if template.id == "decision")));
+        let tagged = cx
+            .update(|_, cx| provider.search_slash_commands("retrospective".into(), cx))
+            .await;
+        assert!(
+            matches!(tagged.first(), Some(SlashCompletionCandidate::Template(template)) if template.id == "local-plan")
+        );
+        editor.update_in(cx, |editor, window, cx| {
+            editor.set_completion_provider(Some(provider));
+            editor.change_selections(Default::default(), window, cx, |selections| {
+                selections.select_ranges([Point::new(1, 10)..Point::new(1, 10)])
+            });
+            editor.show_completions(&editor::actions::ShowCompletions, window, cx);
+        });
+        cx.run_until_parked();
+        editor
+            .update_in(cx, |editor, window, cx| {
+                editor.confirm_completion(
+                    &editor::actions::ConfirmCompletion::default(),
+                    window,
+                    cx,
+                )
+            })
+            .expect("template confirmation")
+            .await
+            .expect("prepare template");
+        cx.run_until_parked();
+        workspace.update_in(cx, |workspace, window, cx| {
+            assert!(workspace.has_active_modal(window, cx));
+            workspace.hide_modal(window, cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            editor.read_with(cx, |editor, cx| editor.text(cx)),
+            "A draft\n//decision"
+        );
+        assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(!root.path().join("note.md").exists());
+    }
 
     #[test]
     fn test_prompt_completion_parse() {

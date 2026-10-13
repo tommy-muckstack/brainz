@@ -474,6 +474,7 @@ dependencies = [
  "audio",
  "base64 0.22.1",
  "brainz_calendar",
+ "brainz_templates",
  "buffer_diff",
  "chrono",
  "client",

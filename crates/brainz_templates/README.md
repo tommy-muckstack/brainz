@@ -43,8 +43,10 @@ Markdown editors offer `/` templates, callouts, tasks, dates, tables, Mermaid,
 and file/person links. Required inputs use the native picker. Insertion omits
 note frontmatter and the leading title, preserves surrounding prose, and is one
 undo step. Closing the picker leaves the slash text; a changed insertion target
-is reported without overwriting it. Chat's `/` file and canvas picker is unchanged.
+is reported without overwriting it. Chat's `/` file and canvas picker is unchanged;
+`//` also offers templates in a Brainz group. Templates prepare an editable draft
+through the same input/preview picker and never send the message automatically.
 
-Folder defaults, the full context-provider registry, chat template completions,
+Folder defaults, the full context-provider registry,
 skill-bundled templates, and AI review remain open. AI sections stay as
 placeholders. This is not the complete templates-and-skills feature.
