@@ -136,15 +136,22 @@ This file records implementation and validation; an unchecked item is not shippe
 - Template defaults: shared configuration and glob precedence, custom daily IDs,
   folder-first/recent-first native ordering, and per-brain recent IDs in local
   app data. Changing the folder preserves the selected template and typed inputs.
+  CLI creation uses automatic rules and respects explicit overrides; suggestion
+  rules keep the new note blank. 88 native tests and 19 engine tests pass (one
+  existing ignored test), along with three CLI template tests.
 - Live template refresh: the open picker watches its configured directory and
   configuration. Reloads preserve selection, typed inputs, and input focus.
   Invalid or deleted selected templates block creation until repaired or replaced.
   A FakeFs watcher test verifies edits, deletion, restoration, invalid configuration,
   and switching the watched directory; five native picker/insertion tests pass.
-  CLI creation uses automatic rules and respects explicit overrides; suggestion
-  rules keep the new note blank. 88 native tests and 19 engine tests pass (one
-  existing ignored test), along with three CLI template tests. Editor suggestion
-  bars, automatic empty-file filling, and live registry refresh remain open.
+- Empty-note defaults: native editor bars offer Use, Blank, Change, and Undo.
+  Newly created notes can apply an automatic rule when opened; existing empty
+  notes only offer a suggestion. Initial worktree scans do not arm automatic
+  insertion. Typing, external buffer edits, and read-only state prevent replacement;
+  required inputs use the shared form. Links resolve from the actual note path.
+  90 native tests pass (one existing ignored), plus the expanded interaction
+  check for Undo/reopen and read-only buffers; Clippy passes. Closed-file filling
+  and the Brainz palette remain open. This has not shipped in an installer.
 
 - Delta source check (2026-10-13): Zed's official
   [Delta packaging repository](https://github.com/zed-industries/delta-nix)

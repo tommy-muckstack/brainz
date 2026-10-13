@@ -55,6 +55,21 @@ fn order_templates(templates: &mut [Template], suggested: Option<&str>, recents:
     });
 }
 
+pub(super) fn render_in_note(
+    template: &Template,
+    request: &RenderRequest,
+    path: &Path,
+) -> anyhow::Result<Rendered> {
+    let mut template = template.clone();
+    let mut request = request.clone();
+    template.metadata.path = Some("{{brainz_note_path}}".into());
+    request.context.insert(
+        "brainz_note_path".into(),
+        Value::String(path.to_string_lossy().into_owned()),
+    );
+    brainz_templates::render(&template, &request)
+}
+
 fn open(workspace: &mut Workspace, daily: bool, window: &mut Window, cx: &mut Context<Workspace>) {
     if !workspace.project().read(cx).is_local() {
         Editor::new_file(workspace, &workspace::NewFile, window, cx);
@@ -110,6 +125,24 @@ pub(super) fn insert_template(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
+    insert_template_with_mode(
+        workspace,
+        target,
+        template_id,
+        InsertMode::Insert,
+        window,
+        cx,
+    );
+}
+
+pub(super) fn insert_template_with_mode(
+    workspace: &mut Workspace,
+    target: super::slash::NoteInsertion,
+    template_id: String,
+    mode: InsertMode,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
     if !workspace.project().read(cx).is_local() {
         return;
     }
@@ -140,14 +173,21 @@ pub(super) fn insert_template(
             window,
             cx,
         );
-        picker.request.mode = InsertMode::Insert;
+        picker.request.mode = mode;
+        if mode == InsertMode::New {
+            picker.request.title = path
+                .as_ref()
+                .and_then(|path| path.file_stem())
+                .map(|title| title.to_string_lossy().replace(['-', '_'], " "))
+                .unwrap_or_default();
+        }
         picker.insertion = Some(target);
         picker.initial_template = Some(template_id);
         picker
     });
 }
 
-fn local_context(root: &Path) -> Map<String, Value> {
+pub(super) fn local_context(root: &Path) -> Map<String, Value> {
     static CALENDAR: OnceLock<Mutex<Option<(Instant, Vec<super::CalendarEvent>)>>> =
         OnceLock::new();
     let cached = CALENDAR.get_or_init(|| Mutex::new(None));
@@ -535,6 +575,11 @@ impl NotePicker {
         self.field_subscriptions.clear();
         if !preserve_inputs {
             self.request.input.clear();
+            if self.insertion.is_some() && self.request.mode == InsertMode::New {
+                self.request
+                    .input
+                    .insert("title".into(), Value::String(self.request.title.clone()));
+            }
         }
         let fields =
             if let Some(template) = self.selected.and_then(|index| self.templates.get(index)) {
@@ -645,7 +690,16 @@ impl NotePicker {
     fn render_preview(&mut self, cx: &mut Context<Self>) {
         let result =
             if let Some(template) = self.selected.and_then(|index| self.templates.get(index)) {
-                brainz_templates::render(template, &self.request)
+                if let Some(target) = &self.insertion
+                    && self.request.mode == InsertMode::New
+                    && let Some(path) = target.path(cx)
+                {
+                    path.strip_prefix(&self.root)
+                        .map_err(anyhow::Error::from)
+                        .and_then(|path| render_in_note(template, &self.request, path))
+                } else {
+                    brainz_templates::render(template, &self.request)
+                }
             } else {
                 brainz_templates::parse(
                     "---\nname: Blank note\npath: '{{folder}}/{{slug title}}.md'\n---\n{{cursor}}",
@@ -671,7 +725,7 @@ impl NotePicker {
                 }
                 if let Some(path) = &rendered.path {
                     // A read-only proposal; creation reserves the filename atomically later.
-                    if !self.daily {
+                    if !self.daily && self.insertion.is_none() {
                         match brainz_templates::available_path(&self.root, path) {
                             Ok(path) => rendered.path = Some(path),
                             Err(error) => self.error = Some(error.to_string()),
