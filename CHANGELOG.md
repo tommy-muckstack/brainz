@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.41 (2026-10-13)
+
 ### Improved
 
 - Review every outgoing commit before a sync publishes it. The check reads the exact staged content and each unpublished commit, including content removed later, and stops on credential filenames, secret markers, or files over 25 MB.

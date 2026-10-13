@@ -137,6 +137,10 @@ This file records implementation and validation; an unchecked item is not shippe
   template creation, and Connectors in a synthetic workspace. The GitHub asset
   digest, versioned download, stable download, and public feed were verified.
   [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.40)
+- 0.1.41 candidate: Markdown viewer safeguards (stale task rejection, viewer
+  Undo/Redo and dirty state, untouched-file saves, whitespace-preserving
+  Markdown defaults, Alt-click to source) and sync review of every outgoing
+  commit. Publication and signed-artifact verification are pending.
 
 ## Work in progress
 
@@ -204,7 +208,7 @@ This file records implementation and validation; an unchecked item is not shippe
   sync stops if the branch, HEAD, or a Git hook changes the reviewed tree. Six
   local fixture-repository tests cover nested names, binary and large content,
   staged-versus-working content, secrets removed later, renames, and branch
-  changes. Not yet released.
+  changes. Shipping in 0.1.41.
 - Canvas menu layering: native whiteboards yield while a GPUI popover is open,
   keeping the pane's + and split menus visible. Tracking is scoped per window
   and clears on dismissal, replacement, or release. Native regression coverage
@@ -231,7 +235,7 @@ This file records implementation and validation; an unchecked item is not shippe
   choice. Alt-click reopens the source editor without automatic preview taking
   over. All 32 viewer tests pass, including 40 synthetic round-trip fixtures,
   CRLF save/undo, stale tasks, uppercase task markers, and existing navigation.
-  These safeguards are not part of 0.1.40; full inline editing remains open.
+  These safeguards ship in 0.1.41; full inline editing remains open.
 
 - Delta source check (2026-10-13): Zed's official
   [Delta packaging repository](https://github.com/zed-industries/delta-nix)
