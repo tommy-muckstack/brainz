@@ -5395,9 +5395,7 @@ impl Sidebar {
                     workspace.update(cx, |workspace, cx| {
                         if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                             panel.update(cx, |panel, cx| {
-                                panel.remove_thread_without_activating_draft(
-                                    thread_id, window, cx,
-                                );
+                                panel.remove_thread_without_activating_draft(thread_id, window, cx);
                             });
                             true
                         } else {

@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+import argparse
+import datetime
+import sys
+from brainz_release import ROOT, bump_changelog, git, next_version, version
+
+parser = argparse.ArgumentParser(description="Read or bump Brainz's canonical version.")
+parser.add_argument("command", choices=["show", "bump"], nargs="?", default="show")
+parser.add_argument("kind", choices=["patch", "minor", "preview"], nargs="?", default="patch")
+parser.add_argument("--no-commit", action="store_true")
+arguments = parser.parse_args()
+try:
+    current = version()
+    if arguments.command == "show":
+        print(current)
+    else:
+        if git("status", "--porcelain"):
+            raise ValueError("Commit or set aside existing changes before bumping the release version")
+        release = next_version(current, arguments.kind)
+        changelog = ROOT / "CHANGELOG.md"
+        updated = bump_changelog(changelog.read_text(), release, datetime.date.today().isoformat())
+        changelog.write_text(updated)
+        (ROOT / "BRAINZ_VERSION").write_text(release + "\n")
+        if not arguments.no_commit:
+            git("add", "BRAINZ_VERSION", "CHANGELOG.md")
+            git("commit", "-m", f"Release {release}")
+        print(release)
+except (ValueError, OSError) as error:
+    sys.exit(str(error))

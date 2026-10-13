@@ -1681,12 +1681,17 @@
   //
   // Default: true
   "word_diff_enabled": true,
-  // Control what info is collected by Zed.
+  // Brainz keeps inherited telemetry off. Brainz privacy controls are opt-in.
+  "brainz": {
+    "update_channel": "stable",
+    "send_crash_reports": false,
+    "send_health_reports": false,
+  },
   "telemetry": {
     // Send debug info like crash reports.
-    "diagnostics": true,
+    "diagnostics": false,
     // Send anonymized usage data like what languages you're using Zed with.
-    "metrics": true,
+    "metrics": false,
     // Allow sending requests to Anthropic models that cannot be offered with
     // Zero Data Retention
     "anthropic_retention": false,
@@ -2325,7 +2330,7 @@
   // If you don't want any of these extensions, add this field to your settings
   // and change the value to `false`.
   "auto_install_extensions": {
-    "html": true,
+    "html": false,
   },
   // The capabilities granted to extensions.
   //

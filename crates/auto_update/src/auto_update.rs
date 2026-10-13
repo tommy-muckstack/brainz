@@ -12,6 +12,7 @@ use release_channel::{AppCommitSha, ReleaseChannel};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use settings::{RegisterSetting, Settings, SettingsStore};
+use sha2::{Digest, Sha256};
 use smol::fs::File;
 use smol::{
     fs,
@@ -187,12 +188,45 @@ pub struct AutoUpdater {
     update_check_type: UpdateCheckType,
     _wake_subscription: gpui::Subscription,
     dismissed_status: Option<AutoUpdateStatus>,
+    pending_release_notes: Option<String>,
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 pub struct ReleaseAsset {
     pub version: String,
     pub url: String,
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub channel: Option<settings::BrainzUpdateChannel>,
+    #[serde(default)]
+    pub notes_markdown: Option<String>,
+    #[serde(default)]
+    pub notes_url: Option<String>,
+    #[serde(default)]
+    pub rollout: Option<u8>,
+    #[serde(default)]
+    pub paused: bool,
+}
+
+impl ReleaseAsset {
+    fn is_available(&self, manual: bool, installation_id: Option<&str>) -> bool {
+        if self.paused {
+            return false;
+        }
+        let rollout = self.rollout.unwrap_or(100).min(100);
+        if manual || rollout == 100 {
+            return true;
+        }
+        let Some(installation_id) = installation_id else {
+            return false;
+        };
+        let digest = Sha256::digest(installation_id.as_bytes());
+        let bucket = u16::from_be_bytes([digest[0], digest[1]]) % 100;
+        bucket < u16::from(rollout)
+    }
 }
 
 struct MacOsUnmounter<'a> {
@@ -249,6 +283,21 @@ async fn unmount_disk_image(mount_path: &Path) {
 
 #[derive(Clone, Copy, Debug, RegisterSetting)]
 struct AutoUpdateSetting(bool);
+
+#[derive(Clone, Copy, Debug, RegisterSetting)]
+struct BrainzUpdateSetting(settings::BrainzUpdateChannel);
+
+impl Settings for BrainzUpdateSetting {
+    fn from_settings(content: &settings::SettingsContent) -> Self {
+        Self(
+            content
+                .brainz
+                .as_ref()
+                .and_then(|brainz| brainz.update_channel)
+                .unwrap_or_default(),
+        )
+    }
+}
 
 /// Whether or not to automatically check for updates.
 ///
@@ -347,8 +396,13 @@ pub fn check(_: &Check, window: &mut Window, cx: &mut App) {
 pub const BRAINZ_UPDATE_FEED: &str =
     "https://ihvfw4x5q9iy9zx1.public.blob.vercel-storage.com/brainz-latest.json";
 
-fn brainz_update_feed() -> String {
-    env::var("BRAINZ_UPDATE_FEED").unwrap_or_else(|_| BRAINZ_UPDATE_FEED.to_owned())
+fn brainz_update_feed(channel: settings::BrainzUpdateChannel) -> String {
+    env::var("BRAINZ_UPDATE_FEED").unwrap_or_else(|_| match channel {
+        settings::BrainzUpdateChannel::Stable => BRAINZ_UPDATE_FEED.to_owned(),
+        settings::BrainzUpdateChannel::Preview => {
+            BRAINZ_UPDATE_FEED.replace("brainz-latest.json", "brainz-preview.json")
+        }
+    })
 }
 
 pub fn release_notes_url(cx: &mut App) -> Option<String> {
@@ -367,9 +421,26 @@ pub fn release_notes_url(cx: &mut App) -> Option<String> {
         ReleaseChannel::Nightly => {
             "https://github.com/zed-industries/zed/commits/nightly/".to_string()
         }
-        ReleaseChannel::Dev => "https://github.com/tommy-muckstack/brainz/releases".to_string(),
+        ReleaseChannel::Dev => format!(
+            "https://github.com/tommy-muckstack/brainz/releases/tag/v{}",
+            release_channel::AppVersion::global(cx)
+        ),
     };
     Some(url)
+}
+
+pub fn bundled_release_notes(version: &Version) -> Option<String> {
+    let changelog = include_str!("../../../CHANGELOG.md");
+    let heading = format!("## {version}");
+    let mut lines = changelog
+        .lines()
+        .skip_while(|line| *line != heading && !line.starts_with(&format!("{heading} (")));
+    lines.next()?;
+    let notes = lines
+        .take_while(|line| !line.starts_with("## "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(notes.trim().to_string())
 }
 
 pub fn view_release_notes(_: &ViewReleaseNotes, cx: &mut App) -> Option<()> {
@@ -436,6 +507,10 @@ impl UpdateCheckType {
 impl EventEmitter<AutoUpdateEvent> for AutoUpdater {}
 
 impl AutoUpdater {
+    pub fn pending_release_notes(&self) -> Option<&str> {
+        self.pending_release_notes.as_deref()
+    }
+
     pub fn get(cx: &mut App) -> Option<Entity<Self>> {
         cx.default_global::<GlobalAutoUpdate>().0.clone()
     }
@@ -477,6 +552,7 @@ impl AutoUpdater {
             update_check_type: UpdateCheckType::Automatic,
             _wake_subscription: wake_subscription,
             dismissed_status: None,
+            pending_release_notes: None,
         }
     }
 
@@ -716,7 +792,8 @@ impl AutoUpdater {
         // Brainz: app updates come from the Brainz feed, not zed.dev. Other
         // assets (the remote server binary) keep the upstream path.
         if asset == "zed" {
-            let feed = brainz_update_feed();
+            let channel = cx.update(|cx| BrainzUpdateSetting::get_global(cx).0);
+            let feed = brainz_update_feed(channel);
             let mut response = http_client
                 .get(&feed, Default::default(), true)
                 .await
@@ -790,6 +867,19 @@ impl AutoUpdater {
 
         let fetched_release_data =
             Self::get_release_asset(&this, release_channel, None, "zed", OS, ARCH, cx).await?;
+        let available = this.read_with(cx, |this, _| {
+            fetched_release_data.is_available(
+                this.update_check_type.is_manual(),
+                this.client.telemetry().installation_id().as_deref(),
+            )
+        });
+        if !available {
+            this.update(cx, |this, cx| {
+                this.status = previous_status;
+                cx.notify();
+            });
+            return Ok(());
+        }
         let fetched_version = fetched_release_data.clone().version;
         let app_commit_sha = Ok(cx.update(|cx| AppCommitSha::try_global(cx).map(|sha| sha.full())));
         let newer_version = Self::check_if_fetched_version_is_newer(
@@ -821,6 +911,7 @@ impl AutoUpdater {
                 version: newer_version.clone(),
                 progress: None,
             };
+            this.pending_release_notes = fetched_release_data.notes_markdown.clone();
             cx.notify();
         });
 
@@ -993,8 +1084,7 @@ impl AutoUpdater {
         mut installed_version: Version,
         fetched_version: Version,
     ) -> Option<Version> {
-        // For non-nightly releases, ignore build and pre-release fields as they're not provided by our endpoints right now.
-        installed_version.pre = semver::Prerelease::EMPTY;
+        // Preview builds must be replaceable by the stable build of the same version.
         installed_version.build = semver::BuildMetadata::EMPTY;
         (fetched_version > installed_version).then_some(fetched_version)
     }
@@ -1128,6 +1218,7 @@ async fn download_release(
         .filter(|total_bytes| *total_bytes > 0);
 
     let mut downloaded_bytes: u64 = 0;
+    let mut checksum = Sha256::new();
     let mut last_reported_percent: Option<u8> = None;
     let mut buffer = [0u8; 8192];
     let body = response.body_mut();
@@ -1137,6 +1228,7 @@ async fn download_release(
             break;
         }
         target_file.write_all(&buffer[..bytes_read]).await?;
+        checksum.update(&buffer[..bytes_read]);
         downloaded_bytes += bytes_read as u64;
 
         if let Some(total_bytes) = total_bytes {
@@ -1150,6 +1242,19 @@ async fn download_release(
         }
     }
     target_file.flush().await?;
+    if let Some(expected_size) = release.size {
+        anyhow::ensure!(
+            downloaded_bytes == expected_size,
+            "Update couldn't be verified: download size differs. Download it from muckstack.com/download/brainz"
+        );
+    }
+    if let Some(expected_checksum) = release.sha256 {
+        let actual_checksum = format!("{:x}", checksum.finalize());
+        anyhow::ensure!(
+            actual_checksum.eq_ignore_ascii_case(&expected_checksum),
+            "Update couldn't be verified: checksum differs. Download it from muckstack.com/download/brainz"
+        );
+    }
     if total_bytes.is_some() && last_reported_percent != Some(100) {
         on_progress(Some(1.0));
     }
@@ -1269,6 +1374,13 @@ async fn install_release_macos(
         background_executor,
     };
 
+    if let Err(error) = verify_macos_app(&mount_path.join(running_app_filename)).await {
+        unmounter.unmount().await;
+        return Err(error.context(
+            "Update couldn't be verified. Download it from muckstack.com/download/brainz",
+        ));
+    }
+
     let mut cmd = new_command("rsync");
     cmd.args(["-av", "--delete", "--exclude", "Icon?"])
         .arg(&mounted_app_path)
@@ -1288,6 +1400,32 @@ async fn install_release_macos(
     );
 
     Ok(None)
+}
+
+async fn verify_macos_app(app: &Path) -> Result<()> {
+    // The expected identity is deliberately independent of the remotely supplied feed.
+    const REQUIREMENT: &str = "=anchor apple generic and identifier \"app.brainz.desktop\" and certificate leaf[subject.OU] = \"K8NAZ76CBQ\"";
+    let signature = new_command("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict", "-R", REQUIREMENT])
+        .arg(app)
+        .output()
+        .await
+        .context("Unable to verify app signature")?;
+    anyhow::ensure!(
+        signature.status.success(),
+        "App signature does not match Brainz's signing identity"
+    );
+    let assessment = new_command("/usr/sbin/spctl")
+        .args(["--assess", "--type", "execute"])
+        .arg(app)
+        .output()
+        .await
+        .context("Unable to assess app notarization")?;
+    anyhow::ensure!(
+        assessment.status.success(),
+        "macOS did not accept the update's notarization"
+    );
+    Ok(())
 }
 
 /// The directory under `mount_root` that contains `app_name`, whatever the
@@ -1412,6 +1550,129 @@ pub async fn finalize_auto_update_on_quit() {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn brainz_feed_is_backward_compatible_and_respects_pause_and_rollout() {
+        let legacy: super::ReleaseAsset =
+            serde_json::from_str(r#"{"version":"0.1.38","url":"https://example.com/app.dmg"}"#)
+                .unwrap();
+        assert!(legacy.is_available(false, None));
+        let mut feed = super::ReleaseAsset {
+            rollout: Some(0),
+            ..legacy
+        };
+        assert!(!feed.is_available(false, Some("local-installation")));
+        assert!(feed.is_available(true, Some("local-installation")));
+        feed.paused = true;
+        assert!(!feed.is_available(true, Some("local-installation")));
+        assert!(!feed.is_available(false, Some("local-installation")));
+        #[derive(serde::Deserialize)]
+        struct OldClient {
+            version: String,
+            url: String,
+        }
+        let old: OldClient = serde_json::from_value(serde_json::to_value(feed).unwrap()).unwrap();
+        assert_eq!(old.version, "0.1.38");
+        assert_eq!(old.url, "https://example.com/app.dmg");
+    }
+
+    #[test]
+    fn stable_replaces_matching_preview_without_downgrading_newer_previews() {
+        let preview = semver::Version::parse("0.2.0-preview.2").unwrap();
+        let stable = semver::Version::parse("0.2.0").unwrap();
+        assert_eq!(
+            super::AutoUpdater::check_if_fetched_version_is_newer_non_nightly(
+                preview.clone(),
+                stable.clone()
+            ),
+            Some(stable)
+        );
+        assert_eq!(
+            super::AutoUpdater::check_if_fetched_version_is_newer_non_nightly(
+                preview,
+                semver::Version::parse("0.1.39").unwrap()
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn installed_release_notes_are_available_offline_and_version_specific() {
+        let notes = super::bundled_release_notes(&semver::Version::new(0, 1, 38)).unwrap();
+        assert!(notes.contains("native picker"));
+        assert!(!notes.contains("0.1.37"));
+        assert!(super::bundled_release_notes(&semver::Version::new(9, 9, 9)).is_none());
+    }
+
+    #[gpui::test]
+    async fn mismatched_downloads_are_rejected_before_install(cx: &mut gpui::TestAppContext) {
+        cx.background_executor.allow_parking();
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("update.dmg");
+        for (checksum, size, expected_success) in [
+            (
+                format!("{:x}", sha2::Sha256::digest(b"verified update")),
+                15,
+                true,
+            ),
+            ("0".repeat(64), 15, false),
+            (
+                format!("{:x}", sha2::Sha256::digest(b"verified update")),
+                16,
+                false,
+            ),
+        ] {
+            let client = http_client::FakeHttpClient::create(|_| async {
+                Ok(http_client::Response::builder()
+                    .status(200)
+                    .body("verified update".into())
+                    .unwrap())
+            });
+            let release = super::ReleaseAsset {
+                version: "0.2.0".into(),
+                url: "https://example.com/update.dmg".into(),
+                sha256: Some(checksum),
+                size: Some(size),
+                ..Default::default()
+            };
+            assert_eq!(
+                super::download_release(&target, release, client, |_| {})
+                    .await
+                    .is_ok(),
+                expected_success
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[gpui::test]
+    async fn ad_hoc_signature_is_rejected_even_with_the_correct_bundle_identifier(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.background_executor.allow_parking();
+        let directory = tempfile::tempdir().unwrap();
+        let app = directory.path().join("Brainz.app");
+        std::fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        std::fs::copy("/usr/bin/true", app.join("Contents/MacOS/brainz")).unwrap();
+        std::fs::write(app.join("Contents/Info.plist"), r#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>app.brainz.desktop</string><key>CFBundleExecutable</key><string>brainz</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>"#).unwrap();
+        let signed = util::command::new_command("/usr/bin/codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&app)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            signed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&signed.stderr)
+        );
+        let error = super::verify_macos_app(&app).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not match Brainz's signing identity")
+        );
+    }
+
+    #[test]
     fn mounted_volume_is_found_by_the_app_it_holds() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("Brainz 0.1.5/Brainz.app/Contents")).unwrap();
@@ -1488,7 +1749,7 @@ mod tests {
                 let release_available = release_available.load(atomic::Ordering::Relaxed);
                 let dmg_rx = dmg_rx.clone();
                 async move {
-                if req.uri().path() == "/releases/stable/latest/asset" {
+                if req.uri().path() == "/brainz-latest.json" {
                     if release_available {
                         return Ok(Response::builder().status(200).body(
                             r#"{"version":"0.100.1","url":"https://test.example/new-download"}"#.into()
@@ -1524,14 +1785,10 @@ mod tests {
         cx.background_executor.advance_clock(POLL_INTERVAL);
         cx.background_executor.run_until_parked();
 
-        loop {
-            cx.background_executor.timer(Duration::from_millis(0)).await;
-            cx.run_until_parked();
-            let status = auto_updater.read_with(cx, |updater, _| updater.status());
-            if !matches!(status, AutoUpdateStatus::Idle) {
-                break;
-            }
-        }
+        cx.condition(&auto_updater, |updater, _| {
+            !matches!(updater.status(), AutoUpdateStatus::Idle)
+        })
+        .await;
         let status = auto_updater.read_with(cx, |updater, _| updater.status());
         assert_eq!(
             status,
@@ -1555,14 +1812,10 @@ mod tests {
             })));
         });
 
-        loop {
-            cx.background_executor.timer(Duration::from_millis(0)).await;
-            cx.run_until_parked();
-            let status = auto_updater.read_with(cx, |updater, _| updater.status());
-            if !matches!(status, AutoUpdateStatus::Downloading { .. }) {
-                break;
-            }
-        }
+        cx.condition(&auto_updater, |updater, _| {
+            !matches!(updater.status(), AutoUpdateStatus::Downloading { .. })
+        })
+        .await;
         let status = auto_updater.read_with(cx, |updater, _| updater.status());
         assert_eq!(
             status,
@@ -1605,6 +1858,7 @@ mod tests {
         let release = ReleaseAsset {
             version: "1.0.0".to_string(),
             url: "https://test.example/download".to_string(),
+            ..Default::default()
         };
 
         let reported = Rc::new(std::cell::RefCell::new(Vec::<f32>::new()));
@@ -1665,6 +1919,7 @@ mod tests {
         let release = ReleaseAsset {
             version: "1.0.0".to_string(),
             url: "https://test.example/download".to_string(),
+            ..Default::default()
         };
 
         let reported = Rc::new(std::cell::RefCell::new(Vec::<Option<f32>>::new()));

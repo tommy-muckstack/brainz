@@ -65,6 +65,25 @@ macro_rules! concat_sections {
 pub(crate) fn settings_data(cx: &App) -> Vec<SettingsPage> {
     vec![
         general_page(cx),
+        SettingsPage {
+            title: "Brainz",
+            items: vec![
+                SettingsPageItem::SectionHeader("Labs"),
+                SettingsPageItem::SubPageLink(SubPageLink {
+                    title: "Labs".into(),
+                    r#type: Default::default(),
+                    description: Some(
+                        "Try upcoming Brainz features. These preferences stay on this Mac.".into(),
+                    ),
+                    search_aliases: &["preview", "experimental", "feature flags"],
+                    json_path: Some("feature_flags"),
+                    in_json: true,
+                    files: USER,
+                    render: crate::pages::render_brainz_labs_page,
+                }),
+            ]
+            .into(),
+        },
         appearance_page(),
         keymap_page(),
         editor_page(),
@@ -497,9 +516,23 @@ fn general_page(cx: &App) -> SettingsPage {
         ]
     }
 
-    fn auto_update_section() -> [SettingsPageItem; 2] {
+    fn auto_update_section() -> [SettingsPageItem; 3] {
         [
             SettingsPageItem::SectionHeader("Auto Update"),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Brainz Update Channel",
+                description: "Stable receives released updates. Preview receives early builds. Switching back never downgrades your installed app.",
+                field: Box::new(SettingField {
+                    organization_override: None,
+                    json_path: Some("brainz.update_channel"),
+                    pick: |content| content.brainz.as_ref()?.update_channel.as_ref(),
+                    write: |content, value, _| {
+                        content.brainz.get_or_insert_default().update_channel = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
             SettingsPageItem::SettingItem(SettingItem {
                 title: "Auto Update",
                 description: "Whether or not to automatically check for updates.",

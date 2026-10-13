@@ -11,10 +11,28 @@ pub(crate) fn render_feature_flags_page(
     _window: &mut Window,
     cx: &mut Context<SettingsWindow>,
 ) -> AnyElement {
+    render_flags(scroll_handle, false, cx)
+}
+
+pub(crate) fn render_brainz_labs_page(
+    _settings_window: &SettingsWindow,
+    scroll_handle: &ScrollHandle,
+    _window: &mut Window,
+    cx: &mut Context<SettingsWindow>,
+) -> AnyElement {
+    render_flags(scroll_handle, true, cx)
+}
+
+fn render_flags(
+    scroll_handle: &ScrollHandle,
+    brainz_only: bool,
+    cx: &mut Context<SettingsWindow>,
+) -> AnyElement {
     // Sort by flag name so the list is stable between renders even though
     // `inventory::iter` order depends on link order.
-    let mut descriptors: Vec<&'static FeatureFlagDescriptor> =
-        FeatureFlagStore::known_flags().collect();
+    let mut descriptors: Vec<&'static FeatureFlagDescriptor> = FeatureFlagStore::known_flags()
+        .filter(|flag| !brainz_only || flag.name.starts_with("brainz-"))
+        .collect();
     descriptors.sort_by_key(|descriptor| descriptor.name);
 
     v_flex()
@@ -42,44 +60,55 @@ fn render_flag_row(
     let forced_on = FeatureFlagStore::is_forced_on(descriptor);
     let resolved = cx.global::<FeatureFlagStore>().resolved_key(descriptor, cx);
     let has_override = FeatureFlagStore::override_for(descriptor.name, cx).is_some();
+    let brainz = feature_flags::BRAINZ_FLAGS
+        .iter()
+        .find(|flag| flag.name == descriptor.name);
 
-    let header =
-        h_flex()
-            .justify_between()
-            .items_center()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(Label::new(descriptor.name).size(LabelSize::Default).color(
-                        if forced_on {
+    let header = h_flex()
+        .justify_between()
+        .items_center()
+        .child(
+            h_flex()
+                .gap_2()
+                .child(
+                    Label::new(brainz.map_or(descriptor.name, |flag| flag.title))
+                        .size(LabelSize::Default)
+                        .color(if forced_on {
                             Color::Muted
                         } else {
                             Color::Default
-                        },
-                    ))
-                    .when(forced_on, |this| {
-                        this.child(
-                            Label::new("enabled for all")
-                                .size(LabelSize::Small)
-                                .color(Color::Muted),
-                        )
-                    }),
-            )
-            .when(has_override && !forced_on, |this| {
-                let name = descriptor.name;
-                this.child(
-                    Button::new(SharedString::from(format!("reset-{}", name)), "Reset")
-                        .label_size(LabelSize::Small)
-                        .on_click(cx.listener(move |_, _, _, cx| {
-                            FeatureFlagStore::clear_override(name, <dyn Fs>::global(cx), cx);
-                        })),
+                        }),
                 )
-            });
+                .when(forced_on, |this| {
+                    this.child(
+                        Label::new("enabled for all")
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
+                }),
+        )
+        .when(has_override && !forced_on, |this| {
+            let name = descriptor.name;
+            this.child(
+                Button::new(SharedString::from(format!("reset-{}", name)), "Reset")
+                    .label_size(LabelSize::Small)
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        FeatureFlagStore::clear_override(name, <dyn Fs>::global(cx), cx);
+                    })),
+            )
+        });
 
     v_flex()
         .id(SharedString::from(format!("flag-row-{}", descriptor.name)))
         .gap_1()
         .child(header)
+        .when_some(brainz, |this, flag| {
+            this.child(
+                Label::new(flag.description)
+                    .size(LabelSize::Small)
+                    .color(Color::Muted),
+            )
+        })
         .child(render_flag_variants(descriptor, resolved, forced_on, cx))
         .into_any_element()
 }

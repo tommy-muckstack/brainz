@@ -257,6 +257,9 @@ fn log_worktree_diagnostics(
 }
 
 pub async fn upload_previous_minidumps(client: Arc<Client>) -> anyhow::Result<()> {
+    if !client.telemetry().diagnostics_enabled() {
+        return Ok(());
+    }
     let Some(minidump_endpoint) = MINIDUMP_ENDPOINT.as_ref() else {
         log::warn!("Minidump endpoint not set");
         return Ok(());

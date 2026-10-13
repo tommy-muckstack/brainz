@@ -99,10 +99,7 @@ fn view_release_notes_locally(
 ) {
     let release_channel = ReleaseChannel::global(cx);
 
-    if matches!(
-        release_channel,
-        ReleaseChannel::Nightly | ReleaseChannel::Dev
-    ) {
+    if release_channel == ReleaseChannel::Nightly {
         if let Some(url) = release_notes_url(cx) {
             cx.open_url(&url);
         }
@@ -110,6 +107,11 @@ fn view_release_notes_locally(
     }
 
     let version = AppVersion::global(cx).to_string();
+    let local_notes = (release_channel == ReleaseChannel::Dev).then(|| ReleaseNotesBody {
+        title: format!("What's new in Brainz {version}"),
+        release_notes: auto_update::bundled_release_notes(&AppVersion::global(cx))
+            .unwrap_or_else(|| format!("# Brainz {version}\n\nRelease notes are not bundled with this development build.")),
+    });
 
     let client = client::Client::global(cx).http_client();
     let url = client.build_url(&format!(
@@ -125,18 +127,31 @@ fn view_release_notes_locally(
 
     cx.spawn_in(window, async move |workspace, cx| {
         let markdown = markdown.await.log_err();
-        let response = client.get(&url, Default::default(), true).await;
-        let Some(mut response) = response.log_err() else {
-            workspace
-                .update_in(cx, notify_release_notes_failed_to_show)
-                .log_err();
-            return;
+        let body = if let Some(body) = local_notes {
+            Ok(body)
+        } else {
+            let response = client.get(&url, Default::default(), true).await;
+            let Some(mut response) = response.log_err() else {
+                workspace
+                    .update_in(cx, notify_release_notes_failed_to_show)
+                    .log_err();
+                return;
+            };
+            let mut body = Vec::new();
+            if response
+                .body_mut()
+                .read_to_end(&mut body)
+                .await
+                .log_err()
+                .is_none()
+            {
+                workspace
+                    .update_in(cx, notify_release_notes_failed_to_show)
+                    .log_err();
+                return;
+            }
+            serde_json::from_slice::<ReleaseNotesBody>(&body)
         };
-
-        let mut body = Vec::new();
-        response.body_mut().read_to_end(&mut body).await.ok();
-
-        let body: serde_json::Result<ReleaseNotesBody> = serde_json::from_slice(body.as_slice());
 
         let res: Option<()> = maybe!(async {
             let body = body.ok()?;

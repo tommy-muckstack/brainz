@@ -390,7 +390,6 @@ impl Render for PdfView {
             move |bounds, _, window, cx| {
                 let width = f32::from(bounds.size.width);
                 if (width - measured_width).abs() > 1. {
-                    let view = view.clone();
                     window.defer(cx, move |_, cx| {
                         if let Err(error) = view.update(cx, |this, cx| {
                             if (this.viewport_width - width).abs() > 1. {

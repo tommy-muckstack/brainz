@@ -45,6 +45,9 @@ pub struct Telemetry {
 
 struct TelemetryState {
     settings: TelemetrySettings,
+    // Brainz never supplies a destination for inherited free-form Zed events.
+    // Its health reporting uses a separate, content-free event schema.
+    endpoint: Option<String>,
     system_id: Option<Arc<str>>,       // Per system
     installation_id: Option<Arc<str>>, // Per app installation (different for dev, nightly, preview, and stable)
     session_id: Option<String>,        // Per app launch
@@ -90,9 +93,9 @@ static ZED_CLIENT_CHECKSUM_SEED: LazyLock<Option<Vec<u8>>> = LazyLock::new(|| {
 });
 
 pub static MINIDUMP_ENDPOINT: LazyLock<Option<String>> = LazyLock::new(|| {
-    option_env!("ZED_MINIDUMP_ENDPOINT")
+    option_env!("BRAINZ_MINIDUMP_ENDPOINT")
         .map(str::to_string)
-        .or_else(|| env::var("ZED_MINIDUMP_ENDPOINT").ok())
+        .or_else(|| env::var("BRAINZ_MINIDUMP_ENDPOINT").ok())
 });
 
 pub fn should_install_crash_handler(channel: ReleaseChannel) -> bool {
@@ -190,6 +193,7 @@ impl Telemetry {
     ) -> Arc<Self> {
         let state = Arc::new(Mutex::new(TelemetryState {
             settings: *TelemetrySettings::get_global(cx),
+            endpoint: None,
             architecture: env::consts::ARCH,
             release_channel: ReleaseChannel::try_global(cx),
             system_id: None,
@@ -369,11 +373,12 @@ impl Telemetry {
     }
 
     pub fn metrics_enabled(self: &Arc<Self>) -> bool {
-        self.state.lock().settings.metrics
+        let state = self.state.lock();
+        state.settings.metrics && state.endpoint.is_some()
     }
 
     pub fn diagnostics_enabled(self: &Arc<Self>) -> bool {
-        self.state.lock().settings.diagnostics
+        self.state.lock().settings.diagnostics && MINIDUMP_ENDPOINT.is_some()
     }
 
     pub fn set_authenticated_user_info(
@@ -383,7 +388,7 @@ impl Telemetry {
     ) {
         let mut state = self.state.lock();
 
-        if !state.settings.metrics {
+        if !state.settings.metrics || state.endpoint.is_none() {
             return;
         }
 
@@ -565,12 +570,11 @@ impl Telemetry {
 
     fn report_event(self: &Arc<Self>, mut event: Event) {
         let mut state = self.state.lock();
-        // RUST_LOG=telemetry=trace to debug telemetry events
-        log::trace!(target: "telemetry", "{:?}", event);
-
-        if !state.settings.metrics {
+        if !state.settings.metrics || state.endpoint.is_none() {
             return;
         }
+        // RUST_LOG=telemetry=trace to debug explicitly enabled telemetry events.
+        log::trace!(target: "telemetry", "{:?}", event);
 
         match &mut event {
             Event::Flexible(event) => event
@@ -648,9 +652,11 @@ impl Telemetry {
         Ok(Request::builder()
             .method(Method::POST)
             .uri(
-                self.http_client
-                    .build_zed_api_url("/telemetry/events", &[])?
-                    .as_ref(),
+                self.state
+                    .lock()
+                    .endpoint
+                    .as_deref()
+                    .context("Telemetry has no destination")?,
             )
             .header("Content-Type", "application/json")
             .header("x-zed-checksum", checksum)
@@ -663,7 +669,7 @@ impl Telemetry {
             state.first_event_date_time = None;
             let events = mem::take(&mut state.events_queue);
             state.flush_events_task.take();
-            if events.is_empty() {
+            if events.is_empty() || !state.settings.metrics || state.endpoint.is_none() {
                 return Ok(());
             }
 
@@ -757,7 +763,7 @@ mod tests {
         let session_id = "session_id".to_string();
 
         let (telemetry, first_date_time, event) = cx.update(|cx| {
-            let telemetry = Telemetry::new(clock.clone(), http, cx);
+            let telemetry = test_telemetry(clock.clone(), http, cx);
 
             telemetry.state.lock().max_queue_size = 4;
             telemetry.start(system_id, installation_id, session_id, cx);
@@ -834,7 +840,7 @@ mod tests {
         let session_id = "session_id".to_string();
 
         cx.update(|cx| {
-            let telemetry = Telemetry::new(clock.clone(), http, cx);
+            let telemetry = test_telemetry(clock.clone(), http, cx);
             telemetry.state.lock().max_queue_size = 4;
             telemetry.start(system_id, installation_id, session_id, cx);
 
@@ -880,7 +886,7 @@ mod tests {
         let http = FakeHttpClient::with_200_response();
 
         let telemetry = cx.update(|cx| {
-            let telemetry = Telemetry::new(clock.clone(), http, cx);
+            let telemetry = test_telemetry(clock.clone(), http, cx);
             telemetry.start(
                 Some("system_id".to_string()),
                 Some("installation_id".to_string()),
@@ -952,7 +958,7 @@ mod tests {
 
         let clock = Arc::new(FakeSystemClock::new());
         let http = FakeHttpClient::with_200_response();
-        let telemetry = cx.update(|cx| Telemetry::new(clock.clone(), http, cx));
+        let telemetry = cx.update(|cx| test_telemetry(clock.clone(), http, cx));
         let worktree_id = 1;
 
         // Scan of empty worktree finds nothing
@@ -976,7 +982,7 @@ mod tests {
 
         let clock = Arc::new(FakeSystemClock::new());
         let http = FakeHttpClient::with_200_response();
-        let telemetry = cx.update(|cx| Telemetry::new(clock.clone(), http, cx));
+        let telemetry = cx.update(|cx| test_telemetry(clock.clone(), http, cx));
 
         test_project_discovery_helper(
             telemetry,
@@ -992,7 +998,7 @@ mod tests {
 
         let clock = Arc::new(FakeSystemClock::new());
         let http = FakeHttpClient::with_200_response();
-        let telemetry = cx.update(|cx| Telemetry::new(clock.clone(), http, cx));
+        let telemetry = cx.update(|cx| test_telemetry(clock.clone(), http, cx));
 
         test_project_discovery_helper(
             telemetry,
@@ -1008,7 +1014,7 @@ mod tests {
 
         let clock = Arc::new(FakeSystemClock::new());
         let http = FakeHttpClient::with_200_response();
-        let telemetry = cx.update(|cx| Telemetry::new(clock.clone(), http, cx));
+        let telemetry = cx.update(|cx| test_telemetry(clock.clone(), http, cx));
 
         // Using different worktrees, as production code blocks from reporting a
         // project type for the same worktree multiple times
@@ -1064,6 +1070,46 @@ mod tests {
             let settings_store = SettingsStore::test(cx);
             cx.set_global(settings_store);
         });
+    }
+
+    fn test_telemetry(
+        clock: Arc<dyn SystemClock>,
+        http: Arc<HttpClientWithUrl>,
+        cx: &mut App,
+    ) -> Arc<Telemetry> {
+        let telemetry = Telemetry::new(clock, http, cx);
+        {
+            let mut state = telemetry.state.lock();
+            state.settings.metrics = true;
+            state.endpoint = Some("https://telemetry.example/events".into());
+        }
+        telemetry
+    }
+
+    #[gpui::test]
+    async fn brainz_never_uploads_inherited_events_even_with_stale_opt_in(cx: &mut TestAppContext) {
+        init_test(cx);
+        let telemetry = cx.update(|cx| {
+            assert!(!TelemetrySettings::get_global(cx).metrics);
+            assert!(!TelemetrySettings::get_global(cx).diagnostics);
+            Telemetry::new(
+                Arc::new(FakeSystemClock::new()),
+                FakeHttpClient::create(|_| async {
+                    panic!("Brainz must not send inherited telemetry")
+                }),
+                cx,
+            )
+        });
+        for opted_in in [false, true] {
+            telemetry.state.lock().settings.metrics = opted_in;
+            telemetry.report_event(Event::Flexible(FlexibleEvent {
+                event_type: "private note opened".into(),
+                event_properties: HashMap::new(),
+            }));
+            telemetry.flush_events_inner().await.unwrap();
+            assert!(!telemetry.metrics_enabled());
+            assert!(is_empty_state(&telemetry));
+        }
     }
 
     fn is_empty_state(telemetry: &Telemetry) -> bool {

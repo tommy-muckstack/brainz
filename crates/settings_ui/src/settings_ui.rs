@@ -568,6 +568,7 @@ fn init_renderers(cx: &mut App) {
         .add_basic_renderer::<settings::ReduceMotionMode>(render_dropdown)
         .add_basic_renderer::<settings::CurrentLineHighlight>(render_dropdown)
         .add_basic_renderer::<settings::ShowWhitespaceSetting>(render_dropdown)
+        .add_basic_renderer::<settings::BrainzUpdateChannel>(render_dropdown)
         .add_basic_renderer::<settings::SoftWrap>(render_dropdown)
         .add_basic_renderer::<settings::SoftWrapIndent>(render_dropdown)
         .add_basic_renderer::<settings::AutoIndentMode>(render_dropdown)

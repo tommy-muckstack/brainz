@@ -459,7 +459,13 @@ impl ExtensionStore {
             initial_index_load.await;
             this.update(cx, |this, cx| this.auto_install_extensions(cx))
                 .ok();
-            this.update(cx, |this, cx| this.check_for_updates(cx)).ok();
+            // Brainz only contacts the extension service when the user requests it.
+            if cx.update(|cx| release_channel::ReleaseChannel::try_global(cx))
+                != Some(release_channel::ReleaseChannel::Dev)
+            {
+                this.update(cx, |this, cx| this.check_for_updates(cx))
+                    .log_err();
+            }
         })
         .detach();
 
