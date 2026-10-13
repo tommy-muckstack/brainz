@@ -22,6 +22,7 @@ pub mod permissions;
 pub mod prep;
 mod slash;
 pub mod status_decay;
+mod sync_review;
 pub mod themes;
 pub mod themes_signals;
 pub mod todo;

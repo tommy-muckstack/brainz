@@ -195,6 +195,16 @@ This file records implementation and validation; an unchecked item is not shippe
   implemented. Five local bare-origin tests cover clean pulls, staged/unstaged
   and untracked text, CRLF preservation, divergence, concurrent edits, and branch
   changes. No real brain repositories are used. Shipped in 0.1.40.
+- Sync review: every outgoing commit is reviewed before publishing. The
+  staged tree is captured with `write-tree` and reviewed from Git objects, not
+  the working files, so edits made during review cannot slip into the commit.
+  Each unpublished commit on main is reviewed too, including content removed
+  by a later commit. Credential filenames, secret markers, and files over 25 MB
+  stop the sync. Reviewed changes are committed from a private index, and the
+  sync stops if the branch, HEAD, or a Git hook changes the reviewed tree. Six
+  local fixture-repository tests cover nested names, binary and large content,
+  staged-versus-working content, secrets removed later, renames, and branch
+  changes. Not yet released.
 - Canvas menu layering: native whiteboards yield while a GPUI popover is open,
   keeping the pane's + and split menus visible. Tracking is scoped per window
   and clears on dismissal, replacement, or release. Native regression coverage
