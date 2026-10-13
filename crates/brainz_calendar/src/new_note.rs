@@ -75,6 +75,20 @@ fn open(workspace: &mut Workspace, daily: bool, window: &mut Window, cx: &mut Co
     });
 }
 
+pub fn insert_template_in_editor(
+    workspace: &mut Workspace,
+    editor: &Entity<Editor>,
+    range: std::ops::Range<language::Anchor>,
+    expected: String,
+    template_id: String,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    if let Some(target) = super::slash::NoteInsertion::new(editor, range, expected, cx) {
+        insert_template(workspace, target, template_id, window, cx);
+    }
+}
+
 pub(super) fn insert_template(
     workspace: &mut Workspace,
     target: super::slash::NoteInsertion,
@@ -82,16 +96,20 @@ pub(super) fn insert_template(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    let Some(path) = target.path(cx) else { return };
+    if !workspace.project().read(cx).is_local() {
+        return;
+    }
+    let path = target.path(cx);
     let Some(root) = workspace
         .root_paths(cx)
         .into_iter()
-        .find(|root| path.starts_with(root))
+        .find(|root| path.as_ref().is_none_or(|path| path.starts_with(root)))
     else {
         return;
     };
     let folder = path
-        .parent()
+        .as_ref()
+        .and_then(|path| path.parent())
         .and_then(|parent| parent.strip_prefix(&root).ok())
         .map(|folder| folder.to_string_lossy().into_owned())
         .filter(|folder| !folder.is_empty())

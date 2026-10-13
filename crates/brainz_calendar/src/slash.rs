@@ -539,6 +539,20 @@ pub(super) struct NoteInsertion {
 }
 
 impl NoteInsertion {
+    pub(super) fn new(
+        editor: &Entity<Editor>,
+        range: Range<Anchor>,
+        expected: String,
+        cx: &App,
+    ) -> Option<Self> {
+        Some(Self {
+            editor: editor.downgrade(),
+            buffer: editor.read(cx).buffer().read(cx).as_singleton()?,
+            range,
+            expected,
+        })
+    }
+
     pub fn path(&self, cx: &App) -> Option<PathBuf> {
         Some(self.buffer.read(cx).file()?.as_local()?.abs_path(cx))
     }

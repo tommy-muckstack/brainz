@@ -8,6 +8,7 @@
 - Create notes with a searchable native template picker, Markdown preview, calendar-event selection, and the existing folder hierarchy; open directly at the template caret.
 - Open today's daily note without replacing previous edits, and create notes through `brainz new` with atomic no-overwrite saves.
 - Insert templates and common blocks with `/` in Markdown notes, including file and person links; keep URLs and code literal and undo each insertion in one step.
+- Prepare chat drafts from built-in or local templates through `//`, with input forms and preview; keep `/` for files and canvases and send only when ready.
 
 ## 0.1.39 (2026-10-13)
 

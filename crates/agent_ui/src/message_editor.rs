@@ -3840,9 +3840,9 @@ mod tests {
             })
         });
 
-        // `/helpful` would fuzzy-match both commands ("helpful" is a
+        // `//helpful` would fuzzy-match both commands ("helpful" is a
         // subsequence of "not-helpful"), so drive the unambiguous keyword.
-        cx.simulate_input("/not-helpful");
+        cx.simulate_input("//not-helpful");
         cx.run_until_parked();
 
         editor.read_with(&cx, |editor, _| {
@@ -3860,7 +3860,7 @@ mod tests {
         cx.run_until_parked();
 
         editor.read_with(&cx, |editor, cx| {
-            // The `/keyword` text is removed when a local command is confirmed.
+            // The `//keyword` text is removed when a local command is confirmed.
             assert_eq!(editor.text(cx), "");
             assert!(!editor.has_visible_completions_menu());
         });
@@ -3904,7 +3904,7 @@ mod tests {
 
         // Track every event emitted by the message editor across the
         // lifetime of the test. We expect to see Focus (from the focus
-        // call below) and SlashAutocompleteOpened (from typing "/").
+        // call below) and SlashAutocompleteOpened (from typing "//").
         let received_events: Arc<parking_lot::Mutex<Vec<MessageEditorEvent>>> =
             Arc::new(parking_lot::Mutex::new(Vec::new()));
 
@@ -3950,10 +3950,10 @@ mod tests {
             message_editor.read(cx).editor().clone()
         });
 
-        cx.simulate_input("/");
+        cx.simulate_input("//");
 
         editor.update_in(&mut cx, |editor, _window, cx| {
-            assert_eq!(editor.text(cx), "/");
+            assert_eq!(editor.text(cx), "//");
             assert!(editor.has_visible_completions_menu());
         });
 
@@ -4103,6 +4103,7 @@ mod tests {
                     format!("six.txt b{slash}"),
                     format!("five.txt b{slash}"),
                     "Files & Directories".into(),
+                    "Canvases".into(),
                     "Symbols".into()
                 ]
             );
@@ -4138,6 +4139,7 @@ mod tests {
                     format!("six.txt b{slash}"),
                     format!("five.txt b{slash}"),
                     "Files & Directories".into(),
+                    "Canvases".into(),
                     "Symbols".into(),
                     "Threads".into(),
                     "Fetch".into()
@@ -6172,7 +6174,7 @@ mod tests {
         editor.update(&mut cx, |editor, cx| {
             assert_eq!(
                 editor.text(cx),
-                format!("[@{image_name}]({expected_image_uri}) [@file.txt]({expected_file_uri}) ")
+                format!("[@{image_name}]({expected_image_uri})[@file.txt]({expected_file_uri}) ")
             );
         });
 
@@ -6391,12 +6393,12 @@ mod tests {
                 image_range,
                 image_uri,
                 Mention::Image(MentionImage {
-                    data: SharedString::from("").into(),
+                    data: SharedString::from(""),
                     format: ImageFormat::Png,
                 }),
             ),
-            (note_range, note_uri.clone(), Mention::Link),
-            (pdf_range, pdf_uri.clone(), Mention::Link),
+            (note_range, note_uri, Mention::Link),
+            (pdf_range, pdf_uri, Mention::Link),
         ];
         strip_space_after_hidden_chips(&mut text, &mut mentions);
         assert_eq!(
