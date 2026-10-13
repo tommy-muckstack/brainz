@@ -22,6 +22,7 @@
 ### Fixed
 
 - Focus the chat composer when clicking its empty padding, including while a canvas is open.
+- Keep template results clear of input fields and previews, with a stacked layout in narrow windows.
 - Keep the canvas from covering the pane's + and split popover menus.
 - Preserve newer local edits when updating after a GitHub merge, and stop pulls that cannot fast-forward safely without stashing or rebasing the live notes.
 
