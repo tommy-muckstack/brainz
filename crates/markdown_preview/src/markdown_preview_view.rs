@@ -127,6 +127,12 @@ enum PreviewLinkTarget {
 }
 
 impl MarkdownPreviewView {
+    pub fn suppress_auto_preview_once(editor: &Entity<Editor>, cx: &mut App) {
+        cx.default_global::<SuppressedAutoPreviews>()
+            .0
+            .insert(editor.entity_id());
+    }
+
     pub fn register(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
         cx.default_global::<SuppressedAutoPreviews>();
         let workspace_entity = cx.entity();

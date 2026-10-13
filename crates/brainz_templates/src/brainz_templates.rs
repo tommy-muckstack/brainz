@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 use std::{
     collections::BTreeMap,
     fs,
-    io::Read as _,
+    io::{Read as _, Write as _},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -686,6 +686,68 @@ pub fn available_path(root: &Path, relative: &Path) -> Result<PathBuf> {
         }
     }
     bail!("Too many notes already use this name")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CreatePolicy {
+    Unique,
+    OpenExisting,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreatedNote {
+    pub path: PathBuf,
+    pub created: bool,
+    pub cursor: Option<usize>,
+}
+
+pub fn create_note(root: &Path, rendered: &Rendered, policy: CreatePolicy) -> Result<CreatedNote> {
+    let relative = rendered
+        .path
+        .as_ref()
+        .context("Template has no note path")?;
+    ensure!(
+        relative
+            .extension()
+            .is_some_and(|extension| extension == "md"),
+        "New notes must be Markdown files"
+    );
+    let initial = scoped_path(root, relative)?;
+    let parent = initial.parent().context("Note has no folder")?;
+    fs::create_dir_all(parent)?;
+    // Prepare the complete content before publishing it so watchers never see a partial note.
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(rendered.body.as_bytes())?;
+    temporary.as_file().sync_all()?;
+    for _ in 0..10_000 {
+        let candidate = match policy {
+            CreatePolicy::Unique => available_path(root, relative)?,
+            CreatePolicy::OpenExisting => relative.clone(),
+        };
+        let path = scoped_path(root, &candidate)?;
+        match temporary.persist_noclobber(&path) {
+            Ok(_) => {
+                return Ok(CreatedNote {
+                    path: candidate,
+                    created: true,
+                    cursor: rendered.cursor,
+                });
+            }
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                temporary = error.file;
+                if policy == CreatePolicy::OpenExisting {
+                    ensure!(path.is_file(), "The daily note path is not a file");
+                    return Ok(CreatedNote {
+                        path: candidate,
+                        created: false,
+                        cursor: None,
+                    });
+                }
+            }
+            Err(error) => return Err(error.error.into()),
+        }
+    }
+    bail!("Could not reserve an unused note name")
 }
 
 #[cfg(test)]

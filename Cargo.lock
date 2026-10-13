@@ -2463,6 +2463,7 @@ dependencies = [
  "base64 0.22.1",
  "brainz_ai",
  "brainz_canvas",
+ "brainz_templates",
  "chrono",
  "collections",
  "db",
