@@ -12,6 +12,7 @@ pub mod mcp;
 pub mod memory_share;
 pub mod myman;
 pub mod nav;
+pub mod new_note;
 pub mod ocr;
 pub mod open_loops;
 pub mod pdf;
@@ -60,6 +61,7 @@ pub fn init(cx: &mut App) {
     status_decay::init(cx);
     pdf::init(cx);
     whiteboard::init(cx);
+    new_note::init(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenCalendar, window, cx| {
             CalendarView::open(workspace, window, cx);

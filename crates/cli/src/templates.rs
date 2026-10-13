@@ -102,21 +102,7 @@ pub fn run(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Result<()
                 .templates
                 .get(&id)
                 .with_context(|| format!("Template {id} was not found"))?;
-            let mut values: Map<String, Value> = Map::new();
-            if let Some(path) = context {
-                let mut bytes = Vec::new();
-                let mut reader: Box<dyn std::io::Read> = if path.as_os_str() == "-" {
-                    Box::new(std::io::stdin())
-                } else {
-                    Box::new(std::fs::File::open(path)?)
-                };
-                reader
-                    .by_ref()
-                    .take(1024 * 1024 + 1)
-                    .read_to_end(&mut bytes)?;
-                ensure!(bytes.len() <= 1024 * 1024, "Context is larger than 1 MB");
-                values = serde_json::from_slice(&bytes).context("Context must be a JSON object")?;
-            }
+            let values = read_context(context)?;
             let request = RenderRequest {
                 title,
                 folder,
@@ -155,9 +141,147 @@ pub fn run(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Result<()
     Ok(())
 }
 
+fn read_context(path: Option<PathBuf>) -> Result<Map<String, Value>> {
+    let Some(path) = path else {
+        return Ok(Map::new());
+    };
+    let mut reader: Box<dyn std::io::Read> = if path.as_os_str() == "-" {
+        Box::new(std::io::stdin())
+    } else {
+        Box::new(std::fs::File::open(path)?)
+    };
+    let mut bytes = Vec::new();
+    reader
+        .by_ref()
+        .take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= 1024 * 1024, "Context is larger than 1 MB");
+    serde_json::from_slice(&bytes).context("Context must be a JSON object")
+}
+
+#[derive(Parser)]
+#[command(
+    name = "brainz new",
+    about = "Create a local Markdown note without overwriting existing notes"
+)]
+struct NewArgs {
+    #[arg(long, default_value = ".")]
+    workspace: PathBuf,
+    #[arg(long)]
+    directory: Option<PathBuf>,
+    #[arg(long, conflicts_with = "daily")]
+    template: Option<String>,
+    /// Reopen today's daily-note path if it already exists.
+    #[arg(long)]
+    daily: bool,
+    #[arg(long, default_value = "Untitled")]
+    title: String,
+    #[arg(long, default_value = ".")]
+    folder: String,
+    #[arg(long = "input", value_parser = parse_input)]
+    inputs: Vec<(String, Value)>,
+    #[arg(long)]
+    context: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+}
+
+pub fn new_note(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Result<()> {
+    let args = NewArgs::parse_from(arguments);
+    let note = create_from_args(&args)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&note)?);
+    } else {
+        println!("{}", args.workspace.join(note.path).display());
+    }
+    Ok(())
+}
+
+fn create_from_args(args: &NewArgs) -> Result<brainz_templates::CreatedNote> {
+    let registry = Registry::load_brain(&args.workspace, args.directory.as_deref())?;
+    let blank = brainz_templates::parse(
+        "---\nname: Blank note\npath: '{{folder}}/{{slug title}}.md'\n---\n{{cursor}}",
+        "blank",
+        brainz_templates::TemplateSource::Builtin,
+    )?;
+    let template = if args.daily {
+        registry
+            .templates
+            .get("daily")
+            .context("Daily template is unavailable")?
+    } else if let Some(id) = &args.template {
+        registry
+            .templates
+            .get(id)
+            .with_context(|| format!("Template {id} was not found"))?
+    } else {
+        &blank
+    };
+    let rendered = brainz_templates::render(
+        template,
+        &RenderRequest {
+            title: args.title.clone(),
+            folder: args.folder.clone(),
+            input: args.inputs.iter().cloned().collect(),
+            context: read_context(args.context.clone())?,
+            ..Default::default()
+        },
+    )?;
+    let missing = rendered
+        .report
+        .missing
+        .iter()
+        .filter(|missing| missing.starts_with("input."))
+        .cloned()
+        .collect::<Vec<_>>();
+    ensure!(
+        missing.is_empty(),
+        "Missing inputs: {}. Use --input name=value.",
+        missing.join(", ")
+    );
+    brainz_templates::create_note(
+        &args.workspace,
+        &rendered,
+        if args.daily {
+            brainz_templates::CreatePolicy::OpenExisting
+        } else {
+            brainz_templates::CreatePolicy::Unique
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_command_checks_inputs_and_keeps_existing_daily_notes() {
+        let root = tempfile::tempdir().expect("temporary brain");
+        let mut args = NewArgs::try_parse_from(["new", "--daily"]).expect("arguments");
+        args.workspace = root.path().into();
+        let first = create_from_args(&args).expect("daily note");
+        assert!(first.created);
+        std::fs::write(root.path().join(&first.path), "My changes").expect("edit daily");
+        let second = create_from_args(&args).expect("existing daily");
+        assert!(!second.created);
+        assert_eq!(first.path, second.path);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(&first.path)).expect("daily"),
+            "My changes"
+        );
+        args.daily = false;
+        args.template = Some("decision".into());
+        assert!(create_from_args(&args).is_err());
+        args.folder = "projects/sample".into();
+        args.inputs = vec![("title".into(), Value::String("Use Markdown".into()))];
+        let decision = create_from_args(&args).expect("decision");
+        assert!(decision.path.starts_with("projects/sample"));
+        assert!(
+            std::fs::read_to_string(root.path().join(decision.path))
+                .expect("decision note")
+                .contains("Use Markdown")
+        );
+    }
 
     #[test]
     fn input_preserves_text_and_supports_structured_values() {

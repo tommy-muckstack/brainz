@@ -134,6 +134,8 @@ fn visible_indices(
 
 pub(super) struct CanvasFolderPicker {
     picker: Entity<Picker<FolderDelegate>>,
+    title: SharedString,
+    icon: IconName,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -186,8 +188,16 @@ impl CanvasFolderPicker {
         );
         Self {
             picker,
+            title: "Move canvas".into(),
+            icon: IconName::BrainzWhiteboard,
             _subscriptions: vec![dismiss, updates],
         }
+    }
+
+    pub(super) fn with_title(mut self, title: impl Into<SharedString>, icon: IconName) -> Self {
+        self.title = title.into();
+        self.icon = icon;
+        self
     }
 }
 
@@ -211,8 +221,8 @@ impl Render for CanvasFolderPicker {
                 h_flex()
                     .p_3()
                     .gap_2()
-                    .child(Icon::new(IconName::BrainzWhiteboard).color(Color::Muted))
-                    .child(Label::new("Move canvas").weight(gpui::FontWeight::SEMIBOLD)),
+                    .child(Icon::new(self.icon).color(Color::Muted))
+                    .child(Label::new(self.title.clone()).weight(gpui::FontWeight::SEMIBOLD)),
             )
             .child(self.picker.clone())
     }

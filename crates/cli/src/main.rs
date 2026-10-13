@@ -531,6 +531,12 @@ fn run() -> Result<()> {
     {
         return templates::run(std::env::args_os().skip(1));
     }
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|argument| argument == "new")
+    {
+        return templates::new_note(std::env::args_os().skip(1));
+    }
     let args = Args::parse();
 
     // `zed --askpass` Makes zed operate in nc/netcat mode for use with askpass

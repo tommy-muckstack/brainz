@@ -26,6 +26,54 @@ fn template(body: &str) -> Template {
 }
 
 #[test]
+fn creation_is_complete_unique_and_daily_notes_are_never_overwritten() {
+    let root = tempfile::tempdir().expect("brain");
+    let mut rendered =
+        render(&template("# Test\n\n{{cursor}}Content"), &request()).expect("render");
+    rendered.path = Some("existing/folder/note.md".into());
+    let first = create_note(root.path(), &rendered, CreatePolicy::Unique).expect("create");
+    assert!(first.created);
+    assert_eq!(
+        fs::read_to_string(root.path().join(&first.path)).expect("note"),
+        rendered.body
+    );
+    fs::write(root.path().join(&first.path), "My edited note").expect("edit");
+    let daily = create_note(root.path(), &rendered, CreatePolicy::OpenExisting).expect("daily");
+    assert!(!daily.created);
+    assert_eq!(daily.cursor, None);
+    assert_eq!(
+        fs::read_to_string(root.path().join(&daily.path)).expect("note"),
+        "My edited note"
+    );
+    let paths = std::thread::scope(|scope| {
+        let tasks = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    create_note(root.path(), &rendered, CreatePolicy::Unique)
+                        .expect("concurrent create")
+                })
+            })
+            .collect::<Vec<_>>();
+        tasks
+            .into_iter()
+            .map(|task| task.join().expect("thread").path)
+            .collect::<std::collections::BTreeSet<_>>()
+    });
+    assert_eq!(paths.len(), 8);
+    for path in paths {
+        assert_ne!(path, first.path);
+        assert_eq!(
+            fs::read_to_string(root.path().join(path)).expect("complete note"),
+            rendered.body
+        );
+    }
+    rendered.path = Some("../outside.md".into());
+    assert!(create_note(root.path(), &rendered, CreatePolicy::Unique).is_err());
+    rendered.path = Some("commands.sh".into());
+    assert!(create_note(root.path(), &rendered, CreatePolicy::Unique).is_err());
+}
+
+#[test]
 fn builtins_render_offline_with_fixed_context() {
     let registry = Registry::builtin().expect("built-in templates");
     assert_eq!(registry.templates.len(), 10);
