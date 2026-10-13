@@ -187,6 +187,7 @@ members = [
     "crates/schema_generator",
     "crates/brainz_ai",
     "crates/brainz_canvas",
+    "crates/brainz_editor",
     "crates/brainz_templates",
     "crates/brainz_calendar",
     "crates/search",
@@ -462,6 +463,7 @@ scheduler = { path = "crates/scheduler" }
 search = { path = "crates/search" }
 brainz_ai = { path = "crates/brainz_ai" }
 brainz_canvas = { path = "crates/brainz_canvas" }
+brainz_editor = { path = "crates/brainz_editor" }
 brainz_templates = { path = "crates/brainz_templates" }
 brainz_calendar = { path = "crates/brainz_calendar" }
 session = { path = "crates/session" }

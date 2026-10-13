@@ -136,6 +136,13 @@ This file records implementation and validation; an unchecked item is not shippe
 
 ## Work in progress
 
+- Rich editor source-map foundation: transient block ranges preserve original
+  Markdown bytes, including gaps and reference definitions. Validated edit
+  plans change only requested ranges and reject stale snapshots or partial
+  Unicode selections. Seven core tests cover 40 synthetic fixtures, exact prose,
+  To-Do title and metadata edits, bold delimiters, nesting, and a 5,000-line
+  document. The live Buffer, anchored selections, rendered editing surface,
+  autosave, and native round-trip corpus gate are still required. E1 remains open.
 - Native note creation: searchable template picker, preview, inline inputs,
   calendar-event selection, shared folder hierarchy, atomic no-overwrite saves,
   daily-note reopening, and direct edit-mode opening at the template caret.

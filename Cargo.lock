@@ -2520,6 +2520,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "brainz_editor"
+version = "0.1.0"
+dependencies = [
+ "pulldown-cmark 0.13.4",
+]
+
+[[package]]
 name = "brainz_templates"
 version = "0.1.0"
 dependencies = [

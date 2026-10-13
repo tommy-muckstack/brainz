@@ -3,3 +3,6 @@
 
 # Ensure the WSL script always has LF line endings, even on Windows
 crates/zed/resources/windows/zed.sh text eol=lf
+
+# Source-preservation fixtures intentionally contain CRLF and trailing whitespace.
+crates/brainz_editor/tests/corpus/*.md -text whitespace=-blank-at-eol,-blank-at-eof,cr-at-eol

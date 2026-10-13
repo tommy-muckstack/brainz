@@ -1,0 +1,3 @@
+- [ ] One task
+- [x] Another task
+- [X] Uppercase check
