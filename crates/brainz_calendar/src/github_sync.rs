@@ -284,6 +284,80 @@ fn review(repo: &Path) -> Result<()> {
     }
 }
 
+fn commit_subject(paths: &[&str]) -> String {
+    let area_for = |path: &str| {
+        let parts = path.split('/').collect::<Vec<_>>();
+        let area = parts
+            .iter()
+            .take(parts.len().saturating_sub(1).min(2))
+            .map(|part| {
+                part.to_lowercase()
+                    .chars()
+                    .map(|character| {
+                        if character.is_ascii_alphanumeric() {
+                            character
+                        } else {
+                            '-'
+                        }
+                    })
+                    .collect::<String>()
+                    .split('-')
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("-")
+            })
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("/");
+        if area.is_empty() {
+            "notes".to_owned()
+        } else {
+            area
+        }
+    };
+    let Some(first) = paths.first() else {
+        return "notes: update notes".into();
+    };
+    let first_area = area_for(first);
+    let area = if paths.iter().all(|path| area_for(path) == first_area) {
+        first_area.as_str()
+    } else {
+        "notes"
+    };
+    if paths.len() == 1 {
+        let stem = Path::new(first)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("note");
+        let stem = stem.split_whitespace().collect::<Vec<_>>().join(" ");
+        let stem = stem
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(100)
+            .collect::<String>();
+        format!("{area}: edit {stem}")
+    } else {
+        format!("{area}: update {} files", paths.len())
+    }
+}
+
+fn commit_local_changes(repo: &Path) -> Result<()> {
+    run(repo, "git", &["add", "-A"])?;
+    let summary = run(repo, "git", &["diff", "--cached", "--stat"])?;
+    let names = run(repo, "git", &["diff", "--cached", "--name-only", "-z"])?;
+    let paths = names
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .collect::<Vec<_>>();
+    let subject = commit_subject(&paths);
+    let message = format!(
+        "{subject}\n\n{summary}\n\nBrainz-Session: {}",
+        uuid::Uuid::new_v4()
+    );
+    run(repo, "git", &["commit", "-m", &message])?;
+    Ok(())
+}
+
 fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
     progress("Checking branch".into());
     let branch = run(repo, "git", &["branch", "--show-current"])?;
@@ -317,10 +391,7 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
 
     if changed > 0 {
         progress(format!("Committing {changed} change(s)"));
-        run(repo, "git", &["add", "-A"])?;
-        let summary = run(repo, "git", &["diff", "--cached", "--stat"])?;
-        let message = format!("Sync from Brainz\n\n{summary}");
-        run(repo, "git", &["commit", "-m", &message])?;
+        commit_local_changes(repo)?;
     }
 
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
@@ -340,12 +411,9 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
             .join("\n")
     );
     let title = if ahead + usize::from(changed > 0) == 1 {
-        "Sync from Brainz".to_owned()
+        run(repo, "git", &["log", "-1", "--format=%s"])?
     } else {
-        format!(
-            "Sync from Brainz ({} commits)",
-            ahead + usize::from(changed > 0)
-        )
+        format!("notes: sync {} commits", ahead + usize::from(changed > 0))
     };
     let pr_url = run(
         repo,
@@ -974,6 +1042,32 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
 mod tests {
     use super::*;
 
+    #[test]
+    fn commit_subjects_explain_the_changed_area_without_a_model() {
+        assert_eq!(
+            commit_subject(&["projects/site-redesign/plan.md"]),
+            "projects/site-redesign: edit plan"
+        );
+        assert_eq!(
+            commit_subject(&["Projects/Launch Plan.md"]),
+            "projects: edit Launch Plan"
+        );
+        assert_eq!(commit_subject(&["NOW.md"]), "notes: edit NOW");
+        assert_eq!(
+            commit_subject(&["health/log.md", "health/training.md"]),
+            "health: update 2 files"
+        );
+        assert_eq!(
+            commit_subject(&["health/log.md", "work/plan.md"]),
+            "notes: update 2 files"
+        );
+        assert_eq!(
+            commit_subject(&["My Projects/Big_plan/a\nInjected.md"]),
+            "my-projects/big-plan: edit a Injected"
+        );
+        assert_eq!(commit_subject(&[]), "notes: update notes");
+    }
+
     struct Repositories {
         _directory: tempfile::TempDir,
         local: PathBuf,
@@ -1069,6 +1163,34 @@ mod tests {
                     .is_empty()
             );
         }
+    }
+
+    #[test]
+    fn local_commit_preserves_configured_author_and_records_a_session() {
+        let repositories = Repositories::new();
+        std::fs::write(repositories.local.join("note.md"), "Edited note\n").expect("edit");
+        commit_local_changes(&repositories.local).expect("commit");
+        let body = run(&repositories.local, "git", &["log", "-1", "--format=%B"]).expect("message");
+        assert!(body.starts_with("notes: edit note\n"));
+        let session = body
+            .lines()
+            .find_map(|line| line.strip_prefix("Brainz-Session: "))
+            .expect("session trailer");
+        assert!(uuid::Uuid::parse_str(session).is_ok());
+        assert_eq!(
+            run(
+                &repositories.local,
+                "git",
+                &["log", "-1", "--format=%an <%ae>"]
+            )
+            .expect("author"),
+            "Brainz Fixture <fixture@example.invalid>"
+        );
+        assert!(
+            run(&repositories.local, "git", &["status", "--porcelain"])
+                .expect("status")
+                .is_empty()
+        );
     }
 
     #[test]

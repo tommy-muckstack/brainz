@@ -11,6 +11,19 @@
 - Prepare chat drafts from built-in or local templates through `//`, with input forms and preview; keep `/` for files and canvases and send only when ready.
 - Rank note templates by folder defaults and recent use, configure the daily-note template, and apply automatic folder rules through the CLI.
 
+- Open the Brainz launcher with Cmd+K to search templates and tools, or use Cmd+Enter to explicitly ask Claude.
+- Offer folder templates in empty notes, with Use, Blank, Change, and Undo; fill eligible new notes on opening without replacing existing content.
+
+### Improved
+
+- Refresh template pickers when local templates or configuration change, preserving typed inputs and blocking invalid or deleted templates.
+- Use meaningful area/file summaries and session identifiers for manual sync commits, without requiring an API key.
+
+### Fixed
+
+- Keep the canvas from covering the pane's + and split popover menus.
+- Preserve newer local edits when updating after a GitHub merge, and stop pulls that cannot fast-forward safely without stashing or rebasing the live notes.
+
 ## 0.1.39 (2026-10-13)
 
 ### New
