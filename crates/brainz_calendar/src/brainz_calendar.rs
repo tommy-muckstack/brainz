@@ -18,6 +18,7 @@ pub mod open_loops;
 pub mod pdf;
 pub mod permissions;
 pub mod prep;
+mod slash;
 pub mod status_decay;
 pub mod themes;
 pub mod themes_signals;
@@ -62,6 +63,7 @@ pub fn init(cx: &mut App) {
     pdf::init(cx);
     whiteboard::init(cx);
     new_note::init(cx);
+    slash::init(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenCalendar, window, cx| {
             CalendarView::open(workspace, window, cx);

@@ -112,17 +112,21 @@ This file records implementation and validation; an unchecked item is not shippe
   candidate also fixes a concurrent directory-creation race. 95 native tests,
   Clippy, and all four Brainz CI jobs passed (one existing native test ignored).
   [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.39)
-- Next update: template engine merged; native insertion is being validated.
+- Next update: template engine and native creation merged; slash insertion is being validated.
 
 ## Work in progress
 
 - Native note creation: searchable template picker, preview, inline inputs,
   calendar-event selection, shared folder hierarchy, atomic no-overwrite saves,
   daily-note reopening, and direct edit-mode opening at the template caret.
-  The two native focus/opening tests pass, as do 16 engine tests including
-  concurrent saves and preservation of edited daily notes. Slash insertion,
-  folder defaults, recents, live refresh, and skill integration remain open;
+  100 native/engine tests and the CLI creation checks pass, along with Clippy
+  and all four Brainz CI jobs. Folder defaults, recents, live refresh, and skill integration remain open;
   this UI has not shipped in an installer yet.
+- Markdown slash insertion: templates, dated callouts, tasks, dates, tables,
+  Mermaid, and brain file/person links. Required-input forms preserve the source
+  note, reject changed or read-only targets, and apply as one undo step. URL,
+  code-fence, inline-code, Unicode, link-escaping, caret, and native insertion
+  checks pass. Chat templates, AI actions, and skills remain separate work.
 
 - Delta source check (2026-10-13): Zed's official
   [Delta packaging repository](https://github.com/zed-industries/delta-nix)
@@ -131,7 +135,7 @@ This file records implementation and validation; an unchecked item is not shippe
   remain implementation work in the existing Brainz Markdown viewer.
 - Template foundation: ten built-ins, YAML metadata, Markdown helpers, AI
   placeholders, local overrides, configurable folder loading, and read-only
-  `templates list/show/render` commands. Native insertion, watcher integration,
+  `templates list/show/render` commands. Watcher integration,
   skill templates, live context providers, and AI review remain open within P0-1
   and the following epics. The engine's 15 local tests (including ten reviewed
   render fixtures), five CLI tests, and Clippy pass. A separate CLI smoke test
@@ -151,7 +155,7 @@ This file records implementation and validation; an unchecked item is not shippe
   per-brain connector setup, schema-backed batches, staged Apply/Discard,
   one-step undo, conflict checks, external Yjs merge, and durable recovery copies.
   The full Canvas P0-1 epic remains open for the remaining operation vocabulary
-  and streamed protocol. These changes have not shipped in an installer yet.
+  and streamed protocol. The initial preview shipped in 0.1.39.
 - CLI list/read/status/apply and stdio MCP smoke passed using a temporary brain.
 - Canvas planner and existing helpers: 26 unit tests pass. Native canvas/Brainz
   tests: 83 passed, one existing ignored test. Clippy passes. Browser coverage

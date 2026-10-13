@@ -395,6 +395,13 @@ pub struct Rendered {
     pub content_guard: &'static str,
 }
 
+/// Build a Markdown link destination relative to the note that contains it.
+/// Both paths are relative to the brain root; delimiters are percent-encoded.
+pub fn link_destination(note: &Path, destination: &str) -> Result<String> {
+    relative_path(&note.to_string_lossy())?;
+    helpers::relative_link(Some(note), destination).map_err(Into::into)
+}
+
 #[derive(Default)]
 pub(crate) struct RenderState {
     pub missing: std::collections::BTreeSet<String>,

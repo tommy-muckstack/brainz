@@ -39,6 +39,12 @@ calendar-event choices, and the existing folder hierarchy. New notes open in edi
 mode at the template caret; daily-note reopening leaves previous edits intact.
 The CLI prints the created path and does not launch a model or open a window.
 
-Folder defaults, the full context-provider registry, slash completions,
+Markdown editors offer `/` templates, callouts, tasks, dates, tables, Mermaid,
+and file/person links. Required inputs use the native picker. Insertion omits
+note frontmatter and the leading title, preserves surrounding prose, and is one
+undo step. Closing the picker leaves the slash text; a changed insertion target
+is reported without overwriting it. Chat's `/` file and canvas picker is unchanged.
+
+Folder defaults, the full context-provider registry, chat template completions,
 skill-bundled templates, and AI review remain open. AI sections stay as
 placeholders. This is not the complete templates-and-skills feature.

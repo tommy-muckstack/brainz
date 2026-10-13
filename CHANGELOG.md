@@ -7,6 +7,7 @@
 - Preview local Markdown templates through the CLI, with ten built-ins, brain-folder overrides, and read-only rendering without an API key.
 - Create notes with a searchable native template picker, Markdown preview, calendar-event selection, and the existing folder hierarchy; open directly at the template caret.
 - Open today's daily note without replacing previous edits, and create notes through `brainz new` with atomic no-overwrite saves.
+- Insert templates and common blocks with `/` in Markdown notes, including file and person links; keep URLs and code literal and undo each insertion in one step.
 
 ## 0.1.39 (2026-10-13)
 
