@@ -1829,6 +1829,24 @@ impl Render for MarkdownPreviewView {
             .on_action(cx.listener(MarkdownPreviewView::increase_font_size))
             .on_action(cx.listener(MarkdownPreviewView::decrease_font_size))
             .on_action(cx.listener(MarkdownPreviewView::reset_font_size))
+            .on_action(
+                cx.listener(|view, action: &editor::actions::Undo, window, cx| {
+                    if let Some(state) = &view.active_editor {
+                        state
+                            .editor
+                            .update(cx, |editor, cx| editor.undo(action, window, cx));
+                    }
+                }),
+            )
+            .on_action(
+                cx.listener(|view, action: &editor::actions::Redo, window, cx| {
+                    if let Some(state) = &view.active_editor {
+                        state
+                            .editor
+                            .update(cx, |editor, cx| editor.redo(action, window, cx));
+                    }
+                }),
+            )
             .w_full()
             .flex_1()
             .min_h_0()
@@ -3028,9 +3046,9 @@ mod tests {
         let item = open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
         let editor = cx.update(|cx| item.act_as::<Editor>(cx).expect("source editor"));
         let preview = open_preview_for_active_editor(cx, &multi_workspace);
+        let source = editor.read_with(cx, |editor, cx| editor.text(cx));
         multi_workspace
             .update(cx, |_, window, cx| {
-                let source = editor.read(cx).text(cx);
                 let start = source.find("word").expect("word position");
                 let plan = brainz_editor::BlockMap::parse(source.clone())
                     .toggle_bold(start..start + 4)
@@ -3038,17 +3056,28 @@ mod tests {
                 crate::source_edits::apply(&editor, &plan, window, cx).expect("apply bold");
                 assert_eq!(editor.read(cx).text(cx), source.replace("word", "**word**"));
                 assert!(preview.read(cx).is_dirty(cx));
-                editor.update(cx, |editor, cx| {
-                    editor.undo(&editor::actions::Undo, window, cx)
-                });
-                assert_eq!(editor.read(cx).text(cx), source);
-                assert!(!preview.read(cx).is_dirty(cx));
-                editor.update(cx, |editor, cx| {
-                    editor.redo(&editor::actions::Redo, window, cx)
-                });
-                assert_eq!(editor.read(cx).text(cx), source.replace("word", "**word**"));
             })
             .expect("workspace");
+        cx.run_until_parked();
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                preview.focus_handle(cx).focus(window, cx);
+                window.dispatch_action(Box::new(editor::actions::Undo), cx);
+            })
+            .expect("undo through the focused viewer");
+        cx.run_until_parked();
+        assert_eq!(editor.read_with(cx, |editor, cx| editor.text(cx)), source);
+        assert!(!preview.read_with(cx, |preview, cx| preview.is_dirty(cx)));
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(editor::actions::Redo), cx);
+            })
+            .expect("redo through the focused viewer");
+        cx.run_until_parked();
+        assert_eq!(
+            editor.read_with(cx, |editor, cx| editor.text(cx)),
+            source.replace("word", "**word**")
+        );
         let save = multi_workspace
             .update(cx, |multi_workspace, window, cx| {
                 multi_workspace.workspace().update(cx, |workspace, cx| {
