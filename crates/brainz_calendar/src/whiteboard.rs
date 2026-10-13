@@ -1286,9 +1286,12 @@ impl Render for WhiteboardView {
                 .is_some_and(|workspace| workspace.read(cx).has_active_modal(window, cx));
             // AppKit's child view cannot receive GPUI's in-window file drags. Let the
             // pane route the drop to Item::handle_drop while a GPUI drag is active.
-            if modal_open || cx.has_active_drag() {
+            // WKWebView is a native sibling above GPUI, so GPUI z-order alone
+            // cannot keep the pane's + / split popovers in front of the canvas.
+            let overlay_open = modal_open || ui::has_open_popover(window, cx);
+            if overlay_open || cx.has_active_drag() {
                 self.hide();
-                if !modal_open {
+                if !overlay_open {
                     body = body.child(
                         v_flex()
                             .size_full()
