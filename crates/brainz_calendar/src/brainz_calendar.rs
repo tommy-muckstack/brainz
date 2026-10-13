@@ -16,6 +16,7 @@ pub mod nav;
 pub mod new_note;
 pub mod ocr;
 pub mod open_loops;
+pub mod palette;
 pub mod pdf;
 pub mod permissions;
 pub mod prep;
@@ -65,6 +66,7 @@ pub fn init(cx: &mut App) {
     whiteboard::init(cx);
     new_note::init(cx);
     folder_defaults::init(cx);
+    palette::init(cx);
     slash::init(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenCalendar, window, cx| {

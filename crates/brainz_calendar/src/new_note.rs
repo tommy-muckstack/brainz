@@ -71,6 +71,16 @@ pub(super) fn render_in_note(
 }
 
 fn open(workspace: &mut Workspace, daily: bool, window: &mut Window, cx: &mut Context<Workspace>) {
+    open_with_template(workspace, daily, None, window, cx);
+}
+
+pub(super) fn open_with_template(
+    workspace: &mut Workspace,
+    daily: bool,
+    template: Option<String>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
     if !workspace.project().read(cx).is_local() {
         Editor::new_file(workspace, &workspace::NewFile, window, cx);
         return;
@@ -100,7 +110,9 @@ fn open(workspace: &mut Workspace, daily: bool, window: &mut Window, cx: &mut Co
         .unwrap_or_else(|| ".".into());
     let weak_workspace = cx.weak_entity();
     workspace.toggle_modal(window, cx, |window, cx| {
-        NotePicker::new(root, folder, project, weak_workspace, daily, window, cx)
+        let mut picker = NotePicker::new(root, folder, project, weak_workspace, daily, window, cx);
+        picker.initial_template = template;
+        picker
     });
 }
 
@@ -330,6 +342,7 @@ impl NotePicker {
             .then(|| brainz_templates::recent_templates_path(paths::data_dir(), &root).log_err())
             .flatten();
         let load_recents_path = recents_path.clone();
+        let use_calendar = !project.read(cx).fs().is_fake();
         let load = cx.spawn_in(window, async move |this, cx| {
             let loaded = cx
                 .background_spawn(async move {
@@ -339,7 +352,12 @@ impl NotePicker {
                         .as_deref()
                         .map(brainz_templates::read_recents)
                         .transpose();
-                    Ok::<_, anyhow::Error>((registry, local_context(&load_root), config, recents))
+                    let context = if use_calendar {
+                        local_context(&load_root)
+                    } else {
+                        Map::new()
+                    };
+                    Ok::<_, anyhow::Error>((registry, context, config, recents))
                 })
                 .await;
             this.update_in(cx, |this, window, cx| {

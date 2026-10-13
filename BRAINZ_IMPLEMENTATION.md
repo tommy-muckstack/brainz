@@ -151,7 +151,15 @@ This file records implementation and validation; an unchecked item is not shippe
   required inputs use the shared form. Links resolve from the actual note path.
   90 native tests pass (one existing ignored), plus the expanded interaction
   check for Undo/reopen and read-only buffers; Clippy passes. Closed-file filling
-  and the Brainz palette remain open. This has not shipped in an installer.
+  remains open. This has not shipped in an installer.
+
+- Brainz launcher: Cmd+K opens grouped, searchable note templates and the shared
+  navigation tools. It uses local template overrides, recent ordering, live
+  catalog refresh, and the existing creation form. Escape restores the draft;
+  Cmd+Enter explicitly asks Claude in a new conversation. Inherited Cmd+K chord
+  prefixes are removed so the launcher opens immediately. Keyboard tests use
+  the shipped macOS keymap and full workspace/modal host, with AI actions captured
+  locally instead of sent. This has not shipped in an installer.
 
 - Delta source check (2026-10-13): Zed's official
   [Delta packaging repository](https://github.com/zed-industries/delta-nix)

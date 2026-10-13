@@ -7,15 +7,15 @@ use gpui::{Animation, AnimationExt, App, WeakEntity, ease_out_quint};
 use ui::{Tooltip, prelude::*};
 use workspace::Workspace;
 
-struct NavItem {
+pub(super) struct NavItem {
     key: &'static str,
-    label: &'static str,
-    icon: IconName,
-    action: fn() -> Box<dyn gpui::Action>,
+    pub(super) label: &'static str,
+    pub(super) icon: IconName,
+    pub(super) action: fn() -> Box<dyn gpui::Action>,
     is_active: fn(&dyn workspace::ItemHandle, &App) -> bool,
 }
 
-const ITEMS: &[NavItem] = &[
+pub(super) const ITEMS: &[NavItem] = &[
     NavItem {
         key: "brief",
         label: "Brief",
