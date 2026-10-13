@@ -4652,6 +4652,64 @@ pub(crate) mod tests {
     }
 
     #[gpui::test]
+    async fn test_message_editor_card_padding_focuses_without_sending(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (conversation_view, cx) =
+            setup_conversation_view(StubAgentServer::new(StubAgentConnection::new()), cx).await;
+        add_to_workspace_with_size(conversation_view.clone(), true, cx);
+        let thread_view = active_thread(&conversation_view, cx);
+        let editor = message_editor(&conversation_view, cx);
+        cx.run_until_parked();
+
+        for expanded in [false, true] {
+            thread_view.update(cx, |view, cx| view.set_editor_is_expanded(expanded, cx));
+            cx.run_until_parked();
+            let card = cx
+                .debug_bounds("brainz-composer-card")
+                .expect("composer card");
+            let editor_bounds = editor.read_with(cx, |editor, cx| {
+                *editor
+                    .editor()
+                    .read(cx)
+                    .last_bounds()
+                    .expect("editor bounds")
+            });
+            for position in [
+                gpui::point(card.center().x, card.top() + px(4.)),
+                gpui::point(card.left() + px(4.), card.center().y),
+                gpui::point(card.center().x, editor_bounds.bottom() + px(4.)),
+                gpui::point(card.center().x, card.bottom() - px(4.)),
+            ] {
+                assert!(!editor_bounds.contains(&position));
+                thread_view.update_in(cx, |view, window, cx| {
+                    view.focus_handle.focus(window, cx);
+                });
+                editor.update_in(cx, |editor, window, cx| editor.set_text("", window, cx));
+                cx.simulate_click(position, gpui::Modifiers::default());
+                cx.simulate_keystrokes("d r a f t");
+                assert_eq!(
+                    editor.update(cx, |editor, cx| editor.text(cx)),
+                    "draft",
+                    "padding at {position:?}, expanded={expanded}"
+                );
+            }
+        }
+
+        // Interactive controls retain their own click behavior inside the card.
+        cx.run_until_parked();
+        let options = cx
+            .debug_bounds("brainz-composer-options")
+            .expect("options toggle");
+        cx.simulate_click(options.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        thread_view.read_with(cx, |view, cx| {
+            assert!(view.composer_controls_visible);
+            assert!(view.thread.read(cx).entries().is_empty());
+        });
+        assert_eq!(editor.update(cx, |editor, cx| editor.text(cx)), "draft");
+    }
+
+    #[gpui::test]
     async fn test_session_notices_scroll_without_hiding_composer(cx: &mut TestAppContext) {
         init_test(cx);
 
