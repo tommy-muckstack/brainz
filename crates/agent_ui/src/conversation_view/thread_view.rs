@@ -4423,6 +4423,15 @@ impl ThreadView {
             .when(editor_expanded, |this| this.h(vh(0.8, window)))
             .child(
                 v_flex()
+                    .debug_selector(|| "brainz-composer-card".into())
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _, window, cx| {
+                        // Buttons and the editor claim their own presses. Only
+                        // the card's otherwise inactive padding needs to focus it.
+                        if !window.default_prevented() {
+                            window.prevent_default();
+                            this.message_editor.focus_handle(cx).focus(window, cx);
+                        }
+                    }))
                     .when_some(max_content_width, |this, max_w| this.flex_basis(max_w))
                     .when(max_content_width.is_none(), |this| this.w_full())
                     .min_w_0()
@@ -4473,6 +4482,7 @@ impl ThreadView {
                                         // toggle, like the "+" menu.
                                         div()
                                             .relative()
+                                            .debug_selector(|| "brainz-composer-options".into())
                                             .child(self.render_composer_options_toggle(
                                                 options_customized,
                                                 cx,
