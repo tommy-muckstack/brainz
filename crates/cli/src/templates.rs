@@ -188,7 +188,7 @@ struct NewArgs {
 
 pub fn new_note(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Result<()> {
     let args = NewArgs::parse_from(arguments);
-    let note = create_from_args(&args)?;
+    let note = create_from_args(&args, Some(paths::data_dir()))?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&note)?);
     } else {
@@ -197,36 +197,51 @@ pub fn new_note(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Resu
     Ok(())
 }
 
-fn create_from_args(args: &NewArgs) -> Result<brainz_templates::CreatedNote> {
+fn create_from_args(
+    args: &NewArgs,
+    recents_directory: Option<&std::path::Path>,
+) -> Result<brainz_templates::CreatedNote> {
     let registry = Registry::load_brain(&args.workspace, args.directory.as_deref())?;
+    let config = brainz_templates::TemplatesConfig::load(&args.workspace)?;
     let blank = brainz_templates::parse(
         "---\nname: Blank note\npath: '{{folder}}/{{slug title}}.md'\n---\n{{cursor}}",
         "blank",
         brainz_templates::TemplateSource::Builtin,
     )?;
+    let request = RenderRequest {
+        title: args.title.clone(),
+        folder: args.folder.clone(),
+        input: args.inputs.iter().cloned().collect(),
+        context: read_context(args.context.clone())?,
+        ..Default::default()
+    };
+    let default = if !args.daily && args.template.is_none() {
+        let proposed = brainz_templates::render(&blank, &request)?
+            .path
+            .context("Blank note needs a path")?;
+        registry
+            .default_for_path(&config, &proposed)?
+            .filter(|choice| choice.auto)
+    } else {
+        None
+    };
     let template = if args.daily {
         registry
             .templates
-            .get("daily")
-            .context("Daily template is unavailable")?
+            .get(&config.daily)
+            .with_context(|| format!("Daily template {} is unavailable", config.daily))?
     } else if let Some(id) = &args.template {
         registry
             .templates
             .get(id)
             .with_context(|| format!("Template {id} was not found"))?
     } else {
-        &blank
+        default
+            .as_ref()
+            .and_then(|choice| registry.templates.get(&choice.template))
+            .unwrap_or(&blank)
     };
-    let rendered = brainz_templates::render(
-        template,
-        &RenderRequest {
-            title: args.title.clone(),
-            folder: args.folder.clone(),
-            input: args.inputs.iter().cloned().collect(),
-            context: read_context(args.context.clone())?,
-            ..Default::default()
-        },
-    )?;
+    let rendered = brainz_templates::render(template, &request)?;
     let missing = rendered
         .report
         .missing
@@ -239,7 +254,7 @@ fn create_from_args(args: &NewArgs) -> Result<brainz_templates::CreatedNote> {
         "Missing inputs: {}. Use --input name=value.",
         missing.join(", ")
     );
-    brainz_templates::create_note(
+    let note = brainz_templates::create_note(
         &args.workspace,
         &rendered,
         if args.daily {
@@ -247,7 +262,17 @@ fn create_from_args(args: &NewArgs) -> Result<brainz_templates::CreatedNote> {
         } else {
             brainz_templates::CreatePolicy::Unique
         },
-    )
+    )?;
+    if template.metadata.id != "blank" {
+        if let Some(directory) = recents_directory {
+            if let Err(error) = brainz_templates::recent_templates_path(directory, &args.workspace)
+                .and_then(|path| brainz_templates::record_recent(&path, &template.metadata.id))
+            {
+                eprintln!("Could not update recent templates: {error}");
+            }
+        }
+    }
+    Ok(note)
 }
 
 #[cfg(test)]
@@ -255,14 +280,70 @@ mod tests {
     use super::*;
 
     #[test]
+    fn new_command_honors_daily_folder_defaults_and_explicit_overrides() {
+        let root = tempfile::tempdir().expect("temporary brain");
+        let data = tempfile::tempdir().expect("local app data");
+        std::fs::create_dir_all(root.path().join(".brainz/templates")).expect("templates");
+        std::fs::write(root.path().join(".brainz/templates/folder-note.md"), "---\nname: Folder note\npath: '{{folder}}/{{slug title}}.md'\n---\n# {{title}}\n\nDefault content\n{{cursor}}\n").expect("template");
+        std::fs::write(root.path().join(".brainz/templates/custom-day.md"), "---\nname: Custom day\npath: 'daily/{{date}}.md'\n---\n# Today\n\nCustom daily content\n").expect("daily template");
+        let config = "[templates]\ndaily = 'custom-day'\n[[templates.folder]]\npath = 'projects/*'\ntemplate = 'folder-note'\nauto = false\n";
+        std::fs::write(root.path().join("brainz.toml"), config).expect("config");
+        let mut args =
+            NewArgs::try_parse_from(["new", "--folder", "projects/alpha", "--title", "Launch"])
+                .expect("arguments");
+        args.workspace = root.path().to_path_buf();
+        let blank = create_from_args(&args, None).expect("suggestion stays blank");
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(blank.path)).expect("blank"),
+            ""
+        );
+        std::fs::write(
+            root.path().join("brainz.toml"),
+            config.replace("auto = false", "auto = true"),
+        )
+        .expect("automatic rule");
+        let note = create_from_args(&args, Some(data.path())).expect("automatic default");
+        assert!(
+            std::fs::read_to_string(root.path().join(note.path))
+                .expect("note")
+                .contains("Default content")
+        );
+        let history = brainz_templates::recent_templates_path(data.path(), root.path())
+            .expect("history path");
+        assert_eq!(
+            brainz_templates::read_recents(&history).expect("history"),
+            ["folder-note"]
+        );
+        args.template = Some("decision".into());
+        args.inputs
+            .push(("title".into(), Value::String("Pick a date".into())));
+        let note = create_from_args(&args, None).expect("explicit template wins");
+        assert!(
+            std::fs::read_to_string(root.path().join(note.path))
+                .expect("decision")
+                .contains("## Context")
+        );
+        args.template = None;
+        args.daily = true;
+        let daily = create_from_args(&args, None).expect("configured daily");
+        assert!(daily.path.starts_with("daily"));
+        std::fs::write(root.path().join(&daily.path), "Existing edits").expect("edit");
+        create_from_args(&args, None).expect("reopen");
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(daily.path)).expect("preserved"),
+            "Existing edits"
+        );
+    }
+
+    #[test]
     fn new_command_checks_inputs_and_keeps_existing_daily_notes() {
         let root = tempfile::tempdir().expect("temporary brain");
         let mut args = NewArgs::try_parse_from(["new", "--daily"]).expect("arguments");
         args.workspace = root.path().into();
-        let first = create_from_args(&args).expect("daily note");
+        let first = create_from_args(&args, None).expect("daily note");
         assert!(first.created);
         std::fs::write(root.path().join(&first.path), "My changes").expect("edit daily");
-        let second = create_from_args(&args).expect("existing daily");
+        let second = create_from_args(&args, None).expect("existing daily");
         assert!(!second.created);
         assert_eq!(first.path, second.path);
         assert_eq!(
@@ -271,10 +352,10 @@ mod tests {
         );
         args.daily = false;
         args.template = Some("decision".into());
-        assert!(create_from_args(&args).is_err());
+        assert!(create_from_args(&args, None).is_err());
         args.folder = "projects/sample".into();
         args.inputs = vec![("title".into(), Value::String("Use Markdown".into()))];
-        let decision = create_from_args(&args).expect("decision");
+        let decision = create_from_args(&args, None).expect("decision");
         assert!(decision.path.starts_with("projects/sample"));
         assert!(
             std::fs::read_to_string(root.path().join(decision.path))

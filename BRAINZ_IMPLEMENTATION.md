@@ -120,7 +120,7 @@ This file records implementation and validation; an unchecked item is not shippe
   calendar-event selection, shared folder hierarchy, atomic no-overwrite saves,
   daily-note reopening, and direct edit-mode opening at the template caret.
   100 native/engine tests and the CLI creation checks pass, along with Clippy
-  and all four Brainz CI jobs. Folder defaults, recents, live refresh, and skill integration remain open;
+  and all four Brainz CI jobs. Empty-note default banners, live refresh, and skill integration remain open;
   this UI has not shipped in an installer yet.
 - Markdown slash insertion: templates, dated callouts, tasks, dates, tables,
   Mermaid, and brain file/person links. Required-input forms preserve the source
@@ -133,6 +133,13 @@ This file records implementation and validation; an unchecked item is not shippe
   preserves the original draft. Twelve chat-completion tests and three shared
   native creation/insertion tests pass, as do all 47 message composer tests.
   Chat completion/composer checks now run in CI. This has not shipped in an installer.
+- Template defaults: shared configuration and glob precedence, custom daily IDs,
+  folder-first/recent-first native ordering, and per-brain recent IDs in local
+  app data. Changing the folder preserves the selected template and typed inputs.
+  CLI creation uses automatic rules and respects explicit overrides; suggestion
+  rules keep the new note blank. 88 native tests and 19 engine tests pass (one
+  existing ignored test), along with three CLI template tests. Editor suggestion
+  bars, automatic empty-file filling, and live registry refresh remain open.
 
 - Delta source check (2026-10-13): Zed's official
   [Delta packaging repository](https://github.com/zed-industries/delta-nix)

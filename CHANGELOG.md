@@ -9,6 +9,7 @@
 - Open today's daily note without replacing previous edits, and create notes through `brainz new` with atomic no-overwrite saves.
 - Insert templates and common blocks with `/` in Markdown notes, including file and person links; keep URLs and code literal and undo each insertion in one step.
 - Prepare chat drafts from built-in or local templates through `//`, with input forms and preview; keep `/` for files and canvases and send only when ready.
+- Rank note templates by folder defaults and recent use, configure the daily-note template, and apply automatic folder rules through the CLI.
 
 ## 0.1.39 (2026-10-13)
 
