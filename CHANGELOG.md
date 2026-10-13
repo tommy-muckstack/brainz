@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New
+
+- Preview local Markdown templates through the CLI, with ten built-ins, brain-folder overrides, and read-only rendering without an API key.
+
 ## 0.1.39 (2026-10-13)
 
 ### New

@@ -9,6 +9,7 @@
 
 mod canvas;
 mod completions;
+mod templates;
 
 use crate::completions::Shell;
 
@@ -523,6 +524,12 @@ fn run() -> Result<()> {
         .is_some_and(|argument| argument == "canvas")
     {
         return canvas::run(std::env::args_os().skip(1));
+    }
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|argument| argument == "templates")
+    {
+        return templates::run(std::env::args_os().skip(1));
     }
     let args = Args::parse();
 
