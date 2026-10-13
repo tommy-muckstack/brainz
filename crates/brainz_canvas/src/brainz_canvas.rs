@@ -64,6 +64,7 @@ pub fn scoped_path(root: &Path, value: &Path, allow_missing: bool) -> Result<Pat
     };
     let mut ancestor = path.as_path();
     let mut suffix = Vec::new();
+    let mut retries = 0;
     loop {
         match ancestor.canonicalize() {
             Ok(resolved) => {
@@ -77,11 +78,26 @@ pub fn scoped_path(root: &Path, value: &Path, allow_missing: bool) -> Result<Pat
                     .fold(resolved, |path, name| path.join(name)));
             }
             Err(error) if allow_missing && error.kind() == std::io::ErrorKind::NotFound => {
-                // A dangling symlink must not become a writable missing path.
-                ensure!(
-                    fs::symlink_metadata(ancestor).is_err(),
-                    "Unresolved symbolic link"
-                );
+                // A request writer may create this directory between the two
+                // lookups. Re-resolve ordinary entries; only symlinks are unsafe
+                // to treat as missing, including links with absent targets.
+                match fs::symlink_metadata(ancestor) {
+                    Ok(metadata) => {
+                        ensure!(
+                            !metadata.file_type().is_symlink(),
+                            "Unresolved symbolic link"
+                        );
+                        ensure!(
+                            retries < 8,
+                            "Path changed repeatedly while resolving it; retry"
+                        );
+                        retries += 1;
+                        continue;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+                retries = 0;
                 suffix.push(ancestor.file_name().context("Invalid path")?.to_os_string());
                 ancestor = ancestor.parent().context("Invalid path")?;
             }
@@ -613,11 +629,36 @@ mod tests {
             std::os::unix::fs::symlink(outside.path(), root.path().join("shortcut"))
                 .expect("symlink");
             assert!(scoped_path(root.path(), Path::new("shortcut/new.md"), true).is_err());
+            std::os::unix::fs::symlink(outside.path().join("absent"), root.path().join("dangling"))
+                .expect("dangling symlink");
+            assert!(scoped_path(root.path(), Path::new("dangling/new.md"), true).is_err());
             let url =
                 url::Url::from_file_path(root.path().join("shortcut/private.md")).expect("url");
             let batch = json!({"format":"brainz-canvas-ops","version":1,"batchId":"bad-link","ops":[{"op":"create","type":"card","url":url.as_str()}]});
             assert!(validate_batch(root.path(), &batch).is_err());
         }
+    }
+
+    #[test]
+    fn missing_path_resolution_tolerates_concurrent_directory_creation() {
+        let root = tempfile::tempdir().expect("brain");
+        let writer_root = root.path().to_path_buf();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let writer_barrier = barrier.clone();
+        let writer = std::thread::spawn(move || {
+            for index in 0..200 {
+                writer_barrier.wait();
+                fs::create_dir_all(writer_root.join(format!("board-{index}/cache/requests/done")))
+                    .expect("create request folders");
+            }
+        });
+        for index in 0..200 {
+            barrier.wait();
+            let relative = PathBuf::from(format!("board-{index}/cache/requests/done/read.json"));
+            let resolved = scoped_path(root.path(), &relative, true).expect("concurrent path");
+            assert!(resolved.starts_with(root.path().canonicalize().expect("brain root")));
+        }
+        writer.join().expect("writer");
     }
 
     #[test]
