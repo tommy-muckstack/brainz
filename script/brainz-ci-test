@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 
 cargo_bin="${CARGO:-cargo}"
 mode="${1:-all}"
-native_packages=(-p brainz_calendar -p brainz_canvas -p brainz_ai -p auto_update -p auto_update_ui -p release_channel -p cli -p client -p feature_flags)
+native_packages=(-p brainz_calendar -p brainz_canvas -p brainz_templates -p brainz_ai -p auto_update -p auto_update_ui -p release_channel -p cli -p client -p feature_flags)
 
 lint() {
     "$cargo_bin" fmt --all -- --check
@@ -21,12 +21,13 @@ PY
 
 native() {
     "$cargo_bin" test --locked "${native_packages[@]}" --lib
+    "$cargo_bin" test --locked -p cli --bin cli
     "$cargo_bin" test --locked -p agent_ui --lib canvas
     CLIPPY_PROFILE=dev CLIPPY_DEFAULT_FEATURES=1 script/clippy --locked "${native_packages[@]}" -p icons -p settings_ui
 }
 
 pure() {
-    "$cargo_bin" test --locked -p icons -p brainz_canvas
+    "$cargo_bin" test --locked -p icons -p brainz_canvas -p brainz_templates
     python3 -m unittest discover -s script -p 'test_brainz_*.py'
 }
 

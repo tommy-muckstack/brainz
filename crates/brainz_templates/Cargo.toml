@@ -1,0 +1,25 @@
+[package]
+name = "brainz_templates"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/brainz_templates.rs"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+handlebars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+toml.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

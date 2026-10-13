@@ -26,7 +26,7 @@ This file records implementation and validation; an unchecked item is not shippe
 - [ ] Recheck connector installation directly from chat and Connectors navigation.
 - [ ] Recheck Railway setup and connector-specific reconnect artwork.
 - [ ] Rich Markdown editing inside the existing viewer, with comments, history, and collaboration.
-- [ ] Investigate reusable Delta source and licensing; document any unavailable upstream source.
+- [x] Investigate reusable Delta source and licensing; document any unavailable upstream source.
 
 ## Release basics
 
@@ -106,6 +106,19 @@ This file records implementation and validation; an unchecked item is not shippe
 - Next release: pending implementation and validation.
 
 ## Work in progress
+
+- Delta source check (2026-10-13): Zed's official
+  [Delta packaging repository](https://github.com/zed-industries/delta-nix)
+  explicitly identifies Delta as proprietary. Its public packaging code is not
+  the application source. Rich note editing, comments, history, and collaboration
+  remain implementation work in the existing Brainz Markdown viewer.
+- Template foundation: ten built-ins, YAML metadata, Markdown helpers, AI
+  placeholders, local overrides, configurable folder loading, and read-only
+  `templates list/show/render` commands. Native insertion, watcher integration,
+  skill templates, live context providers, and AI review remain open within P0-1
+  and the following epics. The engine's 15 local tests (including ten reviewed
+  render fixtures), five CLI tests, and Clippy pass. A separate CLI smoke test
+  verifies overrides, strict rendering, missing-input errors, and zero writes.
 
 - Release foundations PR #58 adds CI, verified updates, stable/preview settings,
   offline notes, private defaults, local Labs, and a shared release pipeline.

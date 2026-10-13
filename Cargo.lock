@@ -2510,6 +2510,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "brainz_templates"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "handlebars 4.5.0",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+ "toml 0.8.23",
+ "uuid",
+]
+
+[[package]]
 name = "breadcrumbs"
 version = "0.1.0"
 dependencies = [
@@ -3247,6 +3262,7 @@ dependencies = [
  "anyhow",
  "askpass",
  "brainz_canvas",
+ "brainz_templates",
  "clap",
  "clap_complete",
  "clap_complete_nushell",
@@ -3265,6 +3281,7 @@ dependencies = [
  "release_channel",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
  "tempfile",
  "url",
  "util",
