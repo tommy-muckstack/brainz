@@ -1,6 +1,6 @@
 # Brainz implementation tracker
 
-Requested scope: all four specifications and the outstanding product requests.
+Requested scope: all five specifications and the outstanding product requests.
 This file records implementation and validation; an unchecked item is not shipped.
 
 ## Constraints
@@ -27,6 +27,21 @@ This file records implementation and validation; an unchecked item is not shippe
 - [ ] Recheck Railway setup and connector-specific reconnect artwork.
 - [ ] Rich Markdown editing inside the existing viewer, with comments, history, and collaboration.
 - [x] Investigate reusable Delta source and licensing; document any unavailable upstream source.
+
+## Rich editor and Git sync
+
+- [x] K1/K2: remove destructive post-merge fallback and live autostash/rebase pulls.
+- [ ] K3–K7/K9: session messages, path-scoped commits, automatic syncing, branch support, event-driven refresh, and review before every commit.
+- [ ] E1. Lossless editing in the rendered Markdown viewer, source-range golden corpus, formatting, slash actions, tables, properties, paste, and block movement.
+- [ ] E2. Autosave, session commits, optional AI messages, per-origin attribution, grace window, offline queue, and sync status pill.
+- [ ] E3. Isolated integration, block conflicts, recoverable safety snapshots, and persisted resolution.
+- [ ] E4. Staged Claude/Codex suggestions with partial acceptance, persistence, and attribution.
+- [ ] E5. Changes since last reading with authors, navigation, and seen markers.
+- [ ] E6. Note version history, fine-grained operations, and non-destructive restoration.
+- [ ] E7. Block blame and agent attribution.
+- [ ] E8. Anchored comment threads in sidecars.
+- [ ] E9. Agent assignments through comments and note actions.
+- [ ] E10. Local agent co-editing and future DeltaDB evaluation.
 
 ## Release basics
 
@@ -153,6 +168,14 @@ This file records implementation and validation; an unchecked item is not shippe
   check for Undo/reopen and read-only buffers; Clippy passes. Closed-file filling
   remains open. This has not shipped in an installer.
 
+- Sync safety: post-merge updates stop if new local work prevents a fast-forward;
+  the destructive fallback is removed. Pulls no longer rebase or autostash in the
+  live checkout, even if the user's Git configuration enables autostash. Manual
+  sync can propose diverged histories through its existing PR flow. A direct
+  pull of diverged commits pauses with guidance until isolated integration is
+  implemented. Five local bare-origin tests cover clean pulls, staged/unstaged
+  and untracked text, CRLF preservation, divergence, concurrent edits, and branch
+  changes. No real brain repositories are used. Not yet released.
 - Canvas menu layering: native whiteboards yield while a GPUI popover is open,
   keeping the pane's + and split menus visible. Tracking is scoped per window
   and clears on dismissal, replacement, or release. Native regression coverage
