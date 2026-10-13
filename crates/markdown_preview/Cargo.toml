@@ -17,6 +17,7 @@ test-support = []
 
 [dependencies]
 anyhow.workspace = true
+brainz_editor.workspace = true
 db.workspace = true
 editor.workspace = true
 gpui.workspace = true

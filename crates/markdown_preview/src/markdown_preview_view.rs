@@ -119,6 +119,7 @@ impl Global for SuppressedAutoPreviews {}
 pub enum MarkdownPreviewEvent {
     SourceEditorChanged,
     SourceFileHandleChanged,
+    SourceItemEvent(workspace::item::ItemEvent),
 }
 
 enum PreviewLinkTarget {
@@ -584,6 +585,9 @@ impl MarkdownPreviewView {
                     }
                     _ => {}
                 };
+                Editor::to_item_events(event, &mut |event| {
+                    cx.emit(MarkdownPreviewEvent::SourceItemEvent(event));
+                });
             },
         );
 
@@ -1146,6 +1150,8 @@ impl MarkdownPreviewView {
 
         if let Some(active_editor) = active_editor {
             let editor_for_checkbox = active_editor.clone();
+            let checkbox_source = self.markdown.read(cx).parsed_markdown().source().clone();
+            let workspace_for_checkbox = self.workspace.clone();
             let view_handle = cx.entity().downgrade();
             markdown_element = markdown_element
                 .on_source_click(move |source_index, click_count, window, cx| {
@@ -1161,12 +1167,20 @@ impl MarkdownPreviewView {
                     false
                 })
                 .on_checkbox_toggle(move |source_range, new_checked, window, cx| {
-                    Self::apply_checkbox_toggle_to_editor(
+                    if let Err(error) = Self::apply_checkbox_toggle_to_editor(
                         &editor_for_checkbox,
+                        &checkbox_source,
                         source_range,
                         new_checked,
+                        window,
                         cx,
-                    );
+                    ) {
+                        if let Some(workspace) = workspace_for_checkbox.upgrade() {
+                            workspace.update(cx, |workspace, cx| workspace.show_error(error, cx));
+                        } else {
+                            log::error!("Failed to update note task: {error:#}");
+                        }
+                    }
                     Self::refresh_preview(view_handle.clone(), window, cx);
                 });
         }
@@ -1176,33 +1190,24 @@ impl MarkdownPreviewView {
 
     fn apply_checkbox_toggle_to_editor(
         editor: &Entity<Editor>,
+        expected_source: &str,
         source_range: std::ops::Range<usize>,
         new_checked: bool,
+        window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Result<()> {
         let task_marker = if new_checked { "[x]" } else { "[ ]" };
-        let expected_existing_marker = if new_checked { "[ ]" } else { "[x]" };
-
-        editor.update(cx, |editor, cx| {
-            let existing_marker: String = editor
-                .buffer()
-                .read(cx)
-                .snapshot(cx)
-                .text_for_range(
-                    MultiBufferOffset(source_range.start)..MultiBufferOffset(source_range.end),
-                )
-                .collect();
-
-            debug_assert_eq!(existing_marker, expected_existing_marker);
-
-            editor.edit(
-                [(
-                    MultiBufferOffset(source_range.start)..MultiBufferOffset(source_range.end),
-                    task_marker,
-                )],
-                cx,
-            );
-        });
+        let existing_marker = expected_source.get(source_range.clone());
+        anyhow::ensure!(
+            if new_checked {
+                existing_marker == Some("[ ]")
+            } else {
+                matches!(existing_marker, Some("[x]" | "[X]"))
+            },
+            "The task changed. Wait for the note to refresh before toggling it."
+        );
+        let plan = brainz_editor::EditPlan::replace(expected_source, source_range, task_marker)?;
+        crate::source_edits::apply(editor, &plan, window, cx)
     }
 
     fn refresh_preview(view_handle: WeakEntity<Self>, window: &mut Window, cx: &mut App) {
@@ -1697,6 +1702,24 @@ impl Item for MarkdownPreviewView {
             .is_some_and(|editor_state| editor_state.editor.read(cx).can_save_as(cx))
     }
 
+    fn is_dirty(&self, cx: &App) -> bool {
+        self.active_editor
+            .as_ref()
+            .is_some_and(|state| state.editor.read(cx).is_dirty(cx))
+    }
+
+    fn has_conflict(&self, cx: &App) -> bool {
+        self.active_editor
+            .as_ref()
+            .is_some_and(|state| state.editor.read(cx).has_conflict(cx))
+    }
+
+    fn has_deleted_file(&self, cx: &App) -> bool {
+        self.active_editor
+            .as_ref()
+            .is_some_and(|state| state.editor.read(cx).has_deleted_file(cx))
+    }
+
     fn save(
         &mut self,
         options: SaveOptions,
@@ -1704,6 +1727,16 @@ impl Item for MarkdownPreviewView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<()>> {
+        // The source buffer normalizes line endings in memory. Saving an
+        // untouched preview must not rewrite a file with mixed line endings.
+        if !options.force_format
+            && self
+                .active_editor
+                .as_ref()
+                .is_some_and(|editor_state| !editor_state.editor.read(cx).is_dirty(cx))
+        {
+            return Task::ready(Ok(()));
+        }
         self.active_editor
             .as_ref()
             .map(|editor_state| {
@@ -1748,6 +1781,7 @@ impl Item for MarkdownPreviewView {
                 f(workspace::item::ItemEvent::UpdateTab);
                 f(workspace::item::ItemEvent::UpdateBreadcrumbs);
             }
+            MarkdownPreviewEvent::SourceItemEvent(event) => f(*event),
         }
     }
 
@@ -2219,8 +2253,8 @@ mod tests {
     use crate::markdown_preview_view::resolve_preview_image;
     use crate::markdown_preview_view::resolve_project_path_for_preview_image;
     use buffer_diff::BufferDiff;
-    use editor::Editor;
     use editor::items::open_resolved_target;
+    use editor::{Editor, MultiBufferOffset};
     use fs::FakeFs;
     use gpui::UpdateGlobal as _;
     use gpui::{
@@ -2927,6 +2961,176 @@ mod tests {
     }
 
     #[gpui::test]
+    async fn source_map_corpus_round_trips_the_rendered_viewer(cx: &mut TestAppContext) {
+        let corpus =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../brainz_editor/tests/corpus");
+        let mut fixtures = std::collections::BTreeMap::new();
+        for entry in std::fs::read_dir(corpus).expect("synthetic corpus") {
+            let path = entry.expect("fixture").path();
+            if path.extension().is_some_and(|extension| extension == "md") {
+                fixtures.insert(
+                    path.file_name()
+                        .expect("name")
+                        .to_string_lossy()
+                        .into_owned(),
+                    std::fs::read_to_string(&path).expect("fixture source"),
+                );
+            }
+        }
+        assert_eq!(fixtures.len(), 40);
+        let (project, _, multi_workspace) =
+            markdown_workspace(cx, json!({"corpus": fixtures}), false).await;
+        let fs = project.read_with(cx, |project, _| project.fs().clone());
+        for (name, original) in fixtures {
+            let relative = format!("corpus/{name}");
+            let item =
+                open_project_file(cx, &project, &multi_workspace, &relative, None, true).await;
+            let editor = cx.update(|cx| item.act_as::<Editor>(cx).expect("source editor"));
+            let preview = open_preview_for_active_editor(cx, &multi_workspace);
+            cx.run_until_parked();
+            multi_workspace
+                .update(cx, |_, window, cx| {
+                    assert!(
+                        !editor.read(cx).is_dirty(cx),
+                        "opening {name} modified its buffer"
+                    );
+                    let source = editor.read(cx).text(cx);
+                    let map = brainz_editor::BlockMap::parse(source.clone());
+                    assert_eq!(map.source_segments().collect::<String>(), source);
+                    let no_op = map.replace(0..0, "").expect("no-op plan");
+                    crate::source_edits::apply(&editor, &no_op, window, cx).expect("no-op edit");
+                    assert!(!preview.read(cx).is_dirty(cx), "no-op changed {name}");
+                })
+                .expect("workspace");
+            let save = multi_workspace
+                .update(cx, |multi_workspace, window, cx| {
+                    multi_workspace.workspace().update(cx, |workspace, cx| {
+                        workspace.save_active_item(SaveIntent::Save, window, cx)
+                    })
+                })
+                .expect("save task");
+            save.await.expect("save unchanged note");
+            cx.run_until_parked();
+            let path = std::path::PathBuf::from(path!("/project")).join(&relative);
+            assert_eq!(
+                fs.load(&path).await.expect("saved fixture").as_bytes(),
+                original.as_bytes(),
+                "{name}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    async fn source_map_edits_preserve_saved_bytes_and_one_step_undo(cx: &mut TestAppContext) {
+        let original = "# Note\r\n\r\nKeep __old__ and word.  \r\n\r\n[ref]: ../note.md";
+        let (project, _, multi_workspace) =
+            markdown_workspace(cx, json!({"note.md": original}), false).await;
+        let item = open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        let editor = cx.update(|cx| item.act_as::<Editor>(cx).expect("source editor"));
+        let preview = open_preview_for_active_editor(cx, &multi_workspace);
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                let source = editor.read(cx).text(cx);
+                let start = source.find("word").expect("word position");
+                let plan = brainz_editor::BlockMap::parse(source.clone())
+                    .toggle_bold(start..start + 4)
+                    .expect("bold plan");
+                crate::source_edits::apply(&editor, &plan, window, cx).expect("apply bold");
+                assert_eq!(editor.read(cx).text(cx), source.replace("word", "**word**"));
+                assert!(preview.read(cx).is_dirty(cx));
+                editor.update(cx, |editor, cx| {
+                    editor.undo(&editor::actions::Undo, window, cx)
+                });
+                assert_eq!(editor.read(cx).text(cx), source);
+                assert!(!preview.read(cx).is_dirty(cx));
+                editor.update(cx, |editor, cx| {
+                    editor.redo(&editor::actions::Redo, window, cx)
+                });
+                assert_eq!(editor.read(cx).text(cx), source.replace("word", "**word**"));
+            })
+            .expect("workspace");
+        let save = multi_workspace
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    workspace.save_active_item(SaveIntent::Save, window, cx)
+                })
+            })
+            .expect("save task");
+        save.await.expect("save note");
+        assert!(!preview.read_with(cx, |preview, cx| preview.is_dirty(cx)));
+        let fs = project.read_with(cx, |project, _| project.fs().clone());
+        assert_eq!(
+            fs.load(path!("/project/note.md").as_ref())
+                .await
+                .expect("saved note"),
+            original.replace("word", "**word**")
+        );
+    }
+
+    #[gpui::test]
+    async fn source_map_stale_checkboxes_and_read_only_notes_reject_edits(cx: &mut TestAppContext) {
+        let original = "- [ ] Original task\n";
+        let (project, _, multi_workspace) =
+            markdown_workspace(cx, json!({"note.md": original}), false).await;
+        let item = open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        let editor = cx.update(|cx| item.act_as::<Editor>(cx).expect("source editor"));
+        multi_workspace
+            .update(cx, |_, window, cx| {
+                let current = "- [ ] New task\n- [ ] Original task\n";
+                editor.update(cx, |editor, cx| {
+                    editor.edit(
+                        [(
+                            MultiBufferOffset(0)..MultiBufferOffset(0),
+                            "- [ ] New task\n",
+                        )],
+                        cx,
+                    )
+                });
+                assert!(
+                    MarkdownPreviewView::apply_checkbox_toggle_to_editor(
+                        &editor,
+                        original,
+                        2..5,
+                        true,
+                        window,
+                        cx
+                    )
+                    .is_err()
+                );
+                assert_eq!(editor.read(cx).text(cx), current);
+                editor.update(cx, |editor, _| editor.set_read_only(true));
+                assert!(
+                    MarkdownPreviewView::apply_checkbox_toggle_to_editor(
+                        &editor,
+                        current,
+                        2..5,
+                        true,
+                        window,
+                        cx
+                    )
+                    .is_err()
+                );
+                assert_eq!(editor.read(cx).text(cx), current);
+                editor.update(cx, |editor, _| editor.set_read_only(false));
+                editor.update(cx, |editor, cx| {
+                    editor.edit([(MultiBufferOffset(2)..MultiBufferOffset(5), "[X]")], cx);
+                });
+                let uppercase_source = editor.read(cx).text(cx);
+                MarkdownPreviewView::apply_checkbox_toggle_to_editor(
+                    &editor,
+                    &uppercase_source,
+                    2..5,
+                    false,
+                    window,
+                    cx,
+                )
+                .expect("uppercase task can be unchecked");
+                assert_eq!(editor.read(cx).text(cx), current);
+            })
+            .expect("workspace");
+    }
+
+    #[gpui::test]
     async fn toggles_task_checkbox_and_saves_when_preview_is_active(cx: &mut TestAppContext) {
         let app_state = init_test(cx);
         app_state
@@ -2984,7 +3188,15 @@ mod tests {
                 assert!(preview.read(cx).focus_handle.contains_focused(window, cx));
                 preview.update(cx, |preview, cx| {
                     let editor = preview.active_editor.as_ref().unwrap().editor.clone();
-                    MarkdownPreviewView::apply_checkbox_toggle_to_editor(&editor, 2..5, true, cx);
+                    MarkdownPreviewView::apply_checkbox_toggle_to_editor(
+                        &editor,
+                        "- [ ] Finish work\n",
+                        2..5,
+                        true,
+                        window,
+                        cx,
+                    )
+                    .expect("toggle task");
                 });
                 MarkdownPreviewView::refresh_preview(view_handle, window, cx);
 
@@ -3137,7 +3349,15 @@ mod tests {
             .update(cx, |_, window, cx| {
                 let view_handle = preview.downgrade();
                 assert!(preview.read(cx).focus_handle.contains_focused(window, cx));
-                MarkdownPreviewView::apply_checkbox_toggle_to_editor(&editor, 2..5, true, cx);
+                MarkdownPreviewView::apply_checkbox_toggle_to_editor(
+                    &editor,
+                    "- [ ] Finish work\n",
+                    2..5,
+                    true,
+                    window,
+                    cx,
+                )
+                .expect("toggle task");
                 MarkdownPreviewView::refresh_preview(view_handle, window, cx);
             })
             .unwrap();

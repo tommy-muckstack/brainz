@@ -11197,6 +11197,7 @@ name = "markdown_preview"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "brainz_editor",
  "buffer_diff",
  "db",
  "editor",
