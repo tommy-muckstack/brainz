@@ -112,8 +112,8 @@ This file records implementation and validation; an unchecked item is not shippe
 - Local foundation checks: 22 updater tests (including wrong-signature rejection),
   three update notification tests, 22 client tests, nine flag tests, and three
   release-tool tests pass. The published 0.1.38 app and DMG pass the new smoke check.
-- Remote CI: canvas, Linux, and workflow lint pass. macOS moved to Xcode 16.4
-  after Xcode 15.4 failed to compile the upstream WebRTC dependency; rerun pending.
+- Remote CI: canvas, Linux, macOS, and workflow lint pass. macOS uses Xcode 16.4
+  after Xcode 15.4 failed to compile the upstream WebRTC dependency.
   Repository protection,
   inherited-workflow disabling, release secrets, and a clean signing rehearsal
   remain owner setup and validation tasks.
@@ -130,4 +130,10 @@ This file records implementation and validation; an unchecked item is not shippe
   interaction suite.
 - Persistence follow-up: local viewport storage, zero document writes while
   panning, one-time font migration, and live assistant reads with a labeled
-  saved-context fallback. The format-v2 delta log and external assets remain open.
+  saved-context fallback.
+- Format-v2 storage preview: in-place migration with exact backups, append-only
+  updates, guarded compaction, external images, seven-day image trash, per-board
+  locks, and independent recovery copies. Browser coverage verifies migration
+  and reopening without redundant saves. Worker serialization, the incremental
+  scene cache, thumbnails, and the native large-board open-time benchmark remain
+  open, so the full P0-3 epic is not complete.

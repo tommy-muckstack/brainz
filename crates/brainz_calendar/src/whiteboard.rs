@@ -19,6 +19,10 @@ use workspace::{Item, Pane, Workspace, item::ProjectItem};
 
 const MAX_DOCUMENT_BYTES: usize = 24 * 1024 * 1024;
 
+#[path = "whiteboard_storage_v2.rs"]
+mod storage_v2;
+use storage_v2::{IncrementalStorage, StorageChange};
+
 actions!(brainz_whiteboard, [OpenWhiteboard]);
 
 #[derive(Clone, PartialEq, Debug, Deserialize, schemars::JsonSchema, gpui::Action)]
@@ -46,7 +50,7 @@ pub fn canvas_title(path: &Path) -> Result<String> {
         .to_owned())
 }
 
-fn canvas_file_references(paths: Vec<PathBuf>) -> Vec<Value> {
+fn canvas_file_references(paths: Vec<PathBuf>, incremental: bool) -> Vec<Value> {
     let mut image_bytes = 0;
     let mut files = Vec::new();
     for path in paths {
@@ -74,8 +78,13 @@ fn canvas_file_references(paths: Vec<PathBuf>) -> Vec<Value> {
         };
         if let Some(mime) = mime {
             let image = std::fs::metadata(&path).and_then(|metadata| {
-                if metadata.len() > 8 * 1024 * 1024
-                    || image_bytes + metadata.len() > 16 * 1024 * 1024
+                if metadata.len()
+                    > if incremental {
+                        25 * 1024 * 1024
+                    } else {
+                        8 * 1024 * 1024
+                    }
+                    || (!incremental && image_bytes + metadata.len() > 16 * 1024 * 1024)
                 {
                     return Err(std::io::Error::other(
                         "Image is too large to embed; keeping a file link",
@@ -278,11 +287,11 @@ fn validate_document(document: &Value) -> Result<()> {
         "This is not a Brainz whiteboard"
     );
     ensure!(
-        document.get("version").and_then(Value::as_u64) == Some(1),
-        "This board requires a different version of Brainz"
+        matches!(document.get("version").and_then(Value::as_u64), Some(1 | 2)),
+        "Update Brainz to open this canvas. Its contents have been preserved."
     );
     ensure!(
-        document.get("data").and_then(Value::as_str).is_some(),
+        document["version"] == 2 || document.get("data").and_then(Value::as_str).is_some(),
         "The whiteboard document is missing"
     );
     Ok(())
@@ -302,6 +311,8 @@ struct PendingDocument {
     recovery_path: Option<PathBuf>,
     board_id: Option<String>,
     view_state: Option<[f64; 3]>,
+    storage_root: Option<PathBuf>,
+    incremental: Option<IncrementalStorage>,
 }
 
 struct BoardStorage {
@@ -358,6 +369,14 @@ impl BoardStorage {
                 .ok()
                 .map(|modified| (metadata.len(), modified))
         });
+        if document["version"] == 2 {
+            pending.incremental = Some(IncrementalStorage::open(&pending, &document)?);
+            return pending
+                .incremental
+                .as_ref()
+                .context("Canvas storage is unavailable")?
+                .wire_document(&document);
+        }
         Ok(document)
     }
 
@@ -404,6 +423,10 @@ impl BoardStorage {
     fn queue_with_base(&self, revision: u64, document: Value, base: Option<String>) -> Result<()> {
         validate_document(&document)?;
         ensure!(
+            document["version"] == 1,
+            "Use incremental saving for this canvas"
+        );
+        ensure!(
             serde_json::to_vec(&document)?.len() <= MAX_DOCUMENT_BYTES,
             "The whiteboard has reached its size limit"
         );
@@ -411,6 +434,10 @@ impl BoardStorage {
             .pending
             .lock()
             .map_err(|_| anyhow!("Whiteboard storage is unavailable"))?;
+        ensure!(
+            pending.incremental.is_none(),
+            "This canvas now uses incremental storage"
+        );
         if revision > pending.revision || pending.document.is_none() {
             pending.revision = revision;
             pending.board_id = document["id"]
@@ -434,14 +461,34 @@ impl BoardStorage {
         }
         let metadata = std::fs::metadata(&pending.path)?;
         let stamp = (metadata.len(), metadata.modified()?);
-        if pending.observed_stamp == Some(stamp) {
+        let storage_changed = pending
+            .incremental
+            .as_ref()
+            .map(IncrementalStorage::changed_on_disk)
+            .transpose()?
+            .unwrap_or(false);
+        if pending.observed_stamp == Some(stamp) && !storage_changed {
             return Ok(None);
         }
         let document = read_document(&pending.path, false)?;
         let hash = brainz_canvas::document_hash(&document)?;
         pending.observed_stamp = Some(stamp);
-        if pending.disk_hash.as_ref() == Some(&hash) {
+        if pending.disk_hash.as_ref() == Some(&hash) && !storage_changed {
             return Ok(None);
+        }
+        if let Some(storage) = pending.incremental.as_mut() {
+            ensure!(
+                document["version"] == 2 && document["id"].as_str() == Some(storage.id.as_str()),
+                "The canvas file was replaced; local edits have been preserved"
+            );
+            let document = storage.wire_document(&document)?;
+            storage.forward_external(
+                document["storageStamp"]
+                    .as_str()
+                    .context("Canvas storage stamp is missing")?
+                    .to_owned(),
+            );
+            return Ok(Some((document, hash)));
         }
         Ok(Some((document, hash)))
     }
@@ -490,7 +537,8 @@ impl BoardStorage {
     fn recover(&self, document: Value) -> Result<PathBuf> {
         validate_document(&document)?;
         ensure!(
-            serde_json::to_vec(&document)?.len() <= MAX_DOCUMENT_BYTES,
+            serde_json::to_vec(&document)?.len()
+                <= brainz_canvas::storage::MAX_STATE_BYTES * 4 / 3 + MAX_DOCUMENT_BYTES,
             "The recovery copy is too large"
         );
         let mut pending = self
@@ -523,11 +571,18 @@ impl BoardStorage {
                 path
             }
         };
-        write_json_atomically(&recovery_path, document)?;
+        if pending.incremental.is_some() {
+            Self::write_incremental_recovery(pending, document, &recovery_path)?;
+        } else {
+            write_json_atomically(&recovery_path, document)?;
+        }
         Ok(recovery_path)
     }
 
     fn save_pending(pending: &mut PendingDocument) -> Result<u64> {
+        if pending.incremental.is_some() {
+            return Self::save_incremental(pending);
+        }
         if pending.saved_revision == Some(pending.revision) || pending.document.is_none() {
             return Ok(pending.revision);
         }
@@ -608,6 +663,13 @@ impl BoardStorage {
         let parent = destination
             .parent()
             .context("Canvas has no containing folder")?;
+        if pending.incremental.is_some() {
+            let root = pending
+                .storage_root
+                .as_ref()
+                .context("Canvas workspace is missing")?;
+            brainz_canvas::scoped_path(root, &destination, true)?;
+        }
         std::fs::create_dir_all(parent)?;
         // Moving a whole folder also moves its lock file. Retain our existing
         // lock in that case instead of treating it as a competing canvas tab.
@@ -852,6 +914,19 @@ impl WhiteboardView {
         cx: &mut Context<Self>,
     ) -> Self {
         let mut storage = BoardStorage::new(target.path.clone());
+        if let Ok(pending) = storage.pending.get_mut() {
+            pending.storage_root = workspace
+                .upgrade()
+                .and_then(|workspace| {
+                    workspace
+                        .read(cx)
+                        .root_paths(cx)
+                        .into_iter()
+                        .find(|root| target.path.starts_with(root))
+                        .map(|root| root.to_path_buf())
+                })
+                .or_else(|| target.path.parent().map(Path::to_path_buf));
+        }
         storage.view_state_path = Some(paths::data_dir().join("whiteboards/state.json"));
         let storage = Arc::new(storage);
         let loading_storage = storage.clone();
@@ -998,12 +1073,26 @@ impl WhiteboardView {
     }
 
     fn send_files(&self, paths: Vec<PathBuf>, position: Option<[f64; 2]>, cx: &mut App) {
-        let task = cx.background_spawn(async move { canvas_file_references(paths) });
+        let incremental = self
+            .storage
+            .storage_status()
+            .log_err()
+            .is_some_and(|status| status["version"] == 2);
+        let task = cx.background_spawn(async move {
+            paths
+                .into_iter()
+                .flat_map(|path| canvas_file_references(vec![path], incremental))
+                .collect::<Vec<_>>()
+        });
         let this = self.this.clone();
         cx.spawn(async move |cx| {
             let files = task.await;
             this.update(cx, |this, _| {
-                this.send(json!({"type": "files", "files": files, "position": position}))
+                for (index, file) in files.into_iter().enumerate() {
+                    let position =
+                        position.map(|[x, y]| [x + index as f64 * 30., y + index as f64 * 130.]);
+                    this.send(json!({"type": "files", "files": [file], "position": position}));
+                }
             })
             .log_err();
         })
@@ -1234,7 +1323,7 @@ impl Render for WhiteboardView {
 #[cfg(target_os = "macos")]
 mod native {
     use super::*;
-    use feature_flags::{BrainzCanvasAgentApi, FeatureFlagAppExt as _};
+    use feature_flags::{BrainzCanvasAgentApi, BrainzCanvasStorageV2, FeatureFlagAppExt as _};
     use gpui::{ClipboardItem, Image, ImageFormat, PathPromptOptions};
     use std::{borrow::Cow, rc::Rc};
 
@@ -1248,6 +1337,36 @@ mod native {
             document: Value,
             #[serde(default, rename = "baseHash")]
             base_hash: Option<String>,
+        },
+        MigrateStorage {
+            revision: u64,
+            document: Value,
+            #[serde(default, rename = "baseHash")]
+            base_hash: Option<String>,
+        },
+        AppendUpdate {
+            revision: u64,
+            update: Option<String>,
+            title: String,
+        },
+        CompactStorage {
+            snapshot: String,
+            stamp: String,
+            #[serde(rename = "usedAssets")]
+            used_assets: Vec<String>,
+        },
+        PutAsset {
+            #[serde(rename = "requestId")]
+            request_id: String,
+            mime: String,
+            name: Option<String>,
+            data: String,
+        },
+        SaveContext {
+            context: Value,
+        },
+        ExternalMerged {
+            stamp: String,
         },
         Recover {
             document: Value,
@@ -1297,6 +1416,7 @@ mod native {
         Message(Message),
         Saved(Result<u64, String>),
         Recovered(Result<PathBuf, String>),
+        StorageReply(Value),
         Files(Vec<PathBuf>, Option<[f64; 2]>),
     }
 
@@ -1320,9 +1440,21 @@ mod native {
 
     fn asset_response(
         root: &Path,
+        storage: &BoardStorage,
         request: wry::http::Request<Vec<u8>>,
     ) -> wry::http::Response<Cow<'static, [u8]>> {
-        let read = || -> Result<(Vec<u8>, &'static str)> {
+        let read = || -> Result<(Vec<u8>, String)> {
+            if request.method() == "GET"
+                && request.uri().host() == Some("app")
+                && let Some(source) = request.uri().path().strip_prefix("/board-assets/")
+            {
+                let source: String = url::form_urlencoded::parse(format!("id={source}").as_bytes())
+                    .next()
+                    .context("Missing canvas image")?
+                    .1
+                    .into_owned();
+                return storage.image(&source);
+            }
             ensure!(
                 request.method() == "GET" && request.uri().host() == Some("app"),
                 "Invalid asset request"
@@ -1336,7 +1468,7 @@ mod native {
             if let Some(name) = local_font {
                 let path = util::paths::home_dir().join("Library/Fonts").join(name);
                 match std::fs::read(path) {
-                    Ok(bytes) => return Ok((bytes, "font/ttf")),
+                    Ok(bytes) => return Ok((bytes, "font/ttf".into())),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                     Err(error) => log::warn!("Canvas could not load the installed font: {error}"),
                 }
@@ -1362,7 +1494,7 @@ mod native {
                 Some("png") => "image/png",
                 _ => "application/octet-stream",
             };
-            Ok((std::fs::read(path)?, mime))
+            Ok((std::fs::read(path)?, mime.into()))
         };
         let mut response = wry::http::Response::new(Cow::Owned(Vec::new()));
         match read() {
@@ -1370,7 +1502,9 @@ mod native {
                 *response.body_mut() = Cow::Owned(bytes);
                 response.headers_mut().insert(
                     wry::http::header::CONTENT_TYPE,
-                    wry::http::HeaderValue::from_static(mime),
+                    wry::http::HeaderValue::from_str(&mime).unwrap_or_else(|_| {
+                        wry::http::HeaderValue::from_static("application/octet-stream")
+                    }),
                 );
             }
             Err(_) => *response.status_mut() = wry::http::StatusCode::NOT_FOUND,
@@ -1388,22 +1522,59 @@ mod native {
             let (sender, receiver) = smol::channel::unbounded();
             let ipc_sender = sender.clone();
             let storage = self.storage.clone();
+            let image_storage = storage.clone();
             let executor = cx.background_executor().clone();
             let webview = wry::WebViewBuilder::new()
                 .with_background_color((20, 20, 19, 255))
                 .with_visible(false)
                 .with_back_forward_navigation_gestures(false)
-                .with_custom_protocol("brainz-board".into(), move |_, request| asset_response(&root, request))
+                .with_custom_protocol("brainz-board".into(), move |_, request| asset_response(&root, &image_storage, request))
                 .with_navigation_handler(|url| url == "brainz-board://app/index.html")
                 .with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny)
                 .with_ipc_handler(move |request| {
-                    if request.body().len() > MAX_DOCUMENT_BYTES + 1024 {
+                    if request.body().len() > brainz_canvas::storage::MAX_STATE_BYTES * 4 / 3 + 4096 {
                         ipc_sender.try_send(NativeEvent::Saved(Err("The canvas or capture is too large to save. Reduce its size and try again.".into()))).log_err();
                         return;
                     }
                     let message = match serde_json::from_str::<Message>(request.body()) {
                         Ok(message) => message,
                         Err(error) => { log::error!("Invalid whiteboard message: {error}"); return; }
+                    };
+                    let message = match message {
+                        Message::MigrateStorage { revision, document, base_hash } => {
+                            let result = storage.queue_incremental(StorageChange::Migrate { revision, document, base_hash });
+                            let storage = storage.clone(); let sender = ipc_sender.clone();
+                            executor.spawn(async move { sender.send(NativeEvent::Saved(result.and_then(|()| storage.save()).map_err(|error| error.to_string()))).await.log_err(); }).detach();
+                            return;
+                        }
+                        Message::AppendUpdate { revision, update, title } => {
+                            let result = storage.queue_incremental(StorageChange::Append { revision, update, title });
+                            let storage = storage.clone(); let sender = ipc_sender.clone();
+                            executor.spawn(async move { sender.send(NativeEvent::Saved(result.and_then(|()| storage.save()).map_err(|error| error.to_string()))).await.log_err(); }).detach();
+                            return;
+                        }
+                        Message::CompactStorage { snapshot, stamp, used_assets } => {
+                            let result = storage.queue_incremental(StorageChange::Compact { snapshot, stamp, used_assets });
+                            let storage = storage.clone(); let sender = ipc_sender.clone();
+                            executor.spawn(async move { sender.send(NativeEvent::Saved(result.and_then(|()| storage.save()).map_err(|error| error.to_string()))).await.log_err(); }).detach();
+                            return;
+                        }
+                        Message::PutAsset { request_id, mime, name, data } => {
+                            let storage = storage.clone(); let sender = ipc_sender.clone();
+                            executor.spawn(async move {
+                                let result = match storage.put_image(&mime, name, &data) { Ok(hash) => json!({"type":"assetStored","requestId":request_id,"hash":hash}), Err(error) => json!({"type":"assetStored","requestId":request_id,"error":error.to_string()}) };
+                                sender.send(NativeEvent::StorageReply(result)).await.log_err();
+                            }).detach(); return;
+                        }
+                        Message::SaveContext { context } => {
+                            let storage = storage.clone();
+                            executor.spawn(async move { storage.save_context(context).log_err(); }).detach(); return;
+                        }
+                        Message::ExternalMerged { stamp } => {
+                            let storage = storage.clone(); let sender = ipc_sender.clone();
+                            executor.spawn(async move { sender.send(NativeEvent::Saved(storage.external_merged(&stamp).and_then(|()| storage.save()).map_err(|error| error.to_string()))).await.log_err(); }).detach(); return;
+                        }
+                        message => message,
                     };
                     if let Message::Save { revision, document, base_hash } = message {
                         let result = storage.queue_with_base(revision, document, base_hash);
@@ -1474,17 +1645,16 @@ mod native {
                         .ok()
                         .and_then(|pending| pending.view_state);
                     let hash = self
-                        .document
-                        .as_ref()
-                        .filter(|document| !document.is_null())
-                        .map(brainz_canvas::document_hash)
-                        .transpose()
-                        .log_err()
-                        .flatten();
+                        .storage
+                        .pending
+                        .lock()
+                        .ok()
+                        .and_then(|pending| pending.disk_hash.clone());
                     self.send(json!({"type": "load", "document": self.document, "target": self.target,
                         "attach": self.chat_destination.is_some(), "workspace": root,
                         "boardId": brainz_canvas::legacy_board_id(&self.target.path), "baseHash": hash, "viewState": view_state,
-                        "agentEnabled": root.is_some() && cx.has_flag::<BrainzCanvasAgentApi>()}));
+                        "agentEnabled": root.is_some() && cx.has_flag::<BrainzCanvasAgentApi>(),
+                        "incrementalStorage": cx.has_flag::<BrainzCanvasStorageV2>()}));
                 }
                 NativeEvent::Message(Message::Loaded) => self.watch_canvas(cx),
                 NativeEvent::Message(Message::OpsResult { batch_id, result }) => {
@@ -1538,8 +1708,14 @@ mod native {
                         .lock()
                         .ok()
                         .and_then(|pending| pending.disk_hash.clone());
-                    self.send(json!({"type": "saved", "revision": revision, "baseHash": hash}))
+                    let status = self
+                        .storage
+                        .storage_status()
+                        .log_err()
+                        .unwrap_or(Value::Null);
+                    self.send(json!({"type": "saved", "revision": revision, "baseHash": hash, "storage":status}))
                 }
+                NativeEvent::StorageReply(message) => self.send(message),
                 NativeEvent::Saved(Err(message)) => {
                     self.send(json!({"type": "saveError", "message": message}))
                 }
@@ -1687,7 +1863,15 @@ mod native {
                     cx.notify();
                 }
                 NativeEvent::Message(
-                    Message::Save { .. } | Message::Recover { .. } | Message::ViewState { .. },
+                    Message::Save { .. }
+                    | Message::Recover { .. }
+                    | Message::ViewState { .. }
+                    | Message::MigrateStorage { .. }
+                    | Message::AppendUpdate { .. }
+                    | Message::CompactStorage { .. }
+                    | Message::PutAsset { .. }
+                    | Message::SaveContext { .. }
+                    | Message::ExternalMerged { .. },
                 ) => {}
             }
         }
