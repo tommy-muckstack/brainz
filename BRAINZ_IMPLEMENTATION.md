@@ -128,11 +128,15 @@ This file records implementation and validation; an unchecked item is not shippe
   candidate also fixes a concurrent directory-creation race. 95 native tests,
   Clippy, and all four Brainz CI jobs passed (one existing native test ignored).
   [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.39)
-- 0.1.40 candidate: templates, native creation, Markdown/chat insertion, folder
-  defaults, live refresh, and the launcher are implemented. The release also
-  includes safe fast-forward updates, readable commit subjects, canvas popover
-  visibility, composer padding focus, and responsive template forms. Publication
-  and signed-artifact verification are still pending.
+- 0.1.40: published 2026-10-13. Templates, native creation, Markdown/chat
+  insertion, folder defaults, live refresh, and the launcher are included, with
+  safe fast-forward updates, readable commit subjects, canvas popover visibility,
+  composer padding focus, and responsive template forms. All four CI jobs passed.
+  The app and DMG passed Apple notarization and signature/executable checks.
+  Native checks against the signed app verified the plus menu, unsent chat typing,
+  template creation, and Connectors in a synthetic workspace. The GitHub asset
+  digest, versioned download, stable download, and public feed were verified.
+  [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.40)
 
 ## Work in progress
 
@@ -148,7 +152,7 @@ This file records implementation and validation; an unchecked item is not shippe
   daily-note reopening, and direct edit-mode opening at the template caret.
   100 native/engine tests and the CLI creation checks pass, along with Clippy
   and all four Brainz CI jobs. Empty-note defaults are implemented below; skill integration remains open;
-  this UI has not shipped in an installer yet.
+  this UI shipped in 0.1.40.
 - Markdown slash insertion: templates, dated callouts, tasks, dates, tables,
   Mermaid, and brain file/person links. Required-input forms preserve the source
   note, reject changed or read-only targets, and apply as one undo step. URL,
@@ -159,7 +163,7 @@ This file records implementation and validation; an unchecked item is not shippe
   The shared picker prepares an editable draft without sending; cancellation
   preserves the original draft. Twelve chat-completion tests and three shared
   native creation/insertion tests pass, as do all 47 message composer tests.
-  Chat completion/composer checks now run in CI. This has not shipped in an installer.
+  Chat completion/composer checks now run in CI. Shipped in 0.1.40.
 - Template defaults: shared configuration and glob precedence, custom daily IDs,
   folder-first/recent-first native ordering, and per-brain recent IDs in local
   app data. Changing the folder preserves the selected template and typed inputs.
@@ -178,11 +182,11 @@ This file records implementation and validation; an unchecked item is not shippe
   required inputs use the shared form. Links resolve from the actual note path.
   90 native tests pass (one existing ignored), plus the expanded interaction
   check for Undo/reopen and read-only buffers; Clippy passes. Closed-file filling
-  remains open. This has not shipped in an installer.
+  remains open. Shipped in 0.1.40.
 
 - Sync messages: manual commits describe the affected area and note, retain the
   configured author, and add a session trailer. Single-commit PRs reuse that
-  subject. Optional AI summaries and agent attribution remain open. Not released.
+  subject. Optional AI summaries and agent attribution remain open. Shipped in 0.1.40.
 - Sync safety: post-merge updates stop if new local work prevents a fast-forward;
   the destructive fallback is removed. Pulls no longer rebase or autostash in the
   live checkout, even if the user's Git configuration enables autostash. Manual
@@ -190,12 +194,12 @@ This file records implementation and validation; an unchecked item is not shippe
   pull of diverged commits pauses with guidance until isolated integration is
   implemented. Five local bare-origin tests cover clean pulls, staged/unstaged
   and untracked text, CRLF preservation, divergence, concurrent edits, and branch
-  changes. No real brain repositories are used. Not yet released.
+  changes. No real brain repositories are used. Shipped in 0.1.40.
 - Canvas menu layering: native whiteboards yield while a GPUI popover is open,
   keeping the pane's + and split menus visible. Tracking is scoped per window
   and clears on dismissal, replacement, or release. Native regression coverage
-  includes all four lifecycles and runs in Brainz CI. Not yet released.
-- Native verification for the next installer uses a separate app data directory
+  includes all four lifecycles and runs in Brainz CI. Shipped in 0.1.40.
+- Native verification for 0.1.40 used a separate app data directory
   and synthetic workspace. The pane's + menu displays over a canvas; Escape
   restores it. Connectors opens and Railway has its logo. The launcher opens a
   template form and creates a note in the chosen folder. Template results no
@@ -209,7 +213,15 @@ This file records implementation and validation; an unchecked item is not shippe
   Cmd+Enter explicitly asks Claude in a new conversation. Inherited Cmd+K chord
   prefixes are removed so the launcher opens immediately. Keyboard tests use
   the shipped macOS keymap and full workspace/modal host, with AI actions captured
-  locally instead of sent. This has not shipped in an installer.
+  locally instead of sent. Shipped in 0.1.40.
+- Follow-on Markdown safeguards: source-snapshot validation rejects stale task
+  positions and read-only edits; accepted edits use one undo transaction. The
+  viewer reports dirty state, supports Undo/Redo, and preserves untouched files
+  on save. Default Markdown saving preserves whitespace and the final-newline
+  choice. Alt-click reopens the source editor without automatic preview taking
+  over. All 32 viewer tests pass, including 40 synthetic round-trip fixtures,
+  CRLF save/undo, stale tasks, uppercase task markers, and existing navigation.
+  These safeguards are not part of 0.1.40; full inline editing remains open.
 
 - Delta source check (2026-10-13): Zed's official
   [Delta packaging repository](https://github.com/zed-industries/delta-nix)

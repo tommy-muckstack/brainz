@@ -970,6 +970,12 @@ impl Markdown {
         &self.source
     }
 
+    /// Source offsets in rendered elements refer to this snapshot, which can
+    /// lag behind `source()` while a background parse is in flight.
+    pub fn parsed_source(&self) -> &SharedString {
+        self.parsed_markdown.source()
+    }
+
     pub fn non_rendered_source_ranges(&self) -> Vec<Range<usize>> {
         if self.source != self.parsed_markdown.source {
             return Vec::new();

@@ -1150,7 +1150,7 @@ impl MarkdownPreviewView {
 
         if let Some(active_editor) = active_editor {
             let editor_for_checkbox = active_editor.clone();
-            let checkbox_source = self.markdown.read(cx).parsed_markdown().source().clone();
+            let checkbox_source = self.markdown.read(cx).parsed_source().clone();
             let workspace_for_checkbox = self.workspace.clone();
             let view_handle = cx.entity().downgrade();
             markdown_element = markdown_element
@@ -1296,15 +1296,14 @@ fn open_preview_url(
             .and_then(|fragment| fragment.strip_prefix('L'))
             .and_then(source_position_from_fragment);
 
-        if !window.modifiers().alt
-            && workspace
-                .read_with(cx, |workspace, cx| {
-                    MarkdownPreviewView::is_markdown_path(
-                        &parsed_path.path,
-                        workspace.project().read(cx).languages(),
-                    )
-                })
-                .is_ok_and(|is_markdown| is_markdown)
+        if workspace
+            .read_with(cx, |workspace, cx| {
+                MarkdownPreviewView::is_markdown_path(
+                    &parsed_path.path,
+                    workspace.project().read(cx).languages(),
+                )
+            })
+            .is_ok_and(|is_markdown| is_markdown)
         {
             let link_target = if let Some(row) = parsed_path.row {
                 Some(PreviewLinkTarget::Position {
@@ -1316,7 +1315,7 @@ fn open_preview_url(
             } else {
                 fragment.map(PreviewLinkTarget::Heading)
             };
-            open_markdown_link_in_preview(
+            open_markdown_link(
                 parsed_path.path.to_string_lossy().into_owned(),
                 link_target,
                 decoded_path.into_owned(),
@@ -1376,7 +1375,7 @@ fn find_preview_for_buffer(
         })
 }
 
-fn open_markdown_link_in_preview(
+fn open_markdown_link(
     path: String,
     link_target: Option<PreviewLinkTarget>,
     fallback_url: String,
@@ -1386,6 +1385,7 @@ fn open_markdown_link_in_preview(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let open_source = window.modifiers().alt;
     let open_target = resolve_open_target(
         workspace,
         PathMatching::Exact,
@@ -1429,6 +1429,46 @@ fn open_markdown_link_in_preview(
             .context("opening Markdown preview link buffer")?;
 
         workspace.update_in(cx, |workspace, window, cx| {
+            if open_source {
+                let editor = find_preview_for_buffer(workspace, &buffer, cx)
+                    .and_then(|preview| {
+                        preview
+                            .read(cx)
+                            .active_editor
+                            .as_ref()
+                            .map(|state| state.editor.clone())
+                    })
+                    .unwrap_or_else(|| {
+                        cx.new(|cx| {
+                            Editor::for_buffer(
+                                buffer.clone(),
+                                Some(workspace.project().clone()),
+                                window,
+                                cx,
+                            )
+                        })
+                    });
+                if !workspace.activate_item(&editor, true, true, window, cx) {
+                    MarkdownPreviewView::suppress_auto_preview_once(&editor, cx);
+                    workspace.add_item_to_active_pane(
+                        Box::new(editor.clone()),
+                        None,
+                        true,
+                        window,
+                        cx,
+                    );
+                }
+                if let Some(PreviewLinkTarget::Position { row, column }) = link_target {
+                    let point = buffer
+                        .read(cx)
+                        .snapshot()
+                        .point_from_external_input(row, column);
+                    editor.update(cx, |editor, cx| {
+                        editor.go_to_singleton_buffer_point(point, window, cx)
+                    });
+                }
+                return;
+            }
             if let Some(source_view) = source_view.as_ref().and_then(|view| view.upgrade())
                 && source_view.read(cx).is_previewing(&buffer, cx)
             {
@@ -1730,10 +1770,10 @@ impl Item for MarkdownPreviewView {
         // The source buffer normalizes line endings in memory. Saving an
         // untouched preview must not rewrite a file with mixed line endings.
         if !options.force_format
-            && self
-                .active_editor
-                .as_ref()
-                .is_some_and(|editor_state| !editor_state.editor.read(cx).is_dirty(cx))
+            && self.active_editor.as_ref().is_some_and(|editor_state| {
+                let editor = editor_state.editor.read(cx);
+                !editor.is_dirty(cx) && !editor.has_deleted_file(cx)
+            })
         {
             return Task::ready(Ok(()));
         }
@@ -2998,6 +3038,7 @@ mod tests {
         assert_eq!(fixtures.len(), 40);
         let (project, _, multi_workspace) =
             markdown_workspace(cx, json!({"corpus": fixtures}), false).await;
+        apply_shipped_markdown_defaults(cx);
         let fs = project.read_with(cx, |project, _| project.fs().clone());
         for (name, original) in fixtures {
             let relative = format!("corpus/{name}");
@@ -3043,6 +3084,7 @@ mod tests {
         let original = "# Note\r\n\r\nKeep __old__ and word.  \r\n\r\n[ref]: ../note.md";
         let (project, _, multi_workspace) =
             markdown_workspace(cx, json!({"note.md": original}), false).await;
+        apply_shipped_markdown_defaults(cx);
         let item = open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
         let editor = cx.update(|cx| item.act_as::<Editor>(cx).expect("source editor"));
         let preview = open_preview_for_active_editor(cx, &multi_workspace);
@@ -4493,6 +4535,28 @@ mod tests {
             crate::init(cx);
             state
         })
+    }
+
+    fn apply_shipped_markdown_defaults(cx: &mut TestAppContext) {
+        use settings::RootUserSettings as _;
+
+        // SettingsStore::test removes all language overrides. Round-trip tests
+        // need the actual Markdown defaults rather than the generic test ones.
+        let mut defaults = settings::SettingsContent::parse_json_with_comments(
+            settings::default_settings().as_ref(),
+        )
+        .expect("shipped settings");
+        let markdown = defaults
+            .languages_mut()
+            .remove("Markdown")
+            .expect("Markdown defaults");
+        cx.update(|cx| {
+            settings::SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.languages_mut().insert("Markdown".into(), markdown);
+                });
+            });
+        });
     }
 
     async fn markdown_workspace(
