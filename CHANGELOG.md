@@ -6,6 +6,9 @@
 
 - Preview local canvas tools for Claude and Codex, including object relationships, screenshots, and reviewable edit proposals.
 - Apply a canvas proposal as one undo step, with conflict checks that preserve intervening edits.
+- Draw with shape, frame, mind-map, lasso, eraser, and laser tools; find tools through the searchable command menu.
+- Keep brainstorming with Tab to add a sticky or mind-map child, and Enter to add a mind-map sibling.
+- Paste screenshots directly onto the canvas, with local image text recognition available to assistants on macOS.
 
 ### Improved
 
