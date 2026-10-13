@@ -128,7 +128,11 @@ This file records implementation and validation; an unchecked item is not shippe
   candidate also fixes a concurrent directory-creation race. 95 native tests,
   Clippy, and all four Brainz CI jobs passed (one existing native test ignored).
   [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.39)
-- Next update: template engine, native creation, Markdown slash insertion, and chat template insertion merged; folder defaults and live refresh are being validated.
+- 0.1.40 candidate: templates, native creation, Markdown/chat insertion, folder
+  defaults, live refresh, and the launcher are implemented. The release also
+  includes safe fast-forward updates, readable commit subjects, canvas popover
+  visibility, composer padding focus, and responsive template forms. Publication
+  and signed-artifact verification are still pending.
 
 ## Work in progress
 
@@ -136,7 +140,7 @@ This file records implementation and validation; an unchecked item is not shippe
   calendar-event selection, shared folder hierarchy, atomic no-overwrite saves,
   daily-note reopening, and direct edit-mode opening at the template caret.
   100 native/engine tests and the CLI creation checks pass, along with Clippy
-  and all four Brainz CI jobs. Empty-note default banners and skill integration remain open;
+  and all four Brainz CI jobs. Empty-note defaults are implemented below; skill integration remains open;
   this UI has not shipped in an installer yet.
 - Markdown slash insertion: templates, dated callouts, tasks, dates, tables,
   Mermaid, and brain file/person links. Required-input forms preserve the source
@@ -184,6 +188,14 @@ This file records implementation and validation; an unchecked item is not shippe
   keeping the pane's + and split menus visible. Tracking is scoped per window
   and clears on dismissal, replacement, or release. Native regression coverage
   includes all four lifecycles and runs in Brainz CI. Not yet released.
+- Native verification for the next installer uses a separate app data directory
+  and synthetic workspace. The pane's + menu displays over a canvas; Escape
+  restores it. Connectors opens and Railway has its logo. The launcher opens a
+  template form and creates a note in the chosen folder. Template results no
+  longer overlap inputs; geometry tests cover normal and narrow layouts.
+  Composer padding accepts physical typing while a canvas is open. All 48 chat
+  editor tests pass, including padding focus and controls; no test messages were
+  sent and no personal notes or drafts were changed by these checks.
 - Brainz launcher: Cmd+K opens grouped, searchable note templates and the shared
   navigation tools. It uses local template overrides, recent ordering, live
   catalog refresh, and the existing creation form. Escape restores the draft;
