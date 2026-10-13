@@ -20,6 +20,10 @@ brainz_templates.workspace = true
 chrono.workspace = true
 gpui.workspace = true
 log.workspace = true
+language.workspace = true
+lsp.workspace = true
+pulldown-cmark.workspace = true
+text.workspace = true
 markdown.workspace = true
 markdown_preview.workspace = true
 editor.workspace = true
@@ -49,7 +53,6 @@ workspace.workspace = true
 wry = { version = "=0.57.0", default-features = false, features = ["os-webview"] }
 
 [dev-dependencies]
-language.workspace = true
 db = { workspace = true, features = ["test-support"] }
 settings = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true

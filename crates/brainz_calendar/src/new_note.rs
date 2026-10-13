@@ -75,6 +75,46 @@ fn open(workspace: &mut Workspace, daily: bool, window: &mut Window, cx: &mut Co
     });
 }
 
+pub(super) fn insert_template(
+    workspace: &mut Workspace,
+    target: super::slash::NoteInsertion,
+    template_id: String,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(path) = target.path(cx) else { return };
+    let Some(root) = workspace
+        .root_paths(cx)
+        .into_iter()
+        .find(|root| path.starts_with(root))
+    else {
+        return;
+    };
+    let folder = path
+        .parent()
+        .and_then(|parent| parent.strip_prefix(&root).ok())
+        .map(|folder| folder.to_string_lossy().into_owned())
+        .filter(|folder| !folder.is_empty())
+        .unwrap_or_else(|| ".".into());
+    let project = workspace.project().clone();
+    let owner = cx.weak_entity();
+    workspace.toggle_modal(window, cx, move |window, cx| {
+        let mut picker = NotePicker::new(
+            root.to_path_buf(),
+            folder,
+            project,
+            owner,
+            false,
+            window,
+            cx,
+        );
+        picker.request.mode = InsertMode::Insert;
+        picker.insertion = Some(target);
+        picker.initial_template = Some(template_id);
+        picker
+    });
+}
+
 fn local_context(root: &Path) -> Map<String, Value> {
     static CALENDAR: OnceLock<Mutex<Option<(Instant, Vec<super::CalendarEvent>)>>> =
         OnceLock::new();
@@ -170,6 +210,8 @@ struct NotePicker {
     loading: bool,
     saving: bool,
     daily: bool,
+    insertion: Option<super::slash::NoteInsertion>,
+    initial_template: Option<String>,
     destination: Option<PathBuf>,
     folder_picker: Option<Entity<super::canvas_folder_picker::CanvasFolderPicker>>,
     subscriptions: Vec<Subscription>,
@@ -195,6 +237,7 @@ impl NotePicker {
                     names: Vec::new(),
                     visible: Vec::new(),
                     selected: 0,
+                    preferred: None,
                 },
                 window,
                 cx,
@@ -224,13 +267,23 @@ impl NotePicker {
                         this.templates = registry
                             .templates
                             .into_values()
-                            .filter(|template| template.metadata.modes.contains(&InsertMode::New))
+                            .filter(|template| template.metadata.modes.contains(&this.request.mode))
                             .collect();
                         this.templates
                             .sort_by(|left, right| left.metadata.name.cmp(&right.metadata.name));
                         let mut names = vec![(
-                            "Blank note".to_owned(),
-                            "Start writing in your current folder".to_owned(),
+                            if this.insertion.is_some() {
+                                "Empty block"
+                            } else {
+                                "Blank note"
+                            }
+                            .to_owned(),
+                            if this.insertion.is_some() {
+                                "Clear the slash command"
+                            } else {
+                                "Start writing in your current folder"
+                            }
+                            .to_owned(),
                         )];
                         names.extend(this.templates.iter().map(|template| {
                             (
@@ -243,8 +296,18 @@ impl NotePicker {
                                 ),
                             )
                         }));
+                        let initial = this
+                            .initial_template
+                            .as_ref()
+                            .and_then(|id| {
+                                this.templates
+                                    .iter()
+                                    .position(|template| &template.metadata.id == id)
+                            })
+                            .map(|index| index + 1);
                         this.picker.update(cx, |picker, cx| {
                             picker.delegate.names = names;
+                            picker.delegate.preferred = initial;
                             picker.refresh(window, cx);
                         });
                         if this.daily {
@@ -259,7 +322,7 @@ impl NotePicker {
                                 this.error = Some("The daily template is unavailable".into());
                             }
                         } else {
-                            this.choose(0, window, cx);
+                            this.choose(initial.unwrap_or(0), window, cx);
                         }
                     }
                     Err(error) => this.error = Some(format!("Could not load templates: {error:#}")),
@@ -287,6 +350,8 @@ impl NotePicker {
             loading: true,
             saving: false,
             daily,
+            insertion: None,
+            initial_template: None,
             destination: None,
             folder_picker: None,
             subscriptions: vec![dismissed],
@@ -450,6 +515,17 @@ impl NotePicker {
         let Some(rendered) = self.rendered.take() else {
             return;
         };
+        if let Some(target) = &self.insertion {
+            match target.apply(&rendered, window, cx) {
+                Ok(()) => cx.emit(DismissEvent),
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    self.rendered = Some(rendered);
+                    cx.notify();
+                }
+            }
+            return;
+        }
         self.saving = true;
         let root = self.root.clone();
         let workspace = self.workspace.clone();
@@ -664,8 +740,14 @@ impl Render for NotePicker {
                     .gap_2()
                     .child(Icon::new(IconName::File))
                     .child(
-                        Label::new(if self.daily { "Daily note" } else { "New note" })
-                            .weight(gpui::FontWeight::SEMIBOLD),
+                        Label::new(if self.insertion.is_some() {
+                            "Insert template"
+                        } else if self.daily {
+                            "Daily note"
+                        } else {
+                            "New note"
+                        })
+                        .weight(gpui::FontWeight::SEMIBOLD),
                     ),
             )
             .when(self.loading, |this| {
@@ -740,13 +822,15 @@ impl Render for NotePicker {
                     .gap_2()
                     .border_t_1()
                     .border_color(cx.theme().colors().border)
-                    .child(
-                        Button::new("note-folder", self.request.folder.clone())
-                            .start_icon(Icon::new(IconName::Folder))
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.choose_folder(window, cx)),
-                            ),
-                    )
+                    .when(self.insertion.is_none(), |this| {
+                        this.child(
+                            Button::new("note-folder", self.request.folder.clone())
+                                .start_icon(Icon::new(IconName::Folder))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.choose_folder(window, cx)
+                                })),
+                        )
+                    })
                     .child(
                         div().flex_1().min_w_0().child(
                             Label::new(
@@ -766,6 +850,8 @@ impl Render for NotePicker {
                             "create-note",
                             if self.saving {
                                 "Creating…"
+                            } else if self.insertion.is_some() {
+                                "Insert"
                             } else {
                                 "Create note"
                             },
@@ -819,6 +905,7 @@ struct TemplateDelegate {
     names: Vec<(String, String)>,
     visible: Vec<usize>,
     selected: usize,
+    preferred: Option<usize>,
 }
 impl TemplateDelegate {
     fn notify_selection(&self, window: &mut Window, cx: &mut Context<Picker<Self>>) {
@@ -874,6 +961,7 @@ impl PickerDelegate for TemplateDelegate {
             })
             .collect::<Vec<_>>();
         let count = candidates.len();
+        let prefer_initial = query.is_empty();
         cx.spawn_in(window, async move |picker, cx| {
             let visible = if query.is_empty() {
                 (0..count).collect()
@@ -895,7 +983,22 @@ impl PickerDelegate for TemplateDelegate {
             picker
                 .update_in(cx, |picker, window, cx| {
                     picker.delegate.visible = visible;
-                    picker.delegate.selected = 0;
+                    picker.delegate.selected = if prefer_initial {
+                        picker
+                            .delegate
+                            .preferred
+                            .take()
+                            .and_then(|index| {
+                                picker
+                                    .delegate
+                                    .visible
+                                    .iter()
+                                    .position(|visible| *visible == index)
+                            })
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
                     picker.delegate.notify_selection(window, cx);
                     cx.notify();
                 })
@@ -946,6 +1049,175 @@ impl PickerDelegate for TemplateDelegate {
 mod tests {
     use super::*;
     use gpui::UpdateGlobal as _;
+
+    #[gpui::test]
+    async fn slash_blocks_and_templates_preserve_prose_and_undo(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(db::AppDatabase::test_new());
+            workspace::AppState::test(cx);
+            editor::init(cx);
+            super::super::slash::init(cx);
+        });
+        let root = tempfile::tempdir().expect("temporary brain");
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            root.path(),
+            json!({"note.md":"Before\n\n/todo", "people": {"Ada [test].md": "# Ada"}}),
+        )
+        .await;
+        let project = Project::test(fs, [root.path()], cx).await;
+        project
+            .read_with(cx, |project, _| project.languages().clone())
+            .add(Arc::new(language::Language::new(
+                language::LanguageConfig {
+                    name: "Markdown".into(),
+                    matcher: Arc::new(language::LanguageMatcher {
+                        path_suffixes: vec!["md".into()],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                None,
+            )));
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let path = root.path().join("note.md");
+        let editor = workspace
+            .update_in(cx, |_, window, cx| {
+                cx.spawn_in(window, async move |workspace, cx| {
+                    open_note_editor(workspace, path, Some(13), cx).await
+                })
+            })
+            .await
+            .expect("open note");
+        cx.run_until_parked();
+        editor.update_in(cx, |editor, window, cx| {
+            editor.show_completions(&editor::actions::ShowCompletions, window, cx)
+        });
+        cx.run_until_parked();
+        editor
+            .update_in(cx, |editor, window, cx| {
+                editor.confirm_completion(
+                    &editor::actions::ConfirmCompletion::default(),
+                    window,
+                    cx,
+                )
+            })
+            .expect("completion task")
+            .await
+            .expect("complete block");
+        cx.run_until_parked();
+        editor.update_in(cx, |editor, window, cx| {
+            assert_eq!(editor.text(cx), "Before\n\n- [ ] ");
+            assert_eq!(
+                editor
+                    .selections
+                    .newest::<MultiBufferOffset>(&editor.snapshot(window, cx))
+                    .head(),
+                MultiBufferOffset(14)
+            );
+            editor.undo(&editor::actions::Undo, window, cx);
+            assert_eq!(editor.text(cx), "Before\n\n/todo");
+            editor.set_text("Before\n\n/decision", window, cx);
+            editor.change_selections(None.into(), window, cx, |selections| {
+                selections.select_ranges([MultiBufferOffset(17)..MultiBufferOffset(17)])
+            });
+            editor.show_completions(&editor::actions::ShowCompletions, window, cx);
+        });
+        cx.run_until_parked();
+        editor
+            .update_in(cx, |editor, window, cx| {
+                editor.confirm_completion(
+                    &editor::actions::ConfirmCompletion::default(),
+                    window,
+                    cx,
+                )
+            })
+            .expect("template task")
+            .await
+            .expect("choose template");
+        cx.run_until_parked();
+        let picker = workspace
+            .read_with(cx, |workspace, cx| workspace.active_modal::<NotePicker>(cx))
+            .expect("input picker");
+        // The native calendar helper is not needed for this deterministic fixture.
+        picker.update_in(cx, |picker, window, cx| {
+            picker._load = Task::ready(());
+            picker.loading = false;
+            picker.templates = vec![
+                brainz_templates::Registry::load_brain(root.path(), None)
+                    .expect("registry")
+                    .templates
+                    .remove("decision")
+                    .expect("decision"),
+            ];
+            picker.choose(1, window, cx);
+            picker.create(false, window, cx);
+            assert!(
+                picker
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| error.contains("title"))
+            );
+            let field = picker
+                .fields
+                .iter()
+                .find(|(id, _, _)| id == "title")
+                .expect("title input")
+                .2
+                .clone();
+            field.update(cx, |field, cx| {
+                field.set_text("Choose a launch date", window, cx)
+            });
+            picker.create(false, window, cx);
+        });
+        cx.run_until_parked();
+        editor.update_in(cx, |editor, window, cx| {
+            let body = editor.text(cx);
+            assert!(body.starts_with("Before\n\n"));
+            assert!(body.contains("## Context"));
+            assert!(!body.contains("# Decision:"));
+            assert!(!body.contains("---\ntype:"));
+            editor.undo(&editor::actions::Undo, window, cx);
+            assert_eq!(editor.text(cx), "Before\n\n/decision");
+        });
+        assert!(
+            !root.path().join("note.md").exists(),
+            "insertion must not write files outside the editor"
+        );
+        for command in ["/link Ada", "/person Ada"] {
+            editor.update_in(cx, |editor, window, cx| {
+                editor.set_text(command, window, cx);
+                editor.change_selections(None.into(), window, cx, |selections| {
+                    selections.select_ranges([
+                        MultiBufferOffset(command.len())..MultiBufferOffset(command.len())
+                    ])
+                });
+                editor.show_completions(&editor::actions::ShowCompletions, window, cx);
+            });
+            cx.run_until_parked();
+            editor
+                .update_in(cx, |editor, window, cx| {
+                    editor.confirm_completion(
+                        &editor::actions::ConfirmCompletion::default(),
+                        window,
+                        cx,
+                    )
+                })
+                .expect("file link task")
+                .await
+                .expect("insert file link");
+            cx.run_until_parked();
+            editor.update_in(cx, |editor, window, cx| {
+                assert_eq!(
+                    editor.text(cx),
+                    "[Ada \\[test\\]](people/Ada%20%5Btest%5D.md)"
+                );
+                editor.undo(&editor::actions::Undo, window, cx);
+                assert_eq!(editor.text(cx), command);
+            });
+        }
+    }
 
     #[gpui::test]
     async fn created_note_opens_at_the_caret_in_edit_mode_and_reuses_the_buffer(

@@ -239,7 +239,7 @@ impl HelperDef for Scalar {
     }
 }
 
-fn relative_link(
+pub(crate) fn relative_link(
     target: Option<&std::path::Path>,
     destination: &str,
 ) -> Result<String, RenderError> {
