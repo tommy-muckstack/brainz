@@ -946,16 +946,14 @@ impl WhiteboardView {
     ) -> Self {
         let mut storage = BoardStorage::new(target.path.clone());
         if let Ok(pending) = storage.pending.get_mut() {
-            pending.storage_root = workspace
-                .upgrade()
-                .and_then(|workspace| {
-                    workspace
-                        .read(cx)
-                        .root_paths(cx)
-                        .into_iter()
-                        .find(|root| target.path.starts_with(root))
-                        .map(|root| root.to_path_buf())
-                })
+            // Opening an item already holds the workspace's mutable lease.
+            // Read the independent project entity for the board's storage scope.
+            pending.storage_root = project
+                .read(cx)
+                .visible_worktrees(cx)
+                .map(|worktree| worktree.read(cx).abs_path())
+                .find(|root| target.path.starts_with(root))
+                .map(|root| root.to_path_buf())
                 .or_else(|| target.path.parent().map(Path::to_path_buf));
         }
         storage.view_state_path = Some(paths::data_dir().join("whiteboards/state.json"));
@@ -2212,6 +2210,56 @@ mod tests {
             read_document(&recovery, false).expect("local version"),
             local
         );
+    }
+
+    #[gpui::test]
+    async fn opening_canvas_from_workspace_action_keeps_the_brain_storage_scope(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let settings = settings::SettingsStore::test(cx);
+            cx.set_global(settings);
+            cx.set_global(db::AppDatabase::test_new());
+            theme_settings::init(theme::LoadThemes::JustBase, cx);
+        });
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree(
+            "/canvas-brain",
+            json!({"projects": {"Workflow.brainzboard": "{}"}}),
+        )
+        .await;
+        let project = Project::test(fs, [Path::new("/canvas-brain")], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        workspace.update_in(cx, |workspace, window, cx| {
+            let target = BoardTarget {
+                path: PathBuf::from("/canvas-brain/projects/Workflow.brainzboard"),
+                object: None,
+                viewport: None,
+            };
+            WhiteboardView::open(workspace, target.clone(), false, None, window, cx);
+            let first = workspace
+                .items_of_type::<WhiteboardView>(cx)
+                .next()
+                .expect("canvas opens");
+            first.update(cx, |view, _| {
+                view._load = Task::ready(());
+                assert_eq!(
+                    view.storage
+                        .pending
+                        .lock()
+                        .expect("storage state")
+                        .storage_root,
+                    Some(PathBuf::from("/canvas-brain"))
+                );
+            });
+            WhiteboardView::open(workspace, target, false, None, window, cx);
+            assert_eq!(workspace.items_of_type::<WhiteboardView>(cx).count(), 1);
+            assert_eq!(
+                workspace.active_item(cx).expect("active canvas").item_id(),
+                first.entity_id()
+            );
+        });
     }
 
     #[gpui::test]

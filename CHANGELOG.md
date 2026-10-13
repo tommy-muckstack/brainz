@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.39 (2026-10-13)
+
 ### New
 
 - Preview local canvas tools for Claude and Codex, including object relationships, screenshots, and reviewable edit proposals.
