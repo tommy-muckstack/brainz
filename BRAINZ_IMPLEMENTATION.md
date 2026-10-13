@@ -31,7 +31,8 @@ This file records implementation and validation; an unchecked item is not shippe
 ## Rich editor and Git sync
 
 - [x] K1/K2: remove destructive post-merge fallback and live autostash/rebase pulls.
-- [ ] K3–K7/K9: session messages, path-scoped commits, automatic syncing, branch support, event-driven refresh, and review before every commit.
+- [x] K3: meaningful area/file commit subjects and session identifiers without a model.
+- [ ] K4–K7/K9: path-scoped commits, automatic syncing, branch support, event-driven refresh, and review before every commit.
 - [ ] E1. Lossless editing in the rendered Markdown viewer, source-range golden corpus, formatting, slash actions, tables, properties, paste, and block movement.
 - [ ] E2. Autosave, session commits, optional AI messages, per-origin attribution, grace window, offline queue, and sync status pill.
 - [ ] E3. Isolated integration, block conflicts, recoverable safety snapshots, and persisted resolution.
@@ -168,6 +169,9 @@ This file records implementation and validation; an unchecked item is not shippe
   check for Undo/reopen and read-only buffers; Clippy passes. Closed-file filling
   remains open. This has not shipped in an installer.
 
+- Sync messages: manual commits describe the affected area and note, retain the
+  configured author, and add a session trailer. Single-commit PRs reuse that
+  subject. Optional AI summaries and agent attribution remain open. Not released.
 - Sync safety: post-merge updates stop if new local work prevents a fast-forward;
   the destructive fallback is removed. Pulls no longer rebase or autostash in the
   live checkout, even if the user's Git configuration enables autostash. Manual

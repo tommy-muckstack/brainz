@@ -86,6 +86,21 @@ your messages, the current place in the sidebar, the prep banner, the pills.
 Headings are plain text, body and meta copy share one scale, and every tab
 reads in the same centred column as the chat.
 
+**Notes and templates (next installer).** Cmd+N opens the native note picker;
+Cmd+Shift+D opens today's daily note without overwriting earlier edits. Cmd+K
+opens the Brainz launcher for templates and tools. Enter opens a result, Escape
+returns to your draft, and Cmd+Enter explicitly asks Claude in a new conversation.
+
+Type `/` in a Markdown editor for templates, blocks, and note/person links.
+In chat, use `//` for templates; `/` continues to reference files and canvases.
+Template insertion prepares an editable draft and never sends it automatically.
+Local templates live in `.brainz/templates/`; changes refresh open pickers while
+preserving your input. Folder defaults offer Use, Blank, Change, and Undo in
+empty notes. Configured automatic defaults apply to newly created notes when
+opened, while existing empty notes remain suggestions. Rendering is local and
+requires no API key. AI-filled template sections are still placeholders pending
+the staged-generation feature.
+
 PDF pages fit the available pane width and adapt when chat or the sidebar is resized.
 Use the PDF toolbar to zoom in or out, or return to **Fit width**. Pages render
 at higher resolution so receipt text stays clearer when enlarged.
