@@ -155,23 +155,60 @@ fn check_status(repo: &Path, fetch: bool) -> Result<SyncStatus> {
     })
 }
 
-/// Brings origin/main down. Rebases any local commits on top and stashes
-/// uncommitted edits around it, so nothing local is lost.
-fn pull_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
-    progress("Checking branch".into());
+fn fast_forward_main(repo: &Path) -> Result<()> {
     let branch = run(repo, "git", &["branch", "--show-current"])?;
     if branch != "main" {
-        bail!("You're on branch `{branch}`. Switch to `main` first, then pull.");
+        bail!(
+            "The active branch changed to `{branch}`. Local files were left in place; switch to main before updating."
+        );
     }
-    progress("Pulling from GitHub".into());
-    run(
+    for operation in [
+        "rebase-merge",
+        "rebase-apply",
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+    ] {
+        let path = run(repo, "git", &["rev-parse", "--git-path", operation])?;
+        if repo.join(path).exists() {
+            bail!(
+                "Another Git operation is in progress. Finish or cancel it before updating. Brainz left your files in place."
+            );
+        }
+    }
+    if !run(
         repo,
         "git",
-        &["pull", "--rebase", "--autostash", "origin", "main"],
-    )
-    .context("Pull didn't finish. If there's a conflict, resolve it in a shell and run `git rebase --continue`.")?;
-    let head = run(repo, "git", &["log", "--oneline", "-1"]).unwrap_or_default();
+        &["status", "--porcelain", "-z", "--untracked-files=all"],
+    )?
+    .is_empty()
+    {
+        bail!(
+            "Local edits are waiting to be committed. Sync them before pulling; Brainz left every file in place."
+        );
+    }
+    // Explicitly disable a user's merge.autostash setting as well: a successful
+    // fast-forward followed by a failed stash application can write conflict markers.
+    run(repo, "git", &["merge", "--ff-only", "--no-autostash", "origin/main"])
+        .context("GitHub and this brain could not be fast-forwarded safely. Local commits and files were left in place. Use Sync to GitHub to merge committed work through a pull request.")?;
+    Ok(())
+}
+
+fn pull_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
+    progress("Fetching from GitHub".into());
+    run(repo, "git", &["fetch", "origin", "main"])?;
+    progress("Updating local main".into());
+    fast_forward_main(repo)?;
+    let head = run(repo, "git", &["log", "--oneline", "-1"])?;
     Ok(format!("Pulled the latest from GitHub. Now at {head}"))
+}
+
+fn finish_sync(repo: &Path, pr_url: &str, progress: &mut dyn FnMut(String)) -> Result<()> {
+    run(repo, "git", &["fetch", "--prune", "origin", "main"])?;
+    progress("Updating local main".into());
+    fast_forward_main(repo).with_context(|| format!(
+        "Your pull request was merged on GitHub: {pr_url}\nNew local work still needs attention before this checkout can update."
+    ))
 }
 
 /// The review step: refuse to publish secrets or huge files.
@@ -269,13 +306,14 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
     else {
         return Ok("Already in sync with GitHub.".into());
     };
-    if behind > 0 {
-        // Bring GitHub's newer work down first so the PR merges cleanly.
-        pull_repo(repo, progress)?;
-    }
     if changed == 0 && ahead == 0 {
+        if behind > 0 {
+            pull_repo(repo, progress)?;
+        }
         return Ok("Pulled the latest from GitHub. Nothing local to push.".into());
     }
+    // A PR can merge diverged histories on GitHub without rebasing or stashing
+    // the live checkout. Keep local edits in place throughout that review.
 
     if changed > 0 {
         progress(format!("Committing {changed} change(s)"));
@@ -360,18 +398,12 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
     }
 
     progress("Merging into main".into());
-    run(
-        repo,
-        "gh",
-        &["pr", "merge", &sync_branch, "--merge", "--delete-branch"],
-    )?;
+    run(repo, "gh", &["pr", "merge", &sync_branch, "--merge"])?;
 
-    progress("Updating local main".into());
-    run(repo, "git", &["fetch", "--prune", "origin"])?;
-    if run(repo, "git", &["merge", "--ff-only", "origin/main"]).is_err() {
-        run(repo, "git", &["reset", "--hard", "origin/main"])?;
+    finish_sync(repo, &pr_url, progress)?;
+    if let Err(error) = run(repo, "git", &["branch", "-d", &sync_branch]) {
+        log::warn!("Synced successfully but kept the local sync branch: {error}");
     }
-    let _ = run(repo, "git", &["branch", "-D", &sync_branch]);
     Ok(format!("Merged into main: {pr_url}"))
 }
 
@@ -874,7 +906,7 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
                 .full_width()
                 .style(ButtonStyle::Filled)
                 .tooltip(Tooltip::text(if pull_only {
-                    "Bring GitHub's newer commits down (rebases local work on top)"
+                    "Bring GitHub's newer commits down when local work is committed"
                 } else {
                     "Pull anything new, then review, commit, push, open a pull request, and merge it into main"
                 }))
@@ -936,4 +968,252 @@ pub fn render_banner(workspace: &WeakEntity<Workspace>, cx: &mut App) -> Option<
     };
 
     Some(animated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Repositories {
+        _directory: tempfile::TempDir,
+        local: PathBuf,
+        remote_writer: PathBuf,
+    }
+
+    impl Repositories {
+        fn new() -> Self {
+            let directory = tempfile::tempdir().expect("temporary repositories");
+            let origin = directory.path().join("origin.git");
+            run(
+                directory.path(),
+                "git",
+                &[
+                    "init",
+                    "--bare",
+                    "--initial-branch=main",
+                    origin.to_str().expect("path"),
+                ],
+            )
+            .expect("bare origin");
+            let local = directory.path().join("local");
+            run(
+                directory.path(),
+                "git",
+                &[
+                    "clone",
+                    origin.to_str().expect("path"),
+                    local.to_str().expect("path"),
+                ],
+            )
+            .expect("local clone");
+            Self::configure(&local);
+            std::fs::write(local.join("note.md"), "Original paragraph\n").expect("note");
+            std::fs::write(local.join("other.md"), "Another note\n").expect("other note");
+            run(&local, "git", &["add", "note.md", "other.md"]).expect("stage fixture");
+            run(&local, "git", &["commit", "-m", "notes: initial fixture"]).expect("commit");
+            run(&local, "git", &["push", "-u", "origin", "main"])
+                .expect("push to local bare origin");
+            let remote_writer = directory.path().join("remote-writer");
+            run(
+                directory.path(),
+                "git",
+                &[
+                    "clone",
+                    origin.to_str().expect("path"),
+                    remote_writer.to_str().expect("path"),
+                ],
+            )
+            .expect("second clone");
+            Self::configure(&remote_writer);
+            Self {
+                _directory: directory,
+                local,
+                remote_writer,
+            }
+        }
+
+        fn configure(repo: &Path) {
+            for (key, value) in [
+                ("user.name", "Brainz Fixture"),
+                ("user.email", "fixture@example.invalid"),
+                ("commit.gpgsign", "false"),
+                ("core.hooksPath", "/dev/null"),
+                ("merge.autostash", "true"),
+                ("rebase.autostash", "true"),
+            ] {
+                run(repo, "git", &["config", key, value]).expect("isolated configuration");
+            }
+        }
+
+        fn remote_edit(&self, path: &str, body: &str) {
+            std::fs::write(self.remote_writer.join(path), body).expect("remote edit");
+            run(&self.remote_writer, "git", &["add", "--", path]).expect("stage remote");
+            run(
+                &self.remote_writer,
+                "git",
+                &["commit", "-m", "notes: remote edit"],
+            )
+            .expect("commit remote");
+            run(&self.remote_writer, "git", &["push", "origin", "main"]).expect("push fixture");
+        }
+
+        fn assert_no_integration_state(&self) {
+            for operation in ["rebase-merge", "rebase-apply", "MERGE_HEAD"] {
+                let path = run(&self.local, "git", &["rev-parse", "--git-path", operation])
+                    .expect("git path");
+                assert!(!self.local.join(path).exists(), "no {operation}");
+            }
+            assert!(
+                run(&self.local, "git", &["stash", "list"])
+                    .expect("stashes")
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn pulls_clean_notes_without_creating_a_merge_or_stash() {
+        let repositories = Repositories::new();
+        repositories.remote_edit("note.md", "Remote paragraph\n");
+        pull_repo(&repositories.local, &mut |_| {}).expect("clean pull");
+        assert_eq!(
+            std::fs::read_to_string(repositories.local.join("note.md")).expect("note"),
+            "Remote paragraph\n"
+        );
+        assert_eq!(
+            run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("local head"),
+            run(&repositories.remote_writer, "git", &["rev-parse", "HEAD"]).expect("remote head")
+        );
+        repositories.assert_no_integration_state();
+    }
+
+    #[test]
+    fn dirty_pull_preserves_index_worktree_untracked_files_and_crlf() {
+        let repositories = Repositories::new();
+        repositories.remote_edit("note.md", "Remote paragraph\n");
+        std::fs::write(
+            repositories.local.join("note.md"),
+            b"My staged paragraph\r\n",
+        )
+        .expect("staged draft");
+        run(&repositories.local, "git", &["add", "note.md"]).expect("stage draft");
+        std::fs::write(
+            repositories.local.join("note.md"),
+            b"My newest paragraph\r\n",
+        )
+        .expect("unstaged draft");
+        std::fs::write(repositories.local.join("new note.md"), "Unsaved to Git\n")
+            .expect("untracked note");
+        let head = run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("head");
+        let index = run(&repositories.local, "git", &["write-tree"]).expect("index");
+        assert!(pull_repo(&repositories.local, &mut |_| {}).is_err());
+        assert_eq!(
+            std::fs::read(repositories.local.join("note.md")).expect("draft"),
+            b"My newest paragraph\r\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repositories.local.join("new note.md")).expect("untracked"),
+            "Unsaved to Git\n"
+        );
+        assert_eq!(
+            run(&repositories.local, "git", &["write-tree"]).expect("index"),
+            index
+        );
+        assert_eq!(
+            run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("head"),
+            head
+        );
+        repositories.assert_no_integration_state();
+    }
+
+    #[test]
+    fn diverged_pull_leaves_commits_and_prose_without_conflict_markers() {
+        let repositories = Repositories::new();
+        repositories.remote_edit("note.md", "Remote paragraph\n");
+        std::fs::write(
+            repositories.local.join("note.md"),
+            "My committed paragraph\n",
+        )
+        .expect("local edit");
+        run(&repositories.local, "git", &["add", "note.md"]).expect("stage");
+        run(
+            &repositories.local,
+            "git",
+            &["commit", "-m", "notes: my edit"],
+        )
+        .expect("commit");
+        let head = run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("head");
+        assert!(pull_repo(&repositories.local, &mut |_| {}).is_err());
+        assert_eq!(
+            run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("head"),
+            head
+        );
+        assert_eq!(
+            std::fs::read_to_string(repositories.local.join("note.md")).expect("note"),
+            "My committed paragraph\n"
+        );
+        repositories.assert_no_integration_state();
+    }
+
+    #[test]
+    fn edits_arriving_during_sync_completion_are_not_discarded() {
+        let repositories = Repositories::new();
+        repositories.remote_edit("note.md", "Remote paragraph\n");
+        let before = run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("head");
+        let error = finish_sync(
+            &repositories.local,
+            "https://example.invalid/pull/1",
+            &mut |step| {
+                if step == "Updating local main" {
+                    std::fs::write(
+                        repositories.local.join("note.md"),
+                        "Typed while GitHub checked the PR\n",
+                    )
+                    .expect("concurrent edit");
+                    std::fs::write(repositories.local.join("new.md"), "Concurrent new file\n")
+                        .expect("concurrent file");
+                }
+            },
+        )
+        .expect_err("stop before touching newer local work");
+        assert!(error.to_string().contains("was merged on GitHub"));
+        assert_eq!(
+            std::fs::read_to_string(repositories.local.join("note.md")).expect("note"),
+            "Typed while GitHub checked the PR\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repositories.local.join("new.md")).expect("new"),
+            "Concurrent new file\n"
+        );
+        assert_eq!(
+            run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("head"),
+            before
+        );
+        repositories.assert_no_integration_state();
+    }
+
+    #[test]
+    fn changing_branches_during_sync_does_not_update_the_new_branch() {
+        let repositories = Repositories::new();
+        repositories.remote_edit("note.md", "Remote paragraph\n");
+        let before = run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("head");
+        finish_sync(
+            &repositories.local,
+            "https://example.invalid/pull/1",
+            &mut |_| {
+                run(&repositories.local, "git", &["switch", "-c", "other-work"])
+                    .expect("user switches branch");
+            },
+        )
+        .expect_err("branch changed");
+        assert_eq!(
+            run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("head"),
+            before
+        );
+        assert_eq!(
+            run(&repositories.local, "git", &["branch", "--show-current"]).expect("branch"),
+            "other-work"
+        );
+        repositories.assert_no_integration_state();
+    }
 }
