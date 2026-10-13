@@ -41,6 +41,19 @@ pub fn init(cx: &mut App) {
     .detach();
 }
 
+fn order_templates(templates: &mut [Template], suggested: Option<&str>, recents: &[String]) {
+    templates.sort_by_cached_key(|template| {
+        (
+            suggested != Some(&template.metadata.id),
+            recents
+                .iter()
+                .position(|id| *id == template.metadata.id)
+                .unwrap_or(usize::MAX),
+            template.metadata.name.to_lowercase(),
+        )
+    });
+}
+
 fn open(workspace: &mut Workspace, daily: bool, window: &mut Window, cx: &mut Context<Workspace>) {
     if !workspace.project().read(cx).is_local() {
         Editor::new_file(workspace, &workspace::NewFile, window, cx);
@@ -219,12 +232,16 @@ struct NotePicker {
     picker: Entity<Picker<TemplateDelegate>>,
     templates: Vec<Template>,
     selected: Option<usize>,
+    selected_key: Option<String>,
     request: RenderRequest,
     fields: Vec<(String, String, Entity<Editor>)>,
     preview: Entity<Markdown>,
     rendered: Option<Rendered>,
     error: Option<String>,
     warnings: Vec<String>,
+    template_config: brainz_templates::TemplatesConfig,
+    recents_path: Option<PathBuf>,
+    recent_templates: Vec<String>,
     loading: bool,
     saving: bool,
     daily: bool,
@@ -265,30 +282,60 @@ impl NotePicker {
         });
         let dismissed = cx.subscribe(&picker, |_, _, _: &DismissEvent, cx| cx.emit(DismissEvent));
         let load_root = root.clone();
+        let recents_path = (!project.read(cx).fs().is_fake())
+            .then(|| brainz_templates::recent_templates_path(paths::data_dir(), &root).log_err())
+            .flatten();
+        let load_recents_path = recents_path.clone();
         let load = cx.spawn_in(window, async move |this, cx| {
             let loaded = cx
                 .background_spawn(async move {
-                    Registry::load_brain(&load_root, None)
-                        .map(|registry| (registry, local_context(&load_root)))
+                    let registry = Registry::load_brain(&load_root, None)?;
+                    let config = brainz_templates::TemplatesConfig::load(&load_root)?;
+                    let recents = load_recents_path
+                        .as_deref()
+                        .map(brainz_templates::read_recents)
+                        .transpose();
+                    Ok::<_, anyhow::Error>((registry, local_context(&load_root), config, recents))
                 })
                 .await;
             this.update_in(cx, |this, window, cx| {
                 this.loading = false;
                 match loaded {
-                    Ok((registry, context)) => {
+                    Ok((registry, context, config, recents)) => {
                         this.request.context = context;
+                        let suggested = registry.default_for_path(
+                            &config,
+                            &PathBuf::from(&this.request.folder).join("new.md"),
+                        );
+                        this.template_config = config;
                         this.warnings = registry
                             .errors
                             .into_iter()
                             .map(|error| format!("{}: {}", error.path.display(), error.message))
                             .collect();
+                        match recents {
+                            Ok(recents) => this.recent_templates = recents.unwrap_or_default(),
+                            Err(error) => this
+                                .warnings
+                                .push(format!("Could not read recent templates: {error}")),
+                        }
+                        let suggested = match suggested {
+                            Ok(choice) => choice.map(|choice| choice.template),
+                            Err(error) => {
+                                this.warnings.push(error.to_string());
+                                None
+                            }
+                        };
                         this.templates = registry
                             .templates
                             .into_values()
                             .filter(|template| template.metadata.modes.contains(&this.request.mode))
                             .collect();
-                        this.templates
-                            .sort_by(|left, right| left.metadata.name.cmp(&right.metadata.name));
+                        order_templates(
+                            &mut this.templates,
+                            suggested.as_deref(),
+                            &this.recent_templates,
+                        );
                         let mut names = vec![(
                             if this.insertion.is_some() {
                                 "Empty block"
@@ -329,10 +376,9 @@ impl NotePicker {
                             picker.refresh(window, cx);
                         });
                         if this.daily {
-                            let index = this
-                                .templates
-                                .iter()
-                                .position(|template| template.metadata.id == "daily");
+                            let index = this.templates.iter().position(|template| {
+                                template.metadata.id == this.template_config.daily
+                            });
                             if let Some(index) = index {
                                 this.choose(index + 1, window, cx);
                                 this.create(false, window, cx);
@@ -356,6 +402,7 @@ impl NotePicker {
             picker,
             templates: Vec::new(),
             selected: None,
+            selected_key: None,
             request: RenderRequest {
                 folder,
                 ..Default::default()
@@ -365,6 +412,9 @@ impl NotePicker {
             rendered: None,
             error: None,
             warnings: Vec::new(),
+            template_config: Default::default(),
+            recents_path,
+            recent_templates: Vec::new(),
             loading: true,
             saving: false,
             daily,
@@ -383,6 +433,16 @@ impl NotePicker {
             return;
         }
         self.selected = index.checked_sub(1);
+        let key = self
+            .selected
+            .and_then(|index| self.templates.get(index))
+            .map(|template| format!("template:{}", template.metadata.id))
+            .unwrap_or_else(|| "blank".into());
+        if self.selected_key.as_ref() == Some(&key) {
+            self.refresh_preview(cx);
+            return;
+        }
+        self.selected_key = Some(key);
         self.fields.clear();
         self.field_subscriptions.clear();
         self.request.input.clear();
@@ -535,7 +595,10 @@ impl NotePicker {
         };
         if let Some(target) = &self.insertion {
             match target.apply(&rendered, window, cx) {
-                Ok(()) => cx.emit(DismissEvent),
+                Ok(()) => {
+                    self.record_recent(cx);
+                    cx.emit(DismissEvent);
+                }
                 Err(error) => {
                     self.error = Some(error.to_string());
                     self.rendered = Some(rendered);
@@ -571,7 +634,10 @@ impl NotePicker {
                     return Ok::<_, anyhow::Error>(());
                 }
             };
-            this.update(cx, |_, cx| cx.emit(DismissEvent))?;
+            this.update(cx, |this, cx| {
+                this.record_recent(cx);
+                cx.emit(DismissEvent);
+            })?;
             if !without_opening {
                 open_note_editor(workspace, root.join(&note.path), note.cursor, cx).await?;
             }
@@ -584,6 +650,22 @@ impl NotePicker {
             |error, _, _| Some(error.to_string()),
         );
         cx.notify();
+    }
+
+    fn record_recent(&self, cx: &App) {
+        let Some(path) = self.recents_path.clone() else {
+            return;
+        };
+        let Some(template) = self.selected.and_then(|index| self.templates.get(index)) else {
+            return;
+        };
+        let id = template.metadata.id.clone();
+        cx.background_spawn(async move {
+            if let Err(error) = brainz_templates::record_recent(&path, &id) {
+                log::warn!("Could not update recent templates: {error:#}");
+            }
+        })
+        .detach();
     }
 
     fn choose_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -613,19 +695,21 @@ impl NotePicker {
         self.folder_picker = Some(picker);
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(folder) = receiver.recv().await {
-                this.update(cx, |this, cx| match folder.strip_prefix(&this.root) {
-                    Ok(folder) => {
-                        this.destination = Some(folder.to_path_buf());
-                        this.request.folder = if folder.as_os_str().is_empty() {
-                            ".".into()
-                        } else {
-                            folder.to_string_lossy().into_owned()
-                        };
-                        this.refresh_preview(cx);
-                    }
-                    Err(_) => {
-                        this.error = Some("Choose a folder inside this brain".into());
-                        cx.notify();
+                this.update_in(cx, |this, window, cx| {
+                    match folder.strip_prefix(&this.root) {
+                        Ok(folder) => {
+                            this.destination = Some(folder.to_path_buf());
+                            this.request.folder = if folder.as_os_str().is_empty() {
+                                ".".into()
+                            } else {
+                                folder.to_string_lossy().into_owned()
+                            };
+                            this.refresh_folder_suggestions(window, cx);
+                        }
+                        Err(_) => {
+                            this.error = Some("Choose a folder inside this brain".into());
+                            cx.notify();
+                        }
                     }
                 })
                 .log_err();
@@ -633,6 +717,66 @@ impl NotePicker {
         })
         .detach();
         cx.notify();
+    }
+
+    fn refresh_folder_suggestions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self
+            .selected
+            .and_then(|index| self.templates.get(index))
+            .map(|template| template.metadata.id.clone());
+        let registry = Registry {
+            templates: self
+                .templates
+                .iter()
+                .map(|template| (template.metadata.id.clone(), template.clone()))
+                .collect(),
+            errors: Vec::new(),
+        };
+        let suggested = match registry.default_for_path(
+            &self.template_config,
+            &PathBuf::from(&self.request.folder).join("new.md"),
+        ) {
+            Ok(choice) => choice.map(|choice| choice.template),
+            Err(error) => {
+                let warning = error.to_string();
+                if !self.warnings.contains(&warning) {
+                    self.warnings.push(warning);
+                }
+                None
+            }
+        };
+        order_templates(
+            &mut self.templates,
+            suggested.as_deref(),
+            &self.recent_templates,
+        );
+        self.selected = selected.and_then(|id| {
+            self.templates
+                .iter()
+                .position(|template| template.metadata.id == id)
+        });
+        let preferred = self.selected.map_or(0, |index| index + 1);
+        let mut names = vec![(
+            "Blank note".into(),
+            "Start writing in your current folder".into(),
+        )];
+        names.extend(self.templates.iter().map(|template| {
+            (
+                template.metadata.name.clone(),
+                format!(
+                    "{} {} {}",
+                    template.metadata.description,
+                    template.metadata.id,
+                    template.metadata.tags.join(" ")
+                ),
+            )
+        }));
+        self.picker.update(cx, |picker, cx| {
+            picker.delegate.names = names;
+            picker.delegate.preferred = Some(preferred);
+            picker.refresh(window, cx);
+        });
+        self.refresh_preview(cx);
     }
     fn event_picker(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let template = self.selected.and_then(|index| self.templates.get(index))?;
@@ -979,7 +1123,6 @@ impl PickerDelegate for TemplateDelegate {
             })
             .collect::<Vec<_>>();
         let count = candidates.len();
-        let prefer_initial = query.is_empty();
         cx.spawn_in(window, async move |picker, cx| {
             let visible = if query.is_empty() {
                 (0..count).collect()
@@ -1001,22 +1144,18 @@ impl PickerDelegate for TemplateDelegate {
             picker
                 .update_in(cx, |picker, window, cx| {
                     picker.delegate.visible = visible;
-                    picker.delegate.selected = if prefer_initial {
-                        picker
-                            .delegate
-                            .preferred
-                            .take()
-                            .and_then(|index| {
-                                picker
-                                    .delegate
-                                    .visible
-                                    .iter()
-                                    .position(|visible| *visible == index)
-                            })
-                            .unwrap_or(0)
-                    } else {
-                        0
-                    };
+                    picker.delegate.selected = picker
+                        .delegate
+                        .preferred
+                        .take()
+                        .and_then(|index| {
+                            picker
+                                .delegate
+                                .visible
+                                .iter()
+                                .position(|visible| *visible == index)
+                        })
+                        .unwrap_or(0);
                     picker.delegate.notify_selection(window, cx);
                     cx.notify();
                 })
@@ -1067,6 +1206,34 @@ impl PickerDelegate for TemplateDelegate {
 mod tests {
     use super::*;
     use gpui::UpdateGlobal as _;
+
+    #[test]
+    fn template_order_prefers_folder_default_then_recents_then_name() {
+        let mut templates = Registry::builtin()
+            .expect("built-ins")
+            .templates
+            .into_values()
+            .collect::<Vec<_>>();
+        order_templates(
+            &mut templates,
+            Some("meeting"),
+            &["decision".into(), "daily".into()],
+        );
+        assert_eq!(
+            templates
+                .iter()
+                .take(3)
+                .map(|template| template.metadata.id.as_str())
+                .collect::<Vec<_>>(),
+            ["meeting", "decision", "daily"]
+        );
+        let rest = templates
+            .iter()
+            .skip(3)
+            .map(|template| template.metadata.name.to_lowercase())
+            .collect::<Vec<_>>();
+        assert!(rest.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
 
     #[gpui::test]
     async fn slash_blocks_and_templates_preserve_prose_and_undo(cx: &mut gpui::TestAppContext) {
@@ -1389,6 +1556,37 @@ mod tests {
                     .missing
                     .iter()
                     .any(|missing| missing == "input.title")
+            );
+        });
+        modal.update_in(cx, |modal, window, cx| {
+            modal.request.folder = "projects/new".into();
+            modal.template_config.folder = vec![brainz_templates::FolderDefault {
+                path: "projects/*".into(),
+                template: "daily".into(),
+                auto: false,
+            }];
+            modal.refresh_folder_suggestions(window, cx);
+        });
+        cx.run_until_parked();
+        modal.read_with(cx, |modal, cx| {
+            assert_eq!(
+                modal.templates.first().expect("default").metadata.id,
+                "daily"
+            );
+            assert_eq!(
+                modal.templates[modal.selected.expect("selection preserved")]
+                    .metadata
+                    .id,
+                "decision"
+            );
+            assert_eq!(field.read(cx).text(cx), "Choose an offline format");
+            assert!(
+                modal
+                    .rendered
+                    .as_ref()
+                    .expect("preview preserved")
+                    .body
+                    .contains("Choose an offline format")
             );
         });
         cx.update(|window, cx| assert!(field.focus_handle(cx).contains_focused(window, cx)));

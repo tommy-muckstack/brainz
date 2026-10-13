@@ -2522,10 +2522,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "globset",
  "handlebars 4.5.0",
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sha2",
  "tempfile",
  "toml 0.8.23",
  "uuid",

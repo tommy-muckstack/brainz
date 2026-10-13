@@ -1,4 +1,8 @@
+mod config;
 mod helpers;
+mod history;
+pub use config::{FolderDefault, TemplateChoice, TemplatesConfig};
+pub use history::{read_recents, recent_templates_path, record_recent};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use chrono::{DateTime, FixedOffset};
@@ -239,7 +243,7 @@ impl Registry {
     pub fn load_brain(root: &Path, directory: Option<&Path>) -> Result<Self> {
         let mut registry = Self::builtin()?;
         let configured = if directory.is_none() {
-            configured_directory(root)?
+            TemplatesConfig::load(root)?.dir
         } else {
             None
         };
@@ -301,32 +305,6 @@ impl Registry {
         }
         Ok(registry)
     }
-}
-
-fn configured_directory(root: &Path) -> Result<Option<PathBuf>> {
-    #[derive(Default, Deserialize)]
-    struct TemplateConfig {
-        dir: Option<PathBuf>,
-    }
-    #[derive(Deserialize)]
-    struct BrainConfig {
-        #[serde(default)]
-        templates: TemplateConfig,
-    }
-    let path = scoped_path(root, Path::new("brainz.toml"))?;
-    if !path.try_exists()? {
-        return Ok(None);
-    }
-    let mut content = String::new();
-    fs::File::open(path)?
-        .take(MAX_TEMPLATE_BYTES + 1)
-        .read_to_string(&mut content)?;
-    ensure!(
-        content.len() as u64 <= MAX_TEMPLATE_BYTES,
-        "Brain config is larger than 256 KB"
-    );
-    let config: BrainConfig = toml::from_str(&content).context("Invalid brainz.toml")?;
-    Ok(config.templates.dir)
 }
 
 #[derive(Clone, Debug, Serialize)]

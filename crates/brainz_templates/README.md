@@ -14,6 +14,25 @@ the picker remains open is separate integration work.
 Set `[templates] dir = "Templates"` in `brainz.toml` to use another folder inside
 the brain, or pass `--directory` for a single CLI invocation.
 
+Folder defaults rank first in the native picker, followed by the last twelve
+templates used in that brain. Recent IDs live in local application data and do
+not add Git changes. Changing folders preserves the selected template and inputs.
+
+```toml
+[templates]
+daily = "daily"
+
+[[templates.folder]]
+path = "projects/*/meetings/**"
+template = "meeting"
+auto = false
+```
+
+Explicit rules take precedence over template `applies_to` patterns; more literal
+path components and characters win. Ties use the earlier rule, then alphabetical
+template IDs. The CLI uses automatic folder rules when no `--template` is given;
+suggestion-only rules leave a blank note. An explicit template always wins.
+
 ```sh
 brainz templates list --workspace /path/to/brain --json
 brainz templates show decision --workspace /path/to/brain
@@ -47,6 +66,6 @@ is reported without overwriting it. Chat's `/` file and canvas picker is unchang
 `//` also offers templates in a Brainz group. Templates prepare an editable draft
 through the same input/preview picker and never send the message automatically.
 
-Folder defaults, the full context-provider registry,
+Empty-note suggestion bars and automatic editor filling, the full context-provider registry,
 skill-bundled templates, and AI review remain open. AI sections stay as
 placeholders. This is not the complete templates-and-skills feature.

@@ -15,6 +15,14 @@
 //! stop_words = ["yourname"]   # extra terms the themes pass never counts
 //! sync = true                 # false hides the Sync to GitHub banner
 //!
+//! [templates]
+//! daily = "daily"             # template id used by the daily-note shortcut
+//! dir = ".brainz/templates"   # optional override folder
+//! [[templates.folder]]
+//! path = "projects/*/meetings/**"
+//! template = "meeting"
+//! auto = false                # suggest before applying to an empty note
+//!
 //! [calendar]
 //! prep_lead_minutes = 10      # the prep banner appears this long before an event
 //! match_dirs = ["companies", "projects"]   # folders whose children are matched
@@ -70,6 +78,7 @@ pub struct BrainConfig {
     pub themes: ThemesConfig,
     /// The My Man export folder Brainz reads alongside the brain.
     pub myman: MyManConfig,
+    pub templates: brainz_templates::TemplatesConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -148,6 +157,7 @@ impl Default for BrainConfig {
             calendar: CalendarConfig::default(),
             themes: ThemesConfig::default(),
             myman: MyManConfig::default(),
+            templates: brainz_templates::TemplatesConfig::default(),
         }
     }
 }
