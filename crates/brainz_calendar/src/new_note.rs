@@ -5,7 +5,7 @@ use std::{
 };
 
 use brainz_templates::{CreatePolicy, InsertMode, Registry, RenderRequest, Rendered, Template};
-use editor::Editor;
+use editor::{Editor, MultiBufferOffset, scroll::Autoscroll};
 use fuzzy::StringMatchCandidate;
 use gpui::{
     App, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, Subscription, Task,
@@ -15,9 +15,9 @@ use markdown::{Markdown, MarkdownElement};
 use picker::{Picker, PickerDelegate};
 use project::Project;
 use serde_json::{Map, Value, json};
-use ui::{ListItem, ListItemSpacing, prelude::*};
+use ui::{ContextMenu, ListItem, ListItemSpacing, PopoverMenu, prelude::*};
 use util::ResultExt;
-use workspace::{ModalView, Workspace};
+use workspace::{ModalView, Workspace, notifications::DetachAndPromptErr as _};
 
 actions!(
     brainz_calendar,
@@ -111,14 +111,19 @@ fn context_for_events(root: &Path, events: &[super::CalendarEvent]) -> Map<Strin
         .min_by_key(|event| event.start);
     let mut context = Map::new();
     context.insert("calendar".into(), json!({
+        "events": events.iter().filter(|event| !event.all_day && event.end > now).map(&event_json).collect::<Vec<_>>(),
         "current_or_next": current.map(&event_json),
         "today": events.iter().filter(|event| event.start.date_naive() == now.date_naive()).map(&event_json).collect::<Vec<_>>(),
         "next_week": events.iter().filter(|event| event.start > now && event.start < now + chrono::Duration::days(7)).map(&event_json).collect::<Vec<_>>()
     }));
+    let config = super::brain_config::BrainConfig::load(root);
+    let index = super::brain_match::BrainIndex::load(root, &config);
+    let event_matches = events.iter().filter_map(|event| {
+        index.match_event(&event.title, &event.attendee_names, &event.attendee_emails, event.start.date_naive()).map(|found| (event.id.clone(), json!({"folder":found.folder,"folder_name":found.folder_name,"who":found.who,"prep_file":found.prep_file})))
+    }).collect::<Map<_, _>>();
+    context.insert("event_matches".into(), Value::Object(event_matches));
     if let Some(event) = current {
         context.insert("event".into(), event_json(event));
-        let config = super::brain_config::BrainConfig::load(root);
-        let index = super::brain_match::BrainIndex::load(root, &config);
         if let Some(found) = index.match_event(
             &event.title,
             &event.attendee_names,
@@ -304,7 +309,7 @@ impl NotePicker {
                     .metadata
                     .inputs
                     .iter()
-                    .filter(|input| input.default.is_none())
+                    .filter(|input| input.default.is_none() && input.kind != "calendar.event")
                     .map(|input| {
                         (
                             input.id.clone(),
@@ -437,7 +442,7 @@ impl NotePicker {
                 .iter()
                 .find(|(id, _, _)| missing == &format!("input.{id}"))
             {
-                window.focus(&field.focus_handle(cx));
+                window.focus(&field.focus_handle(cx), cx);
             }
             cx.notify();
             return;
@@ -474,34 +479,16 @@ impl NotePicker {
             };
             this.update(cx, |_, cx| cx.emit(DismissEvent))?;
             if !without_opening {
-                let project = workspace.read_with(cx, |workspace, _| workspace.project().clone())?;
-                let buffer = project.update(cx, |project, cx| project.open_local_buffer(root.join(&note.path), cx)).await?;
-                let editor = workspace.update_in(cx, |workspace, window, cx| {
-                    let existing = workspace.items_of_type::<Editor>(cx).find(|editor| editor.read(cx).buffer().read(cx).as_singleton().as_ref() == Some(&buffer));
-                    let editor = existing.unwrap_or_else(|| cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx)));
-                    if !workspace.activate_item(&editor, true, true, window, cx) {
-                        markdown_preview::markdown_preview_view::MarkdownPreviewView::suppress_auto_preview_once(&editor, cx);
-                        workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
-                    }
-                    editor
-                })?;
-                    editor.update_in(cx, |editor, window, cx| {
-                        if let Some(cursor) = note.cursor {
-                            editor.change_selections(
-                                Some(editor::Autoscroll::fit()),
-                                window,
-                                cx,
-                                |selections| {
-                                    selections.select_ranges([cursor..cursor]);
-                                },
-                            );
-                        }
-                        window.focus(&editor.focus_handle(cx));
-                    })?;
+                open_note_editor(workspace, root.join(&note.path), note.cursor, cx).await?;
             }
             Ok(())
         })
-        .detach_and_log_err(cx);
+        .detach_and_prompt_err(
+            "The note was saved, but could not be opened",
+            window,
+            cx,
+            |error, _, _| Some(error.to_string()),
+        );
         cx.notify();
     }
 
@@ -528,7 +515,7 @@ impl NotePicker {
                 cx.notify();
             },
         ));
-        window.focus(&picker.focus_handle(cx));
+        window.focus(&picker.focus_handle(cx), cx);
         self.folder_picker = Some(picker);
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(folder) = receiver.recv().await {
@@ -553,6 +540,93 @@ impl NotePicker {
         .detach();
         cx.notify();
     }
+    fn event_picker(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let template = self.selected.and_then(|index| self.templates.get(index))?;
+        if !template
+            .metadata
+            .inputs
+            .iter()
+            .any(|input| input.kind == "calendar.event")
+        {
+            return None;
+        }
+        let events = self
+            .request
+            .context
+            .get("calendar")
+            .and_then(|calendar| calendar.get("events"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let current = self
+            .request
+            .input
+            .get("event")
+            .or_else(|| self.request.context.get("event"));
+        let label = current
+            .and_then(|event| event.get("title"))
+            .and_then(Value::as_str)
+            .unwrap_or("Choose an event…")
+            .to_owned();
+        if events.is_empty() {
+            return Some(Label::new("No upcoming calendar events. Choose another template or add an event in Calendar.").color(Color::Muted).size(LabelSize::Small).into_any_element());
+        }
+        let owner = cx.weak_entity();
+        Some(
+            PopoverMenu::new("template-event-picker")
+                .trigger(
+                    Button::new("template-event", label)
+                        .start_icon(Icon::new(IconName::BrainzCalendar))
+                        .end_icon(Icon::new(IconName::ChevronDown)),
+                )
+                .menu(move |window, cx| {
+                    let owner = owner.clone();
+                    let events = events.clone();
+                    Some(ContextMenu::build(window, cx, move |mut menu, _, _| {
+                        for event in events {
+                            let title = event
+                                .get("title")
+                                .and_then(Value::as_str)
+                                .unwrap_or("Untitled event");
+                            let start = event
+                                .get("start")
+                                .and_then(Value::as_str)
+                                .and_then(|start| chrono::DateTime::parse_from_rfc3339(start).ok())
+                                .map(|start| start.format("%a %-I:%M %p").to_string())
+                                .unwrap_or_default();
+                            let owner = owner.clone();
+                            menu = menu.entry(format!("{title} · {start}"), None, move |_, cx| {
+                                owner
+                                    .update(cx, |owner, cx| {
+                                        let matched = event
+                                            .get("id")
+                                            .and_then(Value::as_str)
+                                            .and_then(|id| {
+                                                owner
+                                                    .request
+                                                    .context
+                                                    .get("event_matches")
+                                                    .and_then(|matches| matches.get(id))
+                                            })
+                                            .cloned();
+                                        owner.request.context.remove("match");
+                                        owner.request.context.remove("people");
+                                        if let Some(matched) = matched {
+                                            owner.request.context.insert("match".into(), matched);
+                                        }
+                                        owner.request.context.insert("event".into(), event.clone());
+                                        owner.request.input.insert("event".into(), event.clone());
+                                        owner.refresh_preview(cx);
+                                    })
+                                    .log_err();
+                            });
+                        }
+                        menu
+                    }))
+                })
+                .into_any_element(),
+        )
+    }
 }
 
 impl ModalView for NotePicker {}
@@ -570,6 +644,7 @@ impl Render for NotePicker {
         if let Some(picker) = &self.folder_picker {
             return picker.clone().into_any_element();
         }
+        let event_picker = self.event_picker(cx);
         v_flex()
             .key_context("BrainzNewNote")
             .on_action(
@@ -606,6 +681,7 @@ impl Render for NotePicker {
                             .min_w_0()
                             .p_3()
                             .gap_3()
+                            .children(event_picker)
                             .children(self.fields.iter().enumerate().map(
                                 |(index, (_, label, field))| {
                                     v_flex()
@@ -666,7 +742,7 @@ impl Render for NotePicker {
                     .border_color(cx.theme().colors().border)
                     .child(
                         Button::new("note-folder", self.request.folder.clone())
-                            .icon(IconName::Folder)
+                            .start_icon(Icon::new(IconName::Folder))
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.choose_folder(window, cx)),
                             ),
@@ -703,6 +779,39 @@ impl Render for NotePicker {
             )
             .into_any_element()
     }
+}
+
+async fn open_note_editor(
+    workspace: WeakEntity<Workspace>,
+    path: PathBuf,
+    cursor: Option<usize>,
+    cx: &mut gpui::AsyncWindowContext,
+) -> anyhow::Result<Entity<Editor>> {
+    let project = workspace.read_with(cx, |workspace, _| workspace.project().clone())?;
+    let buffer = project
+        .update(cx, |project, cx| project.open_local_buffer(path, cx))
+        .await?;
+    let editor = workspace.update_in(cx, |workspace, window, cx| {
+        let existing = workspace.items_of_type::<Editor>(cx).find(|editor| {
+            editor.read(cx).buffer().read(cx).as_singleton().as_ref() == Some(&buffer)
+        });
+        let editor = existing.unwrap_or_else(|| cx.new(|cx| Editor::for_buffer(buffer, Some(project.clone()), window, cx)));
+        if !workspace.activate_item(&editor, true, true, window, cx) {
+            markdown_preview::markdown_preview_view::MarkdownPreviewView::suppress_auto_preview_once(&editor, cx);
+            workspace.add_item_to_active_pane(Box::new(editor.clone()), None, true, window, cx);
+        }
+        editor
+    })?;
+    editor.update_in(cx, |editor, window, cx| {
+        if let Some(cursor) = cursor {
+            let cursor = MultiBufferOffset(cursor);
+            editor.change_selections(Some(Autoscroll::fit()).into(), window, cx, |selections| {
+                selections.select_ranges([cursor..cursor]);
+            });
+        }
+        window.focus(&editor.focus_handle(cx), cx);
+    })?;
+    Ok(editor)
 }
 
 struct TemplateDelegate {
@@ -815,7 +924,7 @@ impl PickerDelegate for TemplateDelegate {
         Some(
             ListItem::new(index)
                 .spacing(ListItemSpacing::Sparse)
-                .selected(selected)
+                .toggle_state(selected)
                 .child(
                     h_flex()
                         .gap_2()
@@ -836,13 +945,86 @@ impl PickerDelegate for TemplateDelegate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::UpdateGlobal as _;
+
+    #[gpui::test]
+    async fn created_note_opens_at_the_caret_in_edit_mode_and_reuses_the_buffer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_global(db::AppDatabase::test_new());
+            workspace::AppState::test(cx);
+            editor::init(cx);
+            markdown_preview::init(cx);
+            settings::SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings
+                        .markdown_preview
+                        .get_or_insert_default()
+                        .open_markdown_files_in_preview = Some(true);
+                })
+            });
+        });
+        let fs = project::FakeFs::new(cx.executor());
+        fs.insert_tree("/brain", json!({"note.md":"# Note\n\nFirst bullet\n"}))
+            .await;
+        let project = Project::test(fs, [Path::new("/brain")], cx).await;
+        project
+            .read_with(cx, |project, _| project.languages().clone())
+            .add(Arc::new(language::Language::new(
+                language::LanguageConfig {
+                    name: "Markdown".into(),
+                    matcher: Arc::new(language::LanguageMatcher {
+                        path_suffixes: vec!["md".into()],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                None,
+            )));
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        let mut first = None;
+        for _ in 0..2 {
+            let editor = workspace
+                .update_in(cx, |_, window, cx| {
+                    cx.spawn_in(window, async move |workspace, cx| {
+                        open_note_editor(workspace, "/brain/note.md".into(), Some(8), cx).await
+                    })
+                })
+                .await
+                .expect("open note");
+            cx.run_until_parked();
+            workspace.read_with(cx, |workspace, cx| {
+                assert_eq!(workspace.items_of_type::<Editor>(cx).count(), 1);
+                assert_eq!(workspace.active_item_as::<Editor>(cx), Some(editor.clone()));
+                assert_eq!(workspace.items_of_type::<markdown_preview::markdown_preview_view::MarkdownPreviewView>(cx).count(), 0);
+            });
+            editor.update_in(cx, |editor, window, cx| {
+                assert!(editor.focus_handle(cx).contains_focused(window, cx));
+                let snapshot = editor.snapshot(window, cx);
+                assert_eq!(
+                    editor
+                        .selections
+                        .newest::<MultiBufferOffset>(&snapshot)
+                        .head(),
+                    MultiBufferOffset(8)
+                );
+            });
+            if let Some(first) = &first {
+                assert_eq!(first, &editor);
+            }
+            first = Some(editor);
+        }
+    }
 
     #[gpui::test]
     async fn template_search_and_inputs_keep_focus_and_update_the_preview(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
-            cx.set_global(settings::SettingsStore::test(cx));
+            let settings = settings::SettingsStore::test(cx);
+            cx.set_global(settings);
             cx.set_global(db::AppDatabase::test_new());
             theme_settings::init(theme::LoadThemes::JustBase, cx);
             editor::init(cx);
@@ -904,7 +1086,7 @@ mod tests {
                 .clone()
         });
         field.update_in(cx, |editor, window, cx| {
-            window.focus(&editor.focus_handle(cx))
+            window.focus(&editor.focus_handle(cx), cx)
         });
         cx.simulate_input("Choose an offline format");
         cx.run_until_parked();
@@ -919,7 +1101,7 @@ mod tests {
                     .any(|missing| missing == "input.title")
             );
         });
-        cx.update(|window, cx| assert!(field.focus_handle(cx).contains_focused(window)));
+        cx.update(|window, cx| assert!(field.focus_handle(cx).contains_focused(window, cx)));
         assert_eq!(
             std::fs::read_dir(root.path())
                 .expect("no writes during preview")

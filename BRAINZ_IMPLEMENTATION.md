@@ -103,9 +103,26 @@ This file records implementation and validation; an unchecked item is not shippe
 ## Validation and release record
 
 - 0.1.38: native picker interactions, canvas storage tests, icon checks, production build, in-app picker check, and Apple notarization passed.
-- Next release: pending implementation and validation.
+- 0.1.39: published 2026-10-13. Both the app and DMG passed Apple notarization,
+  signatures, and bundled executable checks. The GitHub and download-service
+  artifacts were verified against the local DMG; the public update feed matches.
+  Native checks in the existing brain verified Canvas and Connectors opening,
+  Claude and Codex typing, and Copy link feedback. No chat messages were sent.
+  The first unpublished candidate exposed a workspace lease panic; the corrected
+  candidate also fixes a concurrent directory-creation race. 95 native tests,
+  Clippy, and all four Brainz CI jobs passed (one existing native test ignored).
+  [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.39)
+- Next update: template engine merged; native insertion is being validated.
 
 ## Work in progress
+
+- Native note creation: searchable template picker, preview, inline inputs,
+  calendar-event selection, shared folder hierarchy, atomic no-overwrite saves,
+  daily-note reopening, and direct edit-mode opening at the template caret.
+  The two native focus/opening tests pass, as do 16 engine tests including
+  concurrent saves and preservation of edited daily notes. Slash insertion,
+  folder defaults, recents, live refresh, and skill integration remain open;
+  this UI has not shipped in an installer yet.
 
 - Delta source check (2026-10-13): Zed's official
   [Delta packaging repository](https://github.com/zed-industries/delta-nix)
