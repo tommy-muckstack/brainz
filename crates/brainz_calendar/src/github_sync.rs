@@ -17,8 +17,6 @@ use ui::{Tooltip, prelude::*};
 use workspace::{ModalView, Workspace};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(20);
-const MAX_FILE_BYTES: u64 = 25 * 1024 * 1024;
-const MAX_SCAN_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SyncStatus {
@@ -86,7 +84,7 @@ pub fn state(cx: &App) -> Option<Entity<SyncState>> {
     cx.try_global::<GlobalSyncState>().map(|g| g.0.clone())
 }
 
-fn command(repo: &Path, program: &str) -> Command {
+pub(crate) fn command(repo: &Path, program: &str) -> Command {
     let mut cmd = Command::new(program);
     cmd.current_dir(repo);
     let path = std::env::var("PATH").unwrap_or_default();
@@ -104,7 +102,7 @@ fn command(repo: &Path, program: &str) -> Command {
 
 /// Blocking on purpose: only ever called from the background executor.
 #[allow(clippy::disallowed_methods)]
-fn run(repo: &Path, program: &str, args: &[&str]) -> Result<String> {
+pub(crate) fn run(repo: &Path, program: &str, args: &[&str]) -> Result<String> {
     let output = command(repo, program)
         .args(args)
         .output()
@@ -155,13 +153,7 @@ fn check_status(repo: &Path, fetch: bool) -> Result<SyncStatus> {
     })
 }
 
-fn fast_forward_main(repo: &Path) -> Result<()> {
-    let branch = run(repo, "git", &["branch", "--show-current"])?;
-    if branch != "main" {
-        bail!(
-            "The active branch changed to `{branch}`. Local files were left in place; switch to main before updating."
-        );
-    }
+fn ensure_no_git_operation(repo: &Path) -> Result<()> {
     for operation in [
         "rebase-merge",
         "rebase-apply",
@@ -176,6 +168,22 @@ fn fast_forward_main(repo: &Path) -> Result<()> {
             );
         }
     }
+    if !run(repo, "git", &["ls-files", "--unmerged"])?.is_empty() {
+        bail!(
+            "Unresolved Git changes need attention before syncing. Local files were left in place."
+        );
+    }
+    Ok(())
+}
+
+fn fast_forward_main(repo: &Path) -> Result<()> {
+    let branch = run(repo, "git", &["branch", "--show-current"])?;
+    if branch != "main" {
+        bail!(
+            "The active branch changed to `{branch}`. Local files were left in place; switch to main before updating."
+        );
+    }
+    ensure_no_git_operation(repo)?;
     if !run(
         repo,
         "git",
@@ -209,79 +217,6 @@ fn finish_sync(repo: &Path, pr_url: &str, progress: &mut dyn FnMut(String)) -> R
     fast_forward_main(repo).with_context(|| format!(
         "Your pull request was merged on GitHub: {pr_url}\nNew local work still needs attention before this checkout can update."
     ))
-}
-
-/// The review step: refuse to publish secrets or huge files.
-fn review(repo: &Path) -> Result<()> {
-    let porcelain = run(repo, "git", &["status", "--porcelain"])?;
-    let secret_markers: &[(&str, &str)] = &[
-        ("-----BEGIN ", "a private key"),
-        ("sk-ant-", "an Anthropic API key"),
-        ("sk-proj-", "an OpenAI API key"),
-        ("ghp_", "a GitHub token"),
-        ("github_pat_", "a GitHub token"),
-        ("xoxb-", "a Slack bot token"),
-        ("xoxp-", "a Slack user token"),
-        ("AKIA", "an AWS access key"),
-        ("phx_", "a PostHog personal API key"),
-    ];
-    let mut problems = Vec::new();
-    for line in porcelain.lines() {
-        if line.len() < 4 || line.starts_with(" D") || line.starts_with("D ") {
-            continue;
-        }
-        let rel = line[3..]
-            .split(" -> ")
-            .last()
-            .unwrap_or("")
-            .trim_matches('"');
-        let path = repo.join(rel);
-        let Ok(metadata) = std::fs::metadata(&path) else {
-            continue;
-        };
-        if !metadata.is_file() {
-            continue;
-        }
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
-        if name == ".env"
-            || name.starts_with(".env.")
-            || name.ends_with(".pem")
-            || name.ends_with(".p12")
-            || name == "id_rsa"
-            || name == "id_ed25519"
-        {
-            problems.push(format!("{rel} looks like a credentials file"));
-            continue;
-        }
-        if metadata.len() > MAX_FILE_BYTES {
-            problems.push(format!(
-                "{rel} is {} MB, too large for GitHub",
-                metadata.len() / (1024 * 1024)
-            ));
-            continue;
-        }
-        if metadata.len() <= MAX_SCAN_BYTES
-            && let Ok(text) = std::fs::read_to_string(&path)
-        {
-            for (marker, what) in secret_markers {
-                if text.contains(marker) {
-                    problems.push(format!("{rel} appears to contain {what} ({marker}…)"));
-                    break;
-                }
-            }
-        }
-    }
-    if problems.is_empty() {
-        Ok(())
-    } else {
-        bail!(
-            "Review stopped the sync. Fix these and try again:\n\n• {}",
-            problems.join("\n• ")
-        )
-    }
 }
 
 fn commit_subject(paths: &[&str]) -> String {
@@ -342,24 +277,37 @@ fn commit_subject(paths: &[&str]) -> String {
 }
 
 fn commit_local_changes(repo: &Path) -> Result<()> {
+    ensure_no_git_operation(repo)?;
+    if run(repo, "git", &["branch", "--show-current"])? != "main" {
+        bail!("The active branch changed. Local work was kept; return to main before syncing.");
+    }
     run(repo, "git", &["add", "-A"])?;
-    let summary = run(repo, "git", &["diff", "--cached", "--stat"])?;
-    let names = run(repo, "git", &["diff", "--cached", "--name-only", "-z"])?;
-    let paths = names
-        .split('\0')
-        .filter(|path| !path.is_empty())
+    let reviewed = crate::sync_review::staged_tree(repo)?;
+    if reviewed.branch != "refs/heads/main" {
+        bail!("The active branch changed during review. Local work was kept.");
+    }
+    let summary = run(
+        repo,
+        "git",
+        &["diff", "--stat", &reviewed.head, &reviewed.tree],
+    )?;
+    let paths = reviewed
+        .paths
+        .iter()
+        .map(String::as_str)
         .collect::<Vec<_>>();
     let subject = commit_subject(&paths);
     let message = format!(
         "{subject}\n\n{summary}\n\nBrainz-Session: {}",
         uuid::Uuid::new_v4()
     );
-    run(repo, "git", &["commit", "-m", &message])?;
+    crate::sync_review::commit(repo, &reviewed, &message)?;
     Ok(())
 }
 
 fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
     progress("Checking branch".into());
+    ensure_no_git_operation(repo)?;
     let branch = run(repo, "git", &["branch", "--show-current"])?;
     if branch != "main" {
         bail!("You're on branch `{branch}`. Switch to `main` first, then sync.");
@@ -367,9 +315,6 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
     if run(repo, "gh", &["auth", "status"]).is_err() {
         bail!("{GITHUB_SIGN_IN_NEEDED}");
     }
-
-    progress("Reviewing changes".into());
-    review(repo)?;
 
     let status = check_status(repo, true)?;
     let SyncStatus::Pending {
@@ -394,14 +339,18 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
         commit_local_changes(repo)?;
     }
 
+    progress("Reviewing commits".into());
+    let publish_head = run(repo, "git", &["rev-parse", "HEAD"])?;
+    let commit_count = crate::sync_review::outgoing_commits(repo, "origin/main", &publish_head)?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let sync_branch = format!("brainz/sync-{stamp}");
     progress("Pushing branch".into());
-    run(repo, "git", &["branch", &sync_branch])?;
+    run(repo, "git", &["branch", &sync_branch, &publish_head])?;
     run(repo, "git", &["push", "-u", "origin", &sync_branch])?;
 
     progress("Opening pull request".into());
-    let commits = run(repo, "git", &["log", "--oneline", "origin/main..HEAD"]).unwrap_or_default();
+    let revision_range = format!("origin/main..{publish_head}");
+    let commits = run(repo, "git", &["log", "--oneline", &revision_range])?;
     let body = format!(
         "Synced from Brainz.\n\nCommits:\n{}\n\nReviewed automatically: no credential files, secret markers, or files over 25 MB.",
         commits
@@ -410,10 +359,10 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
             .collect::<Vec<_>>()
             .join("\n")
     );
-    let title = if ahead + usize::from(changed > 0) == 1 {
-        run(repo, "git", &["log", "-1", "--format=%s"])?
+    let title = if commit_count == 1 {
+        run(repo, "git", &["log", "-1", "--format=%s", &publish_head])?
     } else {
-        format!("notes: sync {} commits", ahead + usize::from(changed > 0))
+        format!("notes: sync {commit_count} commits")
     };
     let pr_url = run(
         repo,

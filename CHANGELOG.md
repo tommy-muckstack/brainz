@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.1.41 (2026-10-13)
+
+### Improved
+
+- Review every outgoing commit before a sync publishes it. The check reads the exact staged content and each unpublished commit, including content removed later, and stops on credential filenames, secret markers, or files over 25 MB.
+- Commit reviewed changes from a private index, so edits made during the review are kept locally and never published unreviewed; the sync stops if the branch or its commits change mid-review.
+
+### Fixed
+
+- Reject stale task toggles in the Markdown viewer instead of editing the wrong line, and keep read-only notes unchanged.
+- Undo and redo through the Markdown viewer, show its dirty state in the tab, and leave untouched files unchanged on save.
+- Keep trailing whitespace and the final-newline choice in Markdown notes when saving.
+- Alt-click a Markdown link to open the source editor without the automatic preview taking over.
+
 ## 0.1.40 (2026-10-13)
 
 ### New

@@ -26,7 +26,8 @@ native() {
     "$cargo_bin" test --locked -p agent_ui --lib canvas
     "$cargo_bin" test --locked -p agent_ui --lib completion_provider
     "$cargo_bin" test --locked -p agent_ui --lib message_editor
-    CLIPPY_PROFILE=dev CLIPPY_DEFAULT_FEATURES=1 script/clippy --locked "${native_packages[@]}" -p icons -p settings_ui -p agent_ui
+    "$cargo_bin" test --locked -p markdown_preview --lib
+    CLIPPY_PROFILE=dev CLIPPY_DEFAULT_FEATURES=1 script/clippy --locked "${native_packages[@]}" -p icons -p settings_ui -p agent_ui -p markdown_preview
 }
 
 pure() {

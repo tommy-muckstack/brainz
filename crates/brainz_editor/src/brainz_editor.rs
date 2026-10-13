@@ -237,6 +237,24 @@ pub struct EditPlan {
 }
 
 impl EditPlan {
+    pub fn replace(
+        base: impl Into<Arc<str>>,
+        range: Range<usize>,
+        replacement: impl Into<String>,
+    ) -> Result<Self, EditError> {
+        let base = base.into();
+        if base.get(range.clone()).is_none() {
+            return Err(EditError::InvalidRange);
+        }
+        Ok(Self {
+            base,
+            edits: vec![SourceEdit {
+                range,
+                replacement: replacement.into(),
+            }],
+        })
+    }
+
     /// Validate against the current buffer immediately before applying the
     /// returned edits in one buffer transaction, without an intervening await.
     pub fn edits_for(&self, current: &str) -> Result<&[SourceEdit], EditError> {
