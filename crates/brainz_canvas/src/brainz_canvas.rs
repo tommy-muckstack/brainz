@@ -10,6 +10,7 @@ use std::{
 
 pub mod mcp;
 pub mod requests;
+pub mod state;
 
 pub const MAX_BATCH_BYTES: u64 = 2 * 1024 * 1024;
 pub const MAX_BOARD_BYTES: u64 = 24 * 1024 * 1024;
@@ -417,15 +418,44 @@ pub fn read_context(root: &Path, board: &Board, scope: &str) -> Result<Value> {
         matches!(scope, "all" | "view" | "selection"),
         "Use all, view, or selection scope"
     );
+    let request = requests::context(root, board)?;
+    let mut context = if let Some(response) =
+        requests::wait_for(root, board, &request, std::time::Duration::from_millis(700))?
+    {
+        let mut context = response
+            .get("context")
+            .cloned()
+            .context("Missing live canvas context")?;
+        context
+            .as_object_mut()
+            .context("Invalid canvas context")?
+            .insert("freshness".into(), json!("live"));
+        context
+    } else {
+        let mut context = read_saved_context(root, board)?;
+        context
+            .as_object_mut()
+            .context("Invalid canvas context")?
+            .insert("freshness".into(), json!("saved"));
+        context
+    };
+    scope_context(&mut context, scope)?;
+    Ok(context)
+}
+
+fn read_saved_context(root: &Path, board: &Board) -> Result<Value> {
     let path = scoped_path(root, &board.path.with_extension("canvas.json"), true)?;
-    let mut context = if path.exists() {
+    Ok(if path.exists() {
         read_json(&path, MAX_BOARD_BYTES)?
     } else {
         read_json(&board.path, MAX_BOARD_BYTES)?
             .get("scene")
             .cloned()
             .context("Open this canvas in Brainz to generate its readable context")?
-    };
+    })
+}
+
+fn scope_context(context: &mut Value, scope: &str) -> Result<()> {
     if scope != "all" {
         ensure!(
             context["version"] == 2,
@@ -447,7 +477,7 @@ pub fn read_context(root: &Path, board: &Board, scope: &str) -> Result<Value> {
             .context("Invalid canvas context")?
             .remove("objects");
     }
-    Ok(context)
+    Ok(())
 }
 
 pub fn append_event(root: &Path, board: &Board, event: &Value) -> Result<()> {
@@ -577,6 +607,44 @@ mod tests {
             let batch = json!({"format":"brainz-canvas-ops","version":1,"batchId":"bad-link","ops":[{"op":"create","type":"card","url":url.as_str()}]});
             assert!(validate_batch(root.path(), &batch).is_err());
         }
+    }
+
+    #[test]
+    fn context_reads_the_live_selection_and_marks_closed_board_fallbacks() {
+        let (root, board) = fixture();
+        let response_root = root.path().to_path_buf();
+        let response_board = board.clone();
+        let responder = std::thread::spawn(move || {
+            for _ in 0..100 {
+                let pending = requests::pending(&response_root, &response_board).expect("requests");
+                if let Some(request) = pending.first() {
+                    assert_eq!(request["kind"], "read");
+                    requests::respond(&response_root,&response_board,request["requestId"].as_str().expect("request id"),&json!({"context":{"version":2,"selection":["chosen"],"viewport":{"zoom":0.5},"objects":[{"id":"chosen","text":"Live text"},{"id":"outside"}],"inView":[]}})).expect("live response");
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("No canvas request arrived");
+        });
+        let live = read_context(root.path(), &board, "selection").expect("live selection");
+        responder.join().expect("responder");
+        assert_eq!(live["freshness"], "live");
+        assert_eq!(live["viewport"]["zoom"], 0.5);
+        assert_eq!(live["inView"], json!([{"id":"chosen","text":"Live text"}]));
+        assert!(live.get("objects").is_none());
+        atomic_json(
+            &board.path.with_extension("canvas.json"),
+            &json!({"version":2,"objects":[{"id":"saved"}]}),
+        )
+        .expect("saved context");
+        let saved = read_context(root.path(), &board, "all").expect("closed fallback");
+        assert_eq!(saved["freshness"], "saved");
+        assert_eq!(saved["objects"][0]["id"], "saved");
+        assert!(
+            requests::pending(root.path(), &board)
+                .expect("expired request removed")
+                .is_empty()
+        );
     }
 
     #[test]

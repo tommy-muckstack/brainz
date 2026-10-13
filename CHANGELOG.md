@@ -16,6 +16,8 @@
 - Keep inherited usage telemetry off, including with older opt-in settings.
 - Manage upcoming Brainz features through local Labs switches.
 - Merge external canvas changes and preserve a recovery copy when a file cannot be merged.
+- Save pan and zoom positions locally without rewriting canvas files or adding Git changes.
+- Read the live canvas selection and viewport through the assistant tools, with an explicit saved-context fallback for closed canvases.
 
 ## 0.1.38 (2026-10-11)
 

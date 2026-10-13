@@ -301,15 +301,18 @@ struct PendingDocument {
     observed_stamp: Option<(u64, std::time::SystemTime)>,
     recovery_path: Option<PathBuf>,
     board_id: Option<String>,
+    view_state: Option<[f64; 3]>,
 }
 
 struct BoardStorage {
     pending: Mutex<PendingDocument>,
+    view_state_path: Option<PathBuf>,
 }
 
 impl BoardStorage {
     fn new(path: PathBuf) -> Self {
         Self {
+            view_state_path: None,
             pending: Mutex::new(PendingDocument {
                 path,
                 ..Default::default()
@@ -342,6 +345,13 @@ impl BoardStorage {
         } else {
             Some(brainz_canvas::document_hash(&document)?)
         };
+        if let Some(path) = &self.view_state_path {
+            let id = pending
+                .board_id
+                .clone()
+                .unwrap_or_else(|| brainz_canvas::legacy_board_id(&pending.path));
+            pending.view_state = brainz_canvas::state::read(path, &id).log_err().flatten();
+        }
         pending.observed_stamp = std::fs::metadata(&pending.path).ok().and_then(|metadata| {
             metadata
                 .modified()
@@ -360,6 +370,30 @@ impl BoardStorage {
             .open(path.with_extension("brainzboard.lock"))?;
         file.try_lock().context("This canvas is already open in another Brainz window. Close that tab before opening another copy.")?;
         Ok(file)
+    }
+
+    fn queue_view(&self, viewport: [f64; 3]) -> Result<()> {
+        brainz_canvas::state::validate(viewport)?;
+        self.pending
+            .lock()
+            .map_err(|_| anyhow!("Canvas storage is unavailable"))?
+            .view_state = Some(viewport);
+        Ok(())
+    }
+
+    fn save_view(&self) -> Result<()> {
+        let pending = self
+            .pending
+            .lock()
+            .map_err(|_| anyhow!("Canvas storage is unavailable"))?;
+        if let (Some(path), Some(viewport)) = (&self.view_state_path, pending.view_state) {
+            let id = pending
+                .board_id
+                .clone()
+                .unwrap_or_else(|| brainz_canvas::legacy_board_id(&pending.path));
+            brainz_canvas::state::write(path, &id, viewport)?;
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -817,7 +851,9 @@ impl WhiteboardView {
         allow_create: bool,
         cx: &mut Context<Self>,
     ) -> Self {
-        let storage = Arc::new(BoardStorage::new(target.path.clone()));
+        let mut storage = BoardStorage::new(target.path.clone());
+        storage.view_state_path = Some(paths::data_dir().join("whiteboards/state.json"));
+        let storage = Arc::new(storage);
         let loading_storage = storage.clone();
         let load = cx.spawn(async move |this, cx| {
             let result = cx
@@ -1216,6 +1252,9 @@ mod native {
         Recover {
             document: Value,
         },
+        ViewState {
+            viewport: [f64; 3],
+        },
         OpsResult {
             #[serde(rename = "batchId")]
             batch_id: String,
@@ -1376,6 +1415,12 @@ mod native {
                                 log::debug!("Whiteboard tab closed before save acknowledgement: {error}");
                             }
                         }).detach();
+                    } else if let Message::ViewState { viewport } = message {
+                        let result = storage.queue_view(viewport);
+                        let storage = storage.clone();
+                        executor.spawn(async move {
+                            result.and_then(|()| storage.save_view()).log_err();
+                        }).detach();
                     } else if let Message::Recover { document } = message {
                         let storage = storage.clone();
                         let sender = ipc_sender.clone();
@@ -1422,6 +1467,12 @@ mod native {
             match event {
                 NativeEvent::Message(Message::Ready) => {
                     let root = self.canvas_workspace(cx);
+                    let view_state = self
+                        .storage
+                        .pending
+                        .lock()
+                        .ok()
+                        .and_then(|pending| pending.view_state);
                     let hash = self
                         .document
                         .as_ref()
@@ -1432,7 +1483,7 @@ mod native {
                         .flatten();
                     self.send(json!({"type": "load", "document": self.document, "target": self.target,
                         "attach": self.chat_destination.is_some(), "workspace": root,
-                        "boardId": brainz_canvas::legacy_board_id(&self.target.path), "baseHash": hash,
+                        "boardId": brainz_canvas::legacy_board_id(&self.target.path), "baseHash": hash, "viewState": view_state,
                         "agentEnabled": root.is_some() && cx.has_flag::<BrainzCanvasAgentApi>()}));
                 }
                 NativeEvent::Message(Message::Loaded) => self.watch_canvas(cx),
@@ -1635,7 +1686,9 @@ mod native {
                     );
                     cx.notify();
                 }
-                NativeEvent::Message(Message::Save { .. } | Message::Recover { .. }) => {}
+                NativeEvent::Message(
+                    Message::Save { .. } | Message::Recover { .. } | Message::ViewState { .. },
+                ) => {}
             }
         }
 
@@ -1985,6 +2038,49 @@ mod tests {
         assert_eq!(
             read_document(&recovery, false).expect("latest local"),
             latest
+        );
+    }
+
+    #[test]
+    fn panning_updates_only_machine_state_and_keeps_the_latest_queued_position() {
+        let brain = tempfile::tempdir().expect("brain");
+        let data = tempfile::tempdir().expect("machine data");
+        let path = brain.path().join("Diagram.brainzboard");
+        let document =
+            json!({"format":"brainz-whiteboard","version":1,"id":"diagram","data":"original"});
+        write_json_atomically(&path, &document).expect("board");
+        let original_bytes = std::fs::read(&path).expect("original bytes");
+        let mut storage = BoardStorage::new(path.clone());
+        let state_path = data.path().join("whiteboards/state.json");
+        storage.view_state_path = Some(state_path.clone());
+        storage.load(false).expect("open");
+        let modified = std::fs::metadata(&path)
+            .expect("metadata")
+            .modified()
+            .expect("modified");
+        storage.queue_view([10., 20., 1.]).expect("first pan");
+        storage.queue_view([300., -200., 0.5]).expect("latest pan");
+        storage.save_view().expect("save view");
+        assert_eq!(std::fs::read(&path).expect("same board"), original_bytes);
+        assert_eq!(
+            std::fs::metadata(&path)
+                .expect("metadata")
+                .modified()
+                .expect("modified"),
+            modified
+        );
+        assert!(!path.with_extension("canvas.json").exists());
+        assert_eq!(
+            brainz_canvas::state::read(&state_path, "diagram").expect("view"),
+            Some([300., -200., 0.5])
+        );
+        drop(storage);
+        let mut reopened = BoardStorage::new(path);
+        reopened.view_state_path = Some(state_path);
+        reopened.load(false).expect("reopen");
+        assert_eq!(
+            reopened.pending.lock().expect("storage").view_state,
+            Some([300., -200., 0.5])
         );
     }
 

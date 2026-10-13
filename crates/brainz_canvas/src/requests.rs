@@ -75,6 +75,15 @@ pub fn screenshot(root: &Path, board: &Board, arguments: &Value) -> Result<Strin
     Ok(id)
 }
 
+pub fn context(root: &Path, board: &Board) -> Result<String> {
+    let id = uuid::Uuid::now_v7().to_string();
+    atomic_json(
+        &directory(root, board)?.join(format!("{id}.json")),
+        &json!({"requestId":id,"kind":"read"}),
+    )?;
+    Ok(id)
+}
+
 pub fn pending(root: &Path, board: &Board) -> Result<Vec<Value>> {
     let mut requests = Vec::new();
     for entry in fs::read_dir(directory(root, board)?)? {
@@ -94,7 +103,12 @@ pub fn pending(root: &Path, board: &Board) -> Result<Vec<Value>> {
             continue;
         };
         let request = match read_json(&path, 16 * 1024) {
-            Ok(request) if request["requestId"] == id && request["kind"] == "screenshot" => request,
+            Ok(request)
+                if request["requestId"] == id
+                    && matches!(request["kind"].as_str(), Some("screenshot" | "read")) =>
+            {
+                request
+            }
             _ => {
                 respond(root, board, id, &json!({"error":"Invalid canvas request"}))?;
                 continue;
@@ -181,6 +195,10 @@ mod tests {
 }
 
 pub fn wait(root: &Path, board: &Board, id: &str) -> Result<Value> {
+    wait_for(root,board,id,Duration::from_secs(5))?.context("Open this canvas in Brainz with Canvas assistant enabled in Labs, then request its screenshot again")
+}
+
+pub fn wait_for(root: &Path, board: &Board, id: &str, timeout: Duration) -> Result<Option<Value>> {
     ensure!(safe_id(id), "Invalid canvas request id");
     let path = scoped_path(
         root,
@@ -189,7 +207,7 @@ pub fn wait(root: &Path, board: &Board, id: &str) -> Result<Value> {
             .join(format!("{id}.json")),
         true,
     )?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if path.exists() {
             let response = read_json(&path, crate::MAX_BOARD_BYTES)?;
@@ -197,7 +215,7 @@ pub fn wait(root: &Path, board: &Board, id: &str) -> Result<Value> {
             if let Some(error) = response["error"].as_str() {
                 bail!("{error}");
             }
-            return Ok(response);
+            return Ok(Some(response));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -211,7 +229,5 @@ pub fn wait(root: &Path, board: &Board, id: &str) -> Result<Value> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    bail!(
-        "Open this canvas in Brainz with Canvas assistant enabled in Labs, then request its screenshot again"
-    )
+    Ok(None)
 }
