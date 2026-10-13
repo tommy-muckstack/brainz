@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### New
+
+- Preview local canvas tools for Claude and Codex, including object relationships, screenshots, and reviewable edit proposals.
+- Apply a canvas proposal as one undo step, with conflict checks that preserve intervening edits.
+
 ### Improved
 
 - Run native and canvas regression checks automatically on proposed changes.
@@ -10,6 +15,7 @@
 - Wait for a pause in typing before showing an update reminder.
 - Keep inherited usage telemetry off, including with older opt-in settings.
 - Manage upcoming Brainz features through local Labs switches.
+- Merge external canvas changes and preserve a recovery copy when a file cannot be merged.
 
 ## 0.1.38 (2026-10-11)
 

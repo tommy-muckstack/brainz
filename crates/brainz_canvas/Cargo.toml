@@ -1,0 +1,22 @@
+[package]
+name = "brainz_canvas"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/brainz_canvas.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+url.workspace = true
+uuid.workspace = true
+walkdir = "2.5"

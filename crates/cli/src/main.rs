@@ -7,6 +7,7 @@
     allow(dead_code)
 )]
 
+mod canvas;
 mod completions;
 
 use crate::completions::Shell;
@@ -31,7 +32,14 @@ use walkdir::WalkDir;
 
 use std::io::IsTerminal;
 
-const URL_PREFIX: [&'static str; 5] = ["zed://", "http://", "https://", "file://", "ssh://"];
+const URL_PREFIX: [&'static str; 6] = [
+    "brainz://",
+    "zed://",
+    "http://",
+    "https://",
+    "file://",
+    "ssh://",
+];
 
 struct Detect;
 
@@ -510,6 +518,12 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|argument| argument == "canvas")
+    {
+        return canvas::run(std::env::args_os().skip(1));
+    }
     let args = Args::parse();
 
     // `zed --askpass` Makes zed operate in nc/netcat mode for use with askpass

@@ -1,0 +1,842 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Brainz canvas operation batch v1",
+  "type": "object",
+  "properties": {
+    "format": {
+      "const": "brainz-canvas-ops"
+    },
+    "version": {
+      "const": 1
+    },
+    "batchId": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_-]{1,100}$"
+    },
+    "actor": {
+      "type": "string",
+      "pattern": "^(user|agent:.+)$",
+      "maxLength": 120
+    },
+    "mode": {
+      "enum": [
+        "staged",
+        "direct"
+      ],
+      "default": "staged"
+    },
+    "atomic": {
+      "type": "boolean",
+      "default": true
+    },
+    "anchor": {
+      "type": "object",
+      "properties": {
+        "near": {
+          "enum": [
+            "selection",
+            "viewport"
+          ]
+        },
+        "placement": {
+          "enum": [
+            "right",
+            "below",
+            "left"
+          ]
+        },
+        "gap": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 10000
+        }
+      },
+      "additionalProperties": false
+    },
+    "ops": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 500,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "create"
+                ]
+              },
+              "type": {
+                "enum": [
+                  "sticky",
+                  "text",
+                  "shape",
+                  "frame",
+                  "card"
+                ]
+              },
+              "ref": {
+                "type": "string",
+                "pattern": "^\\$[a-zA-Z0-9_-]+$",
+                "maxLength": 100
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "at": {
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "minimum": -1000000,
+                  "maximum": 1000000
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "size": {
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 1000000
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "color": {
+                "enum": [
+                  "amber",
+                  "green",
+                  "blue",
+                  "red",
+                  "purple",
+                  "grey",
+                  "white",
+                  "black",
+                  "transparent"
+                ]
+              },
+              "shape": {
+                "enum": [
+                  "rect",
+                  "roundedRect",
+                  "diamond",
+                  "ellipse",
+                  "triangle"
+                ]
+              },
+              "parent": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "url": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "path": {
+                "type": "string",
+                "maxLength": 4096,
+                "description": "Path relative to the current brain; cards require path or url."
+              }
+            },
+            "required": [
+              "op",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "connect"
+                ]
+              },
+              "ref": {
+                "type": "string",
+                "pattern": "^\\$[a-zA-Z0-9_-]+$",
+                "maxLength": 100
+              },
+              "from": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "to": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 20000
+              },
+              "mode": {
+                "enum": [
+                  "orthogonal",
+                  "straight",
+                  "curve"
+                ]
+              },
+              "arrow": {
+                "enum": [
+                  "start",
+                  "end",
+                  "both",
+                  "none"
+                ]
+              }
+            },
+            "required": [
+              "op",
+              "from",
+              "to"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "group"
+                ]
+              },
+              "ref": {
+                "type": "string",
+                "pattern": "^\\$[a-zA-Z0-9_-]+$",
+                "maxLength": 100
+              },
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "minItems": 1,
+                "maxItems": 500,
+                "uniqueItems": true
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 20000
+              }
+            },
+            "required": [
+              "op",
+              "ids"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "update"
+                ]
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "ifVersion": {
+                "type": "string",
+                "description": "Version returned by canvas_read. If it changed, the proposal is rejected."
+              },
+              "set": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "maxLength": 20000
+                  },
+                  "at": {
+                    "type": "array",
+                    "items": {
+                      "type": "number",
+                      "minimum": -1000000,
+                      "maximum": 1000000
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "size": {
+                    "type": "array",
+                    "items": {
+                      "type": "number",
+                      "exclusiveMinimum": 0,
+                      "maximum": 1000000
+                    },
+                    "minItems": 2,
+                    "maxItems": 2
+                  },
+                  "color": {
+                    "enum": [
+                      "amber",
+                      "green",
+                      "blue",
+                      "red",
+                      "purple",
+                      "grey",
+                      "white",
+                      "black",
+                      "transparent"
+                    ]
+                  },
+                  "shape": {
+                    "enum": [
+                      "rect",
+                      "roundedRect",
+                      "diamond",
+                      "ellipse",
+                      "triangle"
+                    ]
+                  },
+                  "rotate": {
+                    "type": "number",
+                    "minimum": -360,
+                    "maximum": 360
+                  },
+                  "url": {
+                    "type": "string",
+                    "maxLength": 4096
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "op",
+              "id",
+              "set"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "delete"
+                ]
+              },
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "minItems": 1,
+                "maxItems": 500,
+                "uniqueItems": true
+              },
+              "ifVersion": {
+                "type": "string",
+                "description": "Version returned by canvas_read. If it changed, the proposal is rejected."
+              },
+              "ifExists": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "op",
+              "ids"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "move"
+                ]
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "minItems": 1,
+                "maxItems": 500,
+                "uniqueItems": true
+              },
+              "ifVersion": {
+                "type": "string",
+                "description": "Version returned by canvas_read. If it changed, the proposal is rejected."
+              },
+              "by": {
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "minimum": -1000000,
+                  "maximum": 1000000
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "to": {
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "minimum": -1000000,
+                  "maximum": 1000000
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
+            "required": [
+              "op"
+            ],
+            "additionalProperties": false,
+            "oneOf": [
+              {
+                "required": [
+                  "id"
+                ]
+              },
+              {
+                "required": [
+                  "ids"
+                ]
+              }
+            ],
+            "allOf": [
+              {
+                "oneOf": [
+                  {
+                    "required": [
+                      "by"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "to"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "resize"
+                ]
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "minItems": 1,
+                "maxItems": 500,
+                "uniqueItems": true
+              },
+              "ifVersion": {
+                "type": "string",
+                "description": "Version returned by canvas_read. If it changed, the proposal is rejected."
+              },
+              "size": {
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "exclusiveMinimum": 0,
+                  "maximum": 1000000
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            },
+            "required": [
+              "op",
+              "size"
+            ],
+            "additionalProperties": false,
+            "oneOf": [
+              {
+                "required": [
+                  "id"
+                ]
+              },
+              {
+                "required": [
+                  "ids"
+                ]
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "rotate"
+                ]
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "minItems": 1,
+                "maxItems": 500,
+                "uniqueItems": true
+              },
+              "ifVersion": {
+                "type": "string",
+                "description": "Version returned by canvas_read. If it changed, the proposal is rejected."
+              },
+              "angle": {
+                "type": "number",
+                "minimum": -360,
+                "maximum": 360
+              }
+            },
+            "required": [
+              "op",
+              "angle"
+            ],
+            "additionalProperties": false,
+            "oneOf": [
+              {
+                "required": [
+                  "id"
+                ]
+              },
+              {
+                "required": [
+                  "ids"
+                ]
+              }
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "layout"
+                ]
+              },
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "minItems": 1,
+                "maxItems": 500,
+                "uniqueItems": true
+              },
+              "gap": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "ifVersion": {
+                "type": "string",
+                "description": "Version returned by canvas_read. If it changed, the proposal is rejected."
+              },
+              "kind": {
+                "enum": [
+                  "row",
+                  "column",
+                  "grid"
+                ]
+              }
+            },
+            "required": [
+              "op",
+              "ids",
+              "kind"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "stack"
+                ]
+              },
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "minItems": 1,
+                "maxItems": 500,
+                "uniqueItems": true
+              },
+              "gap": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "ifVersion": {
+                "type": "string",
+                "description": "Version returned by canvas_read. If it changed, the proposal is rejected."
+              }
+            },
+            "required": [
+              "op",
+              "ids"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "align"
+                ]
+              },
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "minItems": 1,
+                "maxItems": 500,
+                "uniqueItems": true
+              },
+              "gap": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "ifVersion": {
+                "type": "string",
+                "description": "Version returned by canvas_read. If it changed, the proposal is rejected."
+              },
+              "edge": {
+                "enum": [
+                  "left",
+                  "right",
+                  "top",
+                  "bottom",
+                  "center",
+                  "middle"
+                ]
+              }
+            },
+            "required": [
+              "op",
+              "ids",
+              "edge"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "distribute"
+                ]
+              },
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "minItems": 1,
+                "maxItems": 500,
+                "uniqueItems": true
+              },
+              "gap": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 10000
+              },
+              "ifVersion": {
+                "type": "string",
+                "description": "Version returned by canvas_read. If it changed, the proposal is rejected."
+              },
+              "axis": {
+                "enum": [
+                  "x",
+                  "y"
+                ]
+              }
+            },
+            "required": [
+              "op",
+              "ids",
+              "axis"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "reorder"
+                ]
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "direction": {
+                "enum": [
+                  "front",
+                  "forward",
+                  "backward",
+                  "back"
+                ]
+              },
+              "ifVersion": {
+                "type": "string",
+                "description": "Version returned by canvas_read. If it changed, the proposal is rejected."
+              }
+            },
+            "required": [
+              "op",
+              "id",
+              "direction"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "setView"
+                ]
+              },
+              "bound": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 4,
+                "maxItems": 4
+              },
+              "follow": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "op",
+              "bound"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "message",
+                  "think"
+                ]
+              },
+              "text": {
+                "type": "string",
+                "maxLength": 20000
+              }
+            },
+            "required": [
+              "op",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "enum": [
+                  "todo"
+                ]
+              },
+              "items": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string",
+                      "maxLength": 20000
+                    },
+                    "done": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "text"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "op",
+              "items"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "format",
+    "version",
+    "batchId",
+    "ops"
+  ],
+  "additionalProperties": false
+}

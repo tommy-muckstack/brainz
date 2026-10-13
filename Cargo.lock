@@ -2462,10 +2462,12 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "brainz_ai",
+ "brainz_canvas",
  "chrono",
  "collections",
  "db",
  "editor",
+ "feature_flags",
  "file_icons",
  "fuzzy",
  "gpui",
@@ -2491,6 +2493,20 @@ dependencies = [
  "util",
  "workspace",
  "wry",
+]
+
+[[package]]
+name = "brainz_canvas"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "url",
+ "uuid",
+ "walkdir",
 ]
 
 [[package]]
@@ -3230,6 +3246,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "askpass",
+ "brainz_canvas",
  "clap",
  "clap_complete",
  "clap_complete_nushell",
@@ -3249,6 +3266,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "url",
  "util",
  "walkdir",
  "windows 0.62.2",

@@ -296,6 +296,11 @@ struct PendingDocument {
     document: Option<Value>,
     saved_revision: Option<u64>,
     persisted: bool,
+    disk_hash: Option<String>,
+    queued_base: Option<String>,
+    observed_stamp: Option<(u64, std::time::SystemTime)>,
+    recovery_path: Option<PathBuf>,
+    board_id: Option<String>,
 }
 
 struct BoardStorage {
@@ -328,6 +333,21 @@ impl BoardStorage {
         pending.file_lock = Some(Self::lock_file(&pending.path)?);
         let document = read_document(&pending.path, allow_create)?;
         pending.persisted = !document.is_null();
+        pending.board_id = document["id"]
+            .as_str()
+            .filter(|id| brainz_canvas::safe_id(id))
+            .map(str::to_owned);
+        pending.disk_hash = if document.is_null() {
+            None
+        } else {
+            Some(brainz_canvas::document_hash(&document)?)
+        };
+        pending.observed_stamp = std::fs::metadata(&pending.path).ok().and_then(|metadata| {
+            metadata
+                .modified()
+                .ok()
+                .map(|modified| (metadata.len(), modified))
+        });
         Ok(document)
     }
 
@@ -342,7 +362,12 @@ impl BoardStorage {
         Ok(file)
     }
 
+    #[cfg(test)]
     fn queue(&self, revision: u64, document: Value) -> Result<()> {
+        self.queue_with_base(revision, document, None)
+    }
+
+    fn queue_with_base(&self, revision: u64, document: Value, base: Option<String>) -> Result<()> {
         validate_document(&document)?;
         ensure!(
             serde_json::to_vec(&document)?.len() <= MAX_DOCUMENT_BYTES,
@@ -354,9 +379,68 @@ impl BoardStorage {
             .map_err(|_| anyhow!("Whiteboard storage is unavailable"))?;
         if revision > pending.revision || pending.document.is_none() {
             pending.revision = revision;
+            pending.board_id = document["id"]
+                .as_str()
+                .filter(|id| brainz_canvas::safe_id(id))
+                .map(str::to_owned)
+                .or_else(|| pending.board_id.clone());
             pending.document = Some(document);
+            pending.queued_base = base.or_else(|| pending.disk_hash.clone());
         }
         Ok(())
+    }
+
+    fn external_document(&self) -> Result<Option<(Value, String)>> {
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| anyhow!("Canvas storage is unavailable"))?;
+        if !pending.persisted || !pending.path.is_file() {
+            return Ok(None);
+        }
+        let metadata = std::fs::metadata(&pending.path)?;
+        let stamp = (metadata.len(), metadata.modified()?);
+        if pending.observed_stamp == Some(stamp) {
+            return Ok(None);
+        }
+        let document = read_document(&pending.path, false)?;
+        let hash = brainz_canvas::document_hash(&document)?;
+        pending.observed_stamp = Some(stamp);
+        if pending.disk_hash.as_ref() == Some(&hash) {
+            return Ok(None);
+        }
+        Ok(Some((document, hash)))
+    }
+
+    fn path(&self) -> Result<PathBuf> {
+        Ok(self
+            .pending
+            .lock()
+            .map_err(|_| anyhow!("Canvas storage is unavailable"))?
+            .path
+            .clone())
+    }
+
+    fn board(&self, root: &Path) -> Result<brainz_canvas::Board> {
+        let pending = self
+            .pending
+            .lock()
+            .map_err(|_| anyhow!("Canvas storage is unavailable"))?;
+        let path = brainz_canvas::scoped_path(root, &pending.path, false)?;
+        Ok(brainz_canvas::Board {
+            id: pending
+                .board_id
+                .clone()
+                .unwrap_or_else(|| brainz_canvas::legacy_board_id(&path)),
+            title: pending
+                .document
+                .as_ref()
+                .and_then(|document| document["title"].as_str())
+                .unwrap_or("Canvas")
+                .to_owned(),
+            path,
+            updated_at: 0,
+        })
     }
 
     fn save(&self) -> Result<u64> {
@@ -369,6 +453,46 @@ impl BoardStorage {
         Self::save_pending(&mut pending)
     }
 
+    fn recover(&self, document: Value) -> Result<PathBuf> {
+        validate_document(&document)?;
+        ensure!(
+            serde_json::to_vec(&document)?.len() <= MAX_DOCUMENT_BYTES,
+            "The recovery copy is too large"
+        );
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| anyhow!("Canvas storage is unavailable"))?;
+        Self::write_recovery(&mut pending, &document)
+    }
+
+    fn write_recovery(pending: &mut PendingDocument, document: &Value) -> Result<PathBuf> {
+        let recovery_path = match &pending.recovery_path {
+            Some(path) => path.clone(),
+            None => {
+                let file_name = pending
+                    .path
+                    .file_stem()
+                    .context("Canvas has no name")?
+                    .to_string_lossy();
+                let recovery = tempfile::Builder::new()
+                    .prefix(&format!("{file_name}-recovered-"))
+                    .suffix(".brainzboard")
+                    .tempfile_in(
+                        pending
+                            .path
+                            .parent()
+                            .context("Canvas has no containing folder")?,
+                    )?;
+                let (_, path) = recovery.keep().map_err(|error| error.error)?;
+                pending.recovery_path = Some(path.clone());
+                path
+            }
+        };
+        write_json_atomically(&recovery_path, document)?;
+        Ok(recovery_path)
+    }
+
     fn save_pending(pending: &mut PendingDocument) -> Result<u64> {
         if pending.saved_revision == Some(pending.revision) || pending.document.is_none() {
             return Ok(pending.revision);
@@ -379,6 +503,27 @@ impl BoardStorage {
             !pending.persisted || pending.path.is_file(),
             "Canvas moved or deleted; waiting for its new location"
         );
+        ensure!(
+            pending.persisted || !pending.path.exists(),
+            "A file was created at this canvas location before it could be saved. Choose another location."
+        );
+        if pending.persisted {
+            let current = match read_document(&pending.path, false) {
+                Ok(document) => document,
+                Err(error) => {
+                    let local = pending.document.clone().context("Missing local canvas")?;
+                    let recovery_path = Self::write_recovery(pending, &local)?;
+                    anyhow::bail!(
+                        "The canvas on disk could not be merged ({error}). Your local edits were saved to {}",
+                        recovery_path.display()
+                    );
+                }
+            };
+            ensure!(
+                Some(brainz_canvas::document_hash(&current)?) == pending.queued_base,
+                "This canvas changed on disk. Merging the external changes before saving."
+            );
+        }
         let parent = pending
             .path
             .parent()
@@ -400,6 +545,14 @@ impl BoardStorage {
         }
         pending.saved_revision = Some(pending.revision);
         pending.persisted = true;
+        pending.disk_hash = pending
+            .document
+            .as_ref()
+            .map(brainz_canvas::document_hash)
+            .transpose()?;
+        pending.queued_base = pending.disk_hash.clone();
+        let metadata = std::fs::metadata(&pending.path)?;
+        pending.observed_stamp = Some((metadata.len(), metadata.modified()?));
         Ok(pending.revision)
     }
 
@@ -551,6 +704,7 @@ pub struct WhiteboardView {
     error: Option<SharedString>,
     chat_destination: Option<gpui::AnyWindowHandle>,
     _load: Task<()>,
+    _watch: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
     bounds: std::rc::Rc<std::cell::Cell<gpui::Bounds<gpui::Pixels>>>,
     #[cfg(target_os = "macos")]
@@ -749,6 +903,7 @@ impl WhiteboardView {
             error: None,
             chat_destination: None,
             _load: load,
+            _watch: None,
             _subscriptions: subscriptions,
             bounds: Default::default(),
             #[cfg(target_os = "macos")]
@@ -1043,6 +1198,7 @@ impl Render for WhiteboardView {
 #[cfg(target_os = "macos")]
 mod native {
     use super::*;
+    use feature_flags::{BrainzCanvasAgentApi, FeatureFlagAppExt as _};
     use gpui::{ClipboardItem, Image, ImageFormat, PathPromptOptions};
     use std::{borrow::Cow, rc::Rc};
 
@@ -1050,9 +1206,28 @@ mod native {
     #[serde(tag = "type", rename_all = "camelCase")]
     enum Message {
         Ready,
+        Loaded,
         Save {
             revision: u64,
             document: Value,
+            #[serde(default, rename = "baseHash")]
+            base_hash: Option<String>,
+        },
+        Recover {
+            document: Value,
+        },
+        OpsResult {
+            #[serde(rename = "batchId")]
+            batch_id: String,
+            result: Value,
+        },
+        CanvasEvent {
+            event: Value,
+        },
+        CanvasResponse {
+            #[serde(rename = "requestId")]
+            request_id: String,
+            result: Value,
         },
         Open {
             url: String,
@@ -1082,6 +1257,7 @@ mod native {
     enum NativeEvent {
         Message(Message),
         Saved(Result<u64, String>),
+        Recovered(Result<PathBuf, String>),
         Files(Vec<PathBuf>, Option<[f64; 2]>),
     }
 
@@ -1190,14 +1366,23 @@ mod native {
                         Ok(message) => message,
                         Err(error) => { log::error!("Invalid whiteboard message: {error}"); return; }
                     };
-                    if let Message::Save { revision, document } = message {
-                        let result = storage.queue(revision, document);
+                    if let Message::Save { revision, document, base_hash } = message {
+                        let result = storage.queue_with_base(revision, document, base_hash);
                         let storage = storage.clone();
                         let sender = ipc_sender.clone();
                         executor.spawn(async move {
                             let result = result.and_then(|()| storage.save()).map_err(|error| error.to_string());
                             if let Err(error) = sender.send(NativeEvent::Saved(result)).await {
                                 log::debug!("Whiteboard tab closed before save acknowledgement: {error}");
+                            }
+                        }).detach();
+                    } else if let Message::Recover { document } = message {
+                        let storage = storage.clone();
+                        let sender = ipc_sender.clone();
+                        executor.spawn(async move {
+                            let result = storage.recover(document).map_err(|error| error.to_string());
+                            if let Err(error) = sender.send(NativeEvent::Recovered(result)).await {
+                                log::debug!("Whiteboard closed before recovery acknowledgement: {error}");
                             }
                         }).detach();
                     } else if let Err(error) = ipc_sender.try_send(NativeEvent::Message(message)) {
@@ -1235,14 +1420,89 @@ mod native {
             cx: &mut Context<Self>,
         ) {
             match event {
-                NativeEvent::Message(Message::Ready) => self.send(
-                    json!({"type": "load", "document": self.document, "target": self.target, "attach": self.chat_destination.is_some()}),
-                ),
+                NativeEvent::Message(Message::Ready) => {
+                    let root = self.canvas_workspace(cx);
+                    let hash = self
+                        .document
+                        .as_ref()
+                        .filter(|document| !document.is_null())
+                        .map(brainz_canvas::document_hash)
+                        .transpose()
+                        .log_err()
+                        .flatten();
+                    self.send(json!({"type": "load", "document": self.document, "target": self.target,
+                        "attach": self.chat_destination.is_some(), "workspace": root,
+                        "boardId": brainz_canvas::legacy_board_id(&self.target.path), "baseHash": hash,
+                        "agentEnabled": root.is_some() && cx.has_flag::<BrainzCanvasAgentApi>()}));
+                }
+                NativeEvent::Message(Message::Loaded) => self.watch_canvas(cx),
+                NativeEvent::Message(Message::OpsResult { batch_id, result }) => {
+                    if let Some(root) = self.canvas_workspace(cx) {
+                        let storage = self.storage.clone();
+                        cx.background_spawn(async move {
+                            let save = || -> Result<()> {
+                                let board = storage.board(&root)?;
+                                brainz_canvas::save_result(&root, &board, &batch_id, &result)
+                            };
+                            save().log_err();
+                        })
+                        .detach();
+                    }
+                }
+                NativeEvent::Message(Message::CanvasEvent { event }) => {
+                    if let Some(root) = self.canvas_workspace(cx) {
+                        let storage = self.storage.clone();
+                        cx.background_spawn(async move {
+                            let append = || -> Result<()> {
+                                let board = storage.board(&root)?;
+                                brainz_canvas::append_event(&root, &board, &event)
+                            };
+                            append().log_err();
+                        })
+                        .detach();
+                    }
+                }
+                NativeEvent::Message(Message::CanvasResponse { request_id, result }) => {
+                    if let Some(root) = self.canvas_workspace(cx) {
+                        let storage = self.storage.clone();
+                        cx.background_spawn(async move {
+                            let respond = || -> Result<()> {
+                                let board = storage.board(&root)?;
+                                brainz_canvas::requests::respond(
+                                    &root,
+                                    &board,
+                                    &request_id,
+                                    &result,
+                                )
+                            };
+                            respond().log_err();
+                        })
+                        .detach();
+                    }
+                }
                 NativeEvent::Saved(Ok(revision)) => {
-                    self.send(json!({"type": "saved", "revision": revision}))
+                    let hash = self
+                        .storage
+                        .pending
+                        .lock()
+                        .ok()
+                        .and_then(|pending| pending.disk_hash.clone());
+                    self.send(json!({"type": "saved", "revision": revision, "baseHash": hash}))
                 }
                 NativeEvent::Saved(Err(message)) => {
                     self.send(json!({"type": "saveError", "message": message}))
+                }
+                NativeEvent::Recovered(result) => {
+                    let message = match result {
+                        Ok(path) => format!(
+                            "The external canvas could not be merged. Your local version was saved to {}",
+                            path.display()
+                        ),
+                        Err(error) => format!(
+                            "Could not save a recovery copy: {error}. Keep this canvas open to preserve your edits."
+                        ),
+                    };
+                    self.send(json!({"type":"saveError","message":message}));
                 }
                 NativeEvent::Files(paths, position) => {
                     self.send_files(paths, position, cx);
@@ -1308,13 +1568,27 @@ mod native {
                         scene_path.display(),
                         self.target.path.display()
                     );
-                    let context_uri = url::Url::from_file_path(&scene_path).ok().map(|url| url.to_string());
+                    let context_uri = url::Url::from_file_path(&scene_path)
+                        .ok()
+                        .map(|url| url.to_string());
                     self.hide();
-                    let destination = self.chat_destination.take().unwrap_or_else(|| window.window_handle());
+                    let destination = self
+                        .chat_destination
+                        .take()
+                        .unwrap_or_else(|| window.window_handle());
                     cx.defer(move |cx| {
-                        destination.update(cx, |_, window, cx| {
-                            window.dispatch_action(Box::new(AttachCanvasToChat { text, png, context_uri }), cx);
-                        }).log_err();
+                        destination
+                            .update(cx, |_, window, cx| {
+                                window.dispatch_action(
+                                    Box::new(AttachCanvasToChat {
+                                        text,
+                                        png,
+                                        context_uri,
+                                    }),
+                                    cx,
+                                );
+                            })
+                            .log_err();
                     });
                 }
                 NativeEvent::Message(Message::PickFiles) => {
@@ -1338,8 +1612,12 @@ mod native {
                     })
                     .detach();
                 }
-                NativeEvent::Message(Message::MoveCanvas) => self.choose_canvas_location(false, window, cx),
-                NativeEvent::Message(Message::NewCanvas) => self.choose_canvas_location(true, window, cx),
+                NativeEvent::Message(Message::MoveCanvas) => {
+                    self.choose_canvas_location(false, window, cx)
+                }
+                NativeEvent::Message(Message::NewCanvas) => {
+                    self.choose_canvas_location(true, window, cx)
+                }
                 NativeEvent::Message(Message::TitleChanged { title }) => {
                     if let Some(document) = &mut self.document {
                         document["title"] = json!(title.chars().take(120).collect::<String>());
@@ -1357,8 +1635,90 @@ mod native {
                     );
                     cx.notify();
                 }
-                NativeEvent::Message(Message::Save { .. }) => {}
+                NativeEvent::Message(Message::Save { .. } | Message::Recover { .. }) => {}
             }
+        }
+
+        fn canvas_workspace(&self, cx: &App) -> Option<PathBuf> {
+            self.workspace
+                .upgrade()?
+                .read(cx)
+                .root_paths(cx)
+                .into_iter()
+                .find(|root| self.target.path.starts_with(root))
+                .map(|root| root.to_path_buf())
+        }
+
+        fn watch_canvas(&mut self, cx: &mut Context<Self>) {
+            if self._watch.is_some() {
+                return;
+            }
+            let storage = self.storage.clone();
+            let root = self.canvas_workspace(cx);
+            let enabled = cx.has_flag::<BrainzCanvasAgentApi>();
+            self._watch = Some(cx.spawn(async move |this, cx| {
+                let mut sent = std::collections::HashSet::new();
+                let mut previous_error = None;
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(200))
+                        .await;
+                    let storage = storage.clone();
+                    let root = root.clone();
+                    let result = cx
+                        .background_spawn(async move {
+                            let external = storage.external_document();
+                            let batches = (|| -> Result<Vec<Value>> {
+                                let Some(root) = root.filter(|_| enabled) else {
+                                    return Ok(Vec::new());
+                                };
+                                let path = storage.path()?;
+                                if !path.is_file() {
+                                    return Ok(Vec::new());
+                                }
+                                let board = storage.board(&root)?;
+                                let mut messages = brainz_canvas::pending_batches(&root, &board)?.into_iter().map(|batch| json!({"type":"ops","batchId":batch["batchId"],"batch":batch})).collect::<Vec<_>>();
+                                messages.extend(brainz_canvas::requests::pending(&root, &board)?.into_iter().map(|request| json!({"type":"canvasRequest","requestId":request["requestId"],"request":request})));
+                                Ok(messages)
+                            })();
+                            (external, batches)
+                        })
+                        .await;
+                    if this
+                        .update(cx, |this, _| {
+                            let mut error = None;
+                            match result.0 {
+                                Ok(Some((document, hash))) => this.send(
+                                    json!({"type":"external", "document":document,"baseHash":hash}),
+                                ),
+                                Ok(None) => {}
+                                Err(failure) => error = Some(failure.to_string()),
+                            }
+                            match result.1 {
+                                Ok(messages) => {
+                                    for message in messages {
+                                        if let Some(id) = message["batchId"].as_str().or_else(|| message["requestId"].as_str())
+                                            && sent.insert(id.to_owned())
+                                        {
+                                            this.send(message);
+                                        }
+                                    }
+                                }
+                                Err(failure) => error = Some(failure.to_string()),
+                            }
+                            if error != previous_error {
+                                if let Some(message) = &error {
+                                    this.send(json!({"type":"saveError","message":message}));
+                                }
+                                previous_error = error;
+                            }
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }));
         }
 
         fn choose_canvas_location(
@@ -1510,6 +1870,64 @@ mod native {
 mod tests {
     use super::*;
 
+    #[test]
+    fn external_changes_require_a_merge_before_autosave_can_replace_the_file() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("Plan.brainzboard");
+        let original = json!({"format":"brainz-whiteboard","version":1,"data":"original"});
+        write_json_atomically(&path, &original).expect("fixture");
+        let storage = BoardStorage::new(path.clone());
+        storage.load(false).expect("load");
+        let local = json!({"format":"brainz-whiteboard","version":1,"data":"local"});
+        storage.queue(1, local).expect("local edit");
+        let external = json!({"format":"brainz-whiteboard","version":1,"data":"external"});
+        write_json_atomically(&path, &external).expect("external edit");
+        assert!(storage.save().is_err());
+        assert_eq!(read_document(&path, false).expect("preserved"), external);
+        let (incoming, hash) = storage.external_document().expect("watch").expect("change");
+        assert_eq!(incoming, external);
+        assert!(storage.external_document().expect("same stamp").is_none());
+        let merged = json!({"format":"brainz-whiteboard","version":1,"data":"merged"});
+        storage
+            .queue_with_base(2, merged.clone(), Some(hash))
+            .expect("merged queue");
+        storage.save().expect("merged save");
+        assert_eq!(read_document(&path, false).expect("saved"), merged);
+        assert!(storage.external_document().expect("own save").is_none());
+    }
+
+    #[test]
+    fn invalid_external_writes_preserve_the_file_and_save_local_edits_to_a_recovery_copy() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("Plan.brainzboard");
+        let original = json!({"format":"brainz-whiteboard","version":1,"data":"original"});
+        write_json_atomically(&path, &original).expect("fixture");
+        let storage = BoardStorage::new(path.clone());
+        storage.load(false).expect("load");
+        let local = json!({"format":"brainz-whiteboard","version":1,"data":"local"});
+        storage.queue(1, local.clone()).expect("local edit");
+        std::fs::write(&path, b"{interrupted").expect("external partial write");
+        assert!(
+            storage
+                .save()
+                .expect_err("do not overwrite")
+                .to_string()
+                .contains("recovered")
+        );
+        assert_eq!(std::fs::read(&path).expect("preserved"), b"{interrupted");
+        let recovery = storage
+            .pending
+            .lock()
+            .expect("lock")
+            .recovery_path
+            .clone()
+            .expect("recovery");
+        assert_eq!(
+            read_document(&recovery, false).expect("local version"),
+            local
+        );
+    }
+
     #[gpui::test]
     async fn repeated_sidebar_opens_share_the_canvas_model(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
@@ -1538,6 +1956,36 @@ mod tests {
             let reopened = CanvasFile::for_path(&project, path, moved, cx);
             assert_eq!(first.entity_id(), reopened.entity_id());
         });
+    }
+
+    #[test]
+    fn rejected_external_crdt_keeps_both_documents_on_disk() {
+        let directory = tempfile::tempdir().expect("brain");
+        let path = directory.path().join("Diagram.brainzboard");
+        let external = json!({"format":"brainz-whiteboard","version":1,"data":"invalid-crdt"});
+        write_json_atomically(&path, &external).expect("external file");
+        let storage = BoardStorage::new(path.clone());
+        storage.load(false).expect("valid envelope");
+        let local = json!({"format":"brainz-whiteboard","version":1,"data":"intact-local-crdt"});
+        let recovery = storage.recover(local.clone()).expect("durable copy");
+        assert_ne!(path, recovery);
+        assert_eq!(
+            read_document(&path, false).expect("external preserved"),
+            external
+        );
+        assert_eq!(
+            read_document(&recovery, false).expect("local preserved"),
+            local
+        );
+        let latest = json!({"format":"brainz-whiteboard","version":1,"data":"latest-local-crdt"});
+        assert_eq!(
+            storage.recover(latest.clone()).expect("same recovery"),
+            recovery
+        );
+        assert_eq!(
+            read_document(&recovery, false).expect("latest local"),
+            latest
+        );
     }
 
     #[test]
