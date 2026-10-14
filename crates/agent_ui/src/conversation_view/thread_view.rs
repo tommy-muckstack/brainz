@@ -12027,7 +12027,15 @@ impl ThreadView {
         if !self.agent_id.0.ends_with("-acp") {
             return None;
         }
-        let servers = brainz_calendar::mcp::server_names();
+        // Only this agent's own connectors: a Codex chat talking about a
+        // server configured just for Claude can't reconnect it, and the
+        // "Connect … to Codex" card is the right offer instead.
+        let client = if self.agent_id.0.starts_with("codex") {
+            brainz_calendar::mcp::McpClient::Codex
+        } else {
+            brainz_calendar::mcp::McpClient::Claude
+        };
+        let servers = brainz_calendar::mcp::server_names_for(client);
         let find_server = |text: &str| -> Option<String> {
             let lower = text.to_lowercase();
             servers

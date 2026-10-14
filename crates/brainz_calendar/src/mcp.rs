@@ -109,6 +109,15 @@ pub fn claude_server_names() -> Vec<String> {
     read_claude_servers().keys().cloned().collect()
 }
 
+/// The connector names one client has configured, so a Codex chat never
+/// gets told to reconnect a server only Claude knows about.
+pub fn server_names_for(client: McpClient) -> Vec<String> {
+    match client {
+        McpClient::Claude => claude_server_names(),
+        McpClient::Codex => read_codex_servers().keys().cloned().collect(),
+    }
+}
+
 /// The connector names either client has configured, Claude's spelling
 /// first so a shared connector shows up once.
 pub fn server_names() -> Vec<String> {
