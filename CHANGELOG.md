@@ -7,6 +7,10 @@
 - Send a message with a screenshot even when reading its text takes too long: the composer waits at most six seconds for the OCR helper, then sends the image on its own instead of sitting in "Loading Added Context".
 - Offer "Connect" instead of "Reconnect" when a Codex chat mentions a connector that only Claude has configured, so reconnecting no longer fails with "Codex has no connector named granola".
 
+### Improved
+
+- The canvas header keeps its menu chevron right after the title, and only mentions saving when a save fails.
+
 ## 0.1.41 (2026-10-13)
 
 ### Improved
