@@ -800,6 +800,8 @@ fn logo_for(name: &str) -> Option<&'static str> {
         Some("icons/brainz/logos/slack.png")
     } else if lower.contains("granola") {
         Some("icons/brainz/logos/granola.png")
+    } else if lower.contains("dropbox") {
+        Some("icons/brainz/logos/dropbox.png")
     } else if lower.contains("linear") {
         Some("icons/brainz/logos/linear.png")
     } else if lower.contains("figma") {
@@ -883,6 +885,15 @@ pub const HOSTED_CONNECTORS: &[HostedConnector] = &[
             url: "https://mcp.railway.com",
         },
         blurb: "Projects, services, deployments, and logs on Railway",
+    },
+    HostedConnector {
+        name: "dropbox",
+        label: "Dropbox",
+        // From https://help.dropbox.com/integrations/connect-dropbox-mcp-server
+        transport: HostedTransport::Http {
+            url: "https://mcp.dropbox.com/mcp",
+        },
+        blurb: "Files, folders, and search in your Dropbox",
     },
     HostedConnector {
         name: "wisprflow",
@@ -2173,6 +2184,23 @@ impl Render for McpView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every catalog connector's logo must be a real file under assets/, or
+    /// its tile silently falls back to the generic MCP glyph.
+    #[test]
+    fn hosted_connector_logos_exist() {
+        let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        for hosted in HOSTED_CONNECTORS {
+            let logo = hosted
+                .logo()
+                .unwrap_or_else(|| panic!("{} has no logo", hosted.name));
+            assert!(
+                assets.join(logo).is_file(),
+                "{} logo missing at assets/{logo}",
+                hosted.name
+            );
+        }
+    }
 
     #[test]
     fn connector_install_preserves_other_settings_and_refuses_invalid_config_files() {
