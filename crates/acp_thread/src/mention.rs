@@ -24,6 +24,11 @@ pub enum MentionUri {
     PastedImage {
         name: String,
     },
+    /// Brainz: a long clipboard paste kept as one object instead of flooding
+    /// the composer; the text travels as an embedded resource.
+    PastedText {
+        name: String,
+    },
     Directory {
         abs_path: PathBuf,
     },
@@ -180,6 +185,10 @@ impl MentionUri {
                     let name =
                         single_query_param(&url, "name")?.unwrap_or_else(|| "Image".to_string());
                     Ok(Self::PastedImage { name })
+                } else if path.starts_with("/agent/pasted-text") {
+                    let name = single_query_param(&url, "name")?
+                        .unwrap_or_else(|| "Pasted text".to_string());
+                    Ok(Self::PastedText { name })
                 } else if path.starts_with("/agent/untitled-buffer") {
                     let fragment = url
                         .fragment()
@@ -322,6 +331,7 @@ impl MentionUri {
                 skill_file_path, ..
             } => Some(skill_file_path),
             MentionUri::PastedImage { .. }
+            | MentionUri::PastedText { .. }
             | MentionUri::Thread { .. }
             | MentionUri::Rule { .. }
             | MentionUri::Diagnostics { .. }
@@ -340,6 +350,7 @@ impl MentionUri {
                 .to_string_lossy()
                 .into_owned(),
             MentionUri::PastedImage { name } => name.clone(),
+            MentionUri::PastedText { name } => name.clone(),
             MentionUri::Symbol { name, .. } => name.clone(),
             MentionUri::Thread { name, .. } => name.clone(),
             MentionUri::Rule { name, .. } => name.clone(),
@@ -439,6 +450,7 @@ impl MentionUri {
                 FileIcons::get_icon(abs_path, cx).unwrap_or_else(|| IconName::File.path().into())
             }
             MentionUri::PastedImage { .. } => IconName::Image.path().into(),
+            MentionUri::PastedText { .. } => IconName::Reader.path().into(),
             MentionUri::Directory { abs_path } => FileIcons::get_folder_icon(false, abs_path, cx)
                 .unwrap_or_else(|| IconName::Folder.path().into()),
             MentionUri::Symbol { .. } => IconName::Code.path().into(),
@@ -467,6 +479,11 @@ impl MentionUri {
             }
             MentionUri::PastedImage { name } => {
                 let mut url = Url::parse("zed:///agent/pasted-image").unwrap();
+                url.query_pairs_mut().append_pair("name", name);
+                url
+            }
+            MentionUri::PastedText { name } => {
+                let mut url = Url::parse("zed:///agent/pasted-text").unwrap();
                 url.query_pairs_mut().append_pair("name", name);
                 url
             }

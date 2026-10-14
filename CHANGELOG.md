@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New
+
+- A long paste in the chat composer becomes one pasted-text card above the text, like a screenshot, instead of filling the composer. The card shows the first lines; click it to read the whole thing in a tab, use the pencil to turn it back into editable text, or hover for Remove. The agent receives every line, and sent messages keep the card when the agent accepts embedded resources (Claude and Codex do).
+
 ### Fixed
 
 - Sync to GitHub merges GitHub's newer commits into the local brain before opening its pull request, so a note changed in both places no longer leaves a conflicting pull request behind. An overlapping edit now names the note and leaves every file untouched, and pull requests from earlier attempts are closed instead of duplicated.

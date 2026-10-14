@@ -456,6 +456,17 @@ impl UserMessage {
                             )
                             .ok();
                         }
+                        MentionUri::PastedText { .. } => {
+                            write!(
+                                &mut selection_context,
+                                "\n{}",
+                                MarkdownCodeBlock {
+                                    tag: "text",
+                                    text: content
+                                }
+                            )
+                            .ok();
+                        }
                         MentionUri::GitDiff { base_ref } => {
                             write!(
                                 &mut diffs_context,

@@ -38,7 +38,7 @@ use project::{
 };
 use rope::Point;
 use settings::Settings;
-use std::{cmp::min, fmt::Write, ops::Range, path::PathBuf, rc::Rc, sync::Arc};
+use std::{cmp::min, ops::Range, path::PathBuf, rc::Rc, sync::Arc};
 use text::LineEnding;
 use theme_settings::ThemeSettings;
 use ui::{
@@ -236,6 +236,27 @@ pub struct MessageEditor {
 pub enum InputAttempt {
     Text(Arc<str>),
     Paste(ClipboardItem),
+}
+
+/// Brainz: a paste at least this long, or with at least this many lines,
+/// becomes one pasted-text object instead of filling the composer.
+const PASTED_TEXT_MIN_CHARS: usize = 400;
+const PASTED_TEXT_MIN_LINES: usize = 4;
+
+/// Brainz: whether a plain-text paste is long enough to keep as an object.
+pub(crate) fn wants_pasted_text_card(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.chars().count() >= PASTED_TEXT_MIN_CHARS
+        || trimmed
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count()
+            >= PASTED_TEXT_MIN_LINES
+}
+
+/// Brainz: the first stretch of a pasted text, for its card.
+fn pasted_text_preview(text: &str) -> String {
+    text.trim().chars().take(260).collect()
 }
 
 /// Brainz: how long a send waits for a screenshot's OCR text before going
@@ -1420,8 +1441,10 @@ impl MessageEditor {
                         // Drop the tx after inserting to signal the crease is ready
                         drop(tx);
                     }
-                    return;
                 }
+                // The text is already in the editor; falling through would
+                // paste it a second time.
+                return;
             }
         }
 
@@ -1436,9 +1459,278 @@ impl MessageEditor {
             return;
         }
 
+        // Brainz: a long paste stays one object (a card above the text)
+        // rather than pages of text the person then has to scroll past.
+        if let Some(text) = clipboard_text.as_deref()
+            && wants_pasted_text_card(text)
+        {
+            self.insert_pasted_text(text.to_owned(), window, cx);
+            return;
+        }
+
         self.editor.update(cx, |editor, cx| {
             editor.paste_item(clipboard, window, cx);
         });
+    }
+
+    /// Brainz: attaches `content` as a pasted-text object at the cursor. The
+    /// inline chip is hidden; the card above the text stands in for it, and
+    /// the text itself travels to the agent as an embedded resource.
+    pub fn insert_pasted_text(
+        &mut self,
+        content: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let taken = self
+            .mention_set
+            .update(cx, |mention_set, _| mention_set.pasted_texts())
+            .into_iter()
+            .map(|(_, name, _, _)| name)
+            .collect::<HashSet<_>>();
+        let name = (1..)
+            .map(|n| {
+                if n == 1 {
+                    "Pasted text".to_owned()
+                } else {
+                    format!("Pasted text {n}")
+                }
+            })
+            .find(|name| !taken.contains(name))
+            .unwrap();
+        let mention_uri = MentionUri::PastedText { name: name.clone() };
+        let mention_text = mention_uri.as_link().to_string();
+        let snapshot = self.editor.read(cx).buffer().read(cx).snapshot(cx);
+        let Some((insertion_target, _)) =
+            snapshot.anchor_to_buffer_anchor(self.editor.read(cx).selections.newest_anchor().start)
+        else {
+            return;
+        };
+        let (text_anchor, content_len) = self.editor.update(cx, |editor, cx| {
+            let buffer = editor.buffer().read(cx);
+            let snapshot = buffer.snapshot(cx);
+            let buffer_snapshot = snapshot.as_singleton().unwrap();
+            let text_anchor = insertion_target.bias_left(&buffer_snapshot);
+            // No space after it: the chip is hidden, so a space would only
+            // indent whatever is typed next (pasted images do the same).
+            editor.insert(&mention_text, window, cx);
+            (text_anchor, mention_text.len())
+        });
+        let Some((crease_id, tx, crease_entity)) = insert_crease_for_mention(
+            text_anchor,
+            content_len,
+            name.into(),
+            mention_uri.icon_path(cx),
+            mention_uri.tooltip_text(),
+            Some(mention_uri.clone()),
+            Some(self.workspace.clone()),
+            None,
+            self.editor.clone(),
+            window,
+            cx,
+        ) else {
+            return;
+        };
+        drop(tx);
+        let task = Task::ready(Ok(Mention::Text {
+            content,
+            tracked_buffers: Vec::new(),
+        }))
+        .shared();
+        self.mention_set.update(cx, |mention_set, cx| {
+            mention_set.insert_mention(crease_id, mention_uri, task, crease_entity, cx)
+        });
+        cx.notify();
+    }
+
+    /// Brainz: puts a pasted-text object's words back into the composer as
+    /// ordinary text, so they can be edited before sending.
+    fn unpack_pasted_text(&mut self, crease_id: CreaseId, cx: &mut Context<Self>) {
+        let Some(content) = self.mention_set.update(cx, |mention_set, _| {
+            mention_set.pasted_text_content(crease_id)
+        }) else {
+            return;
+        };
+        self.mention_set.update(cx, |mention_set, cx| {
+            mention_set.replace_mention_with_text(crease_id, &content, cx);
+        });
+        cx.notify();
+    }
+
+    /// Brainz: opens a pasted text in its own tab for reading in full. The
+    /// words are saved under Brainz's data directory so a normal editor tab
+    /// can show them.
+    fn open_pasted_text_in_tab(
+        &mut self,
+        crease_id: CreaseId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((_, name, content, _)) = self
+            .mention_set
+            .update(cx, |mention_set, _| mention_set.pasted_texts())
+            .into_iter()
+            .find(|(id, _, _, _)| *id == crease_id)
+        else {
+            return;
+        };
+        // The name can come from any restored message, so only plain
+        // characters reach the file system.
+        let file_stem = name
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
+            .collect::<String>()
+            .trim()
+            .to_owned();
+        let file_stem = if file_stem.is_empty() {
+            "Pasted text".to_owned()
+        } else {
+            file_stem
+        };
+        let digest = {
+            use std::hash::{Hash as _, Hasher as _};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            content.hash(&mut hasher);
+            hasher.finish()
+        };
+        let path = paths::data_dir()
+            .join("pasted-text")
+            .join(format!("{digest:016x}"))
+            .join(format!("{file_stem}.txt"));
+        let workspace = self.workspace.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            let path = cx
+                .background_spawn(async move {
+                    if let Some(directory) = path.parent() {
+                        std::fs::create_dir_all(directory)?;
+                    }
+                    std::fs::write(&path, content.as_bytes())?;
+                    anyhow::Ok(path)
+                })
+                .await?;
+            workspace.update_in(cx, |workspace, window, cx| {
+                workspace
+                    .open_abs_path(
+                        path,
+                        workspace::OpenOptions {
+                            visible: Some(workspace::OpenVisible::None),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    )
+                    .detach_and_log_err(cx);
+            })
+        })
+        .detach_and_log_err(cx);
+    }
+
+    /// Brainz: the card for one pasted text above the composer: the first
+    /// lines, a PASTED mark, a pencil to edit it as text, and a remove button
+    /// on hover. Sent bubbles show the same card without the controls.
+    fn render_pasted_text_tile(
+        &self,
+        ix: usize,
+        crease_id: CreaseId,
+        name: &str,
+        content: &str,
+        line_count: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let read_only = self.editor.read(cx).read_only(cx);
+        let preview = pasted_text_preview(content);
+        let colors = cx.theme().colors();
+        let border = colors.border;
+        let background = colors.element_background;
+        let ink = if self.bubble_color.is_some() {
+            self.bubble_text_color(cx)
+        } else {
+            colors.text
+        };
+        let muted = ink.opacity(0.7);
+        let tooltip = if read_only {
+            format!("{name}: {line_count} lines. Click to open.")
+        } else {
+            format!("{name}: {line_count} lines. Click to open; pencil to edit as text.")
+        };
+        v_flex()
+            .id(("brainz-pasted-text", ix))
+            .debug_selector(move || format!("BRAINZ_PASTED_TEXT_{ix}"))
+            .group("brainz-pasted-text")
+            .relative()
+            .flex_none()
+            .w(px(200.))
+            .h(px(104.))
+            .p_2()
+            .gap_1()
+            .rounded_lg()
+            .border_1()
+            .border_color(border)
+            .bg(background)
+            .cursor_pointer()
+            .tooltip(Tooltip::text(tooltip))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_pasted_text_in_tab(crease_id, window, cx);
+            }))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .text_size(px(11.))
+                    .line_height(px(15.))
+                    .text_color(muted)
+                    .child(preview),
+            )
+            .child(
+                h_flex()
+                    .flex_none()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(border)
+                            .text_size(px(10.))
+                            .text_color(muted)
+                            .child("PASTED"),
+                    )
+                    .when(!read_only, |this| {
+                        this.child(
+                            IconButton::new(("brainz-pasted-text-edit", ix), IconName::Pencil)
+                                .icon_size(IconSize::XSmall)
+                                .style(ButtonStyle::Filled)
+                                .tooltip(Tooltip::text("Edit as text"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.unpack_pasted_text(crease_id, cx);
+                                })),
+                        )
+                    }),
+            )
+            .when(!read_only, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .top_0p5()
+                        .right_0p5()
+                        .visible_on_hover("brainz-pasted-text")
+                        .child(
+                            IconButton::new(("brainz-pasted-text-remove", ix), IconName::Close)
+                                .icon_size(IconSize::XSmall)
+                                .style(ButtonStyle::Filled)
+                                .tooltip(Tooltip::text("Remove pasted text"))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.remove_image_preview(crease_id, cx);
+                                })),
+                        ),
+                )
+            })
+            .into_any_element()
     }
 
     fn paste_google_doc_links(
@@ -2239,6 +2531,14 @@ impl MessageEditor {
         let display_snapshot = self
             .editor
             .update(cx, |editor, cx| editor.display_snapshot(cx));
+        // Brainz: a pasted-text card copies as its words, not as a link no
+        // other composer could resolve.
+        let pasted_words = self
+            .mention_set
+            .update(cx, |mention_set, _| mention_set.pasted_texts())
+            .into_iter()
+            .map(|(crease_id, _, content, _)| (crease_id, content))
+            .collect::<HashMap<_, _>>();
         let editor = self.editor.read(cx);
         if !expand_empty_to_line && !editor.has_non_empty_selection(&display_snapshot) {
             return None;
@@ -2252,10 +2552,14 @@ impl MessageEditor {
             .into_iter()
             .filter_map(|(crease_id, range)| {
                 mention_set.mention_uri_for_crease(&crease_id).map(|uri| {
+                    let serialized = match pasted_words.get(&crease_id) {
+                        Some(words) => words.to_string(),
+                        None => uri.as_link().to_string(),
+                    };
                     (
                         range.start.to_offset(&snapshot),
                         range.end.to_offset(&snapshot),
-                        uri,
+                        serialized,
                     )
                 })
             })
@@ -2291,14 +2595,14 @@ impl MessageEditor {
             prev_was_entire_line = is_entire_line;
 
             let mut cursor = range.start;
-            for (start, end, uri) in mention_ranges
+            for (start, end, serialized) in mention_ranges
                 .iter()
                 .filter(|(start, end, _)| *start < range.end && range.start < *end)
             {
                 if cursor < *start {
                     text.extend(snapshot.text_for_range(cursor..*start));
                 }
-                write!(text, "{}", uri.as_link()).unwrap();
+                text.push_str(serialized);
                 cursor = *end;
                 has_mentions = true;
             }
@@ -2576,11 +2880,18 @@ impl MessageEditor {
                     .map(|image| (crease_id, path, image))
             })
             .collect();
-        if previews.is_empty() && file_tiles.is_empty() {
+        let pasted = self
+            .mention_set
+            .update(cx, |mention_set, _| mention_set.pasted_texts());
+        if previews.is_empty() && file_tiles.is_empty() && pasted.is_empty() {
             return None;
         }
 
-        let mut thumbnails = Vec::with_capacity(previews.len() + file_tiles.len());
+        let mut thumbnails = Vec::with_capacity(previews.len() + file_tiles.len() + pasted.len());
+        for (ix, (crease_id, name, content, line_count)) in pasted.into_iter().enumerate() {
+            thumbnails
+                .push(self.render_pasted_text_tile(ix, crease_id, &name, &content, line_count, cx));
+        }
         for (ix, (crease_id, path, image)) in file_tiles.into_iter().enumerate() {
             thumbnails.push(
                 self.render_file_thumbnail(10_000 + ix, crease_id, &path, image, cx)
@@ -2715,6 +3026,7 @@ fn strip_space_after_hidden_chips(
             break;
         }
         let hidden = matches!(mention, Mention::Image(_))
+            || matches!(uri, MentionUri::PastedText { .. })
             || matches!(uri, MentionUri::File { abs_path } if is_thumbnail_document(abs_path));
         if !hidden {
             continue;
@@ -2979,9 +3291,12 @@ fn mention_to_content_block(
             tracked_buffers: mention_tracked_buffers,
         }) => {
             tracked_buffers.extend(mention_tracked_buffers.iter().cloned());
-            if is_canvas_context_uri(uri) && !supports_embedded_context {
+            if (is_canvas_context_uri(uri) || matches!(uri, MentionUri::PastedText { .. }))
+                && !supports_embedded_context
+            {
                 // Subscription agents that do not advertise embedded resources
                 // still need the diagram's relationships, not just a local URI.
+                // Pasted text has no file behind it, so it is sent inline too.
                 return acp_v1::ContentBlock::Text(acp_v1::TextContent::new(content.clone()));
             }
             if supports_embedded_context {
@@ -6265,6 +6580,100 @@ mod tests {
                 .iter()
                 .any(|block| matches!(block, acp_v1::ContentBlock::Resource(_)))
         );
+    }
+
+    #[gpui::test]
+    async fn test_long_paste_becomes_a_pasted_text_card(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (message_editor, editor, mut cx) =
+            setup_paste_test_message_editor(json!({"file.txt": ""}), cx).await;
+        let pasted = (1..=12)
+            .map(|line| format!("Line {line} of a long paste"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        cx.write_to_clipboard(ClipboardItem::new_string(pasted.clone()));
+        message_editor.update_in(&mut cx, |message_editor, window, cx| {
+            message_editor.paste(&Paste, window, cx);
+        });
+        cx.run_until_parked();
+
+        let expected_uri = MentionUri::PastedText {
+            name: "Pasted text".to_string(),
+        }
+        .to_uri()
+        .to_string();
+        editor.update(&mut cx, |editor, cx| {
+            assert_eq!(editor.text(cx), format!("[@Pasted text]({expected_uri})"));
+            assert_eq!(fold_ranges(editor, cx).len(), 1);
+        });
+        let cards = message_editor.update(&mut cx, |message_editor, cx| {
+            message_editor
+                .mention_set()
+                .update(cx, |mention_set, _| mention_set.pasted_texts())
+        });
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].1, "Pasted text");
+        assert_eq!(&*cards[0].2, pasted.as_str());
+        assert_eq!(cards[0].3, 12);
+
+        // Without embedded-resource support the words go inline; with it they
+        // ride as a text resource. Either way the agent gets every line.
+        let (content, _) = message_editor
+            .update(&mut cx, |editor, cx| editor.contents(false, cx))
+            .await
+            .unwrap();
+        let sent = content
+            .iter()
+            .filter_map(|block| match block {
+                acp_v1::ContentBlock::Text(text) => Some(text.text.clone()),
+                acp_v1::ContentBlock::Resource(acp_v1::EmbeddedResource {
+                    resource: acp_v1::EmbeddedResourceResource::TextResourceContents(text),
+                    ..
+                }) => Some(text.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sent, vec![pasted.clone()]);
+
+        // The pencil puts the words back as ordinary text.
+        let crease_id = cards[0].0;
+        message_editor.update(&mut cx, |message_editor, cx| {
+            message_editor.unpack_pasted_text(crease_id, cx);
+        });
+        cx.run_until_parked();
+        editor.update(&mut cx, |editor, cx| {
+            assert_eq!(editor.text(cx), pasted);
+            assert!(fold_ranges(editor, cx).is_empty());
+        });
+        assert!(
+            message_editor
+                .update(&mut cx, |message_editor, cx| {
+                    message_editor
+                        .mention_set()
+                        .update(cx, |mention_set, _| mention_set.pasted_texts())
+                })
+                .is_empty()
+        );
+    }
+
+    #[gpui::test]
+    async fn test_short_paste_stays_inline(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (message_editor, editor, mut cx) =
+            setup_paste_test_message_editor(json!({"file.txt": ""}), cx).await;
+        let pasted = "Just two lines\nof ordinary text".to_string();
+        cx.write_to_clipboard(ClipboardItem::new_string(pasted.clone()));
+        message_editor.update_in(&mut cx, |message_editor, window, cx| {
+            message_editor.paste(&Paste, window, cx);
+        });
+        cx.run_until_parked();
+        editor.update(&mut cx, |editor, cx| {
+            assert_eq!(editor.text(cx), pasted);
+            assert!(fold_ranges(editor, cx).is_empty());
+        });
+        assert!(!super::wants_pasted_text_card(&pasted));
+        assert!(super::wants_pasted_text_card("a\nb\nc\nd"));
+        assert!(super::wants_pasted_text_card(&"x".repeat(400)));
     }
 
     async fn setup_paste_test_message_editor(
