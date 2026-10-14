@@ -4610,12 +4610,9 @@ impl ThreadView {
                             )
                             .tooltip(Tooltip::text(tooltip_text)),
                     )
-                    // Brainz: the composer is w_full, so without a flex
-                    // wrapper it shoved Send Now / Edit / Remove off the row.
-                    .child(div().flex_1().min_w_0().child(editor.clone()))
+                    .child(editor.clone())
                     .child(if editor_focused {
                         h_flex()
-                            .flex_none()
                             .gap_1()
                             .min_w(min_width)
                             .justify_end()
@@ -4659,7 +4656,6 @@ impl ThreadView {
                             )
                     } else {
                         h_flex()
-                            .flex_none()
                             .when(!is_next, |this| this.visible_on_hover("queue_entry"))
                             .gap_1()
                             .min_w(min_width)

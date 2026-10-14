@@ -2817,7 +2817,11 @@ impl Render for MessageEditor {
                 if fills_container {
                     this.flex_1()
                 } else {
-                    this.flex_none()
+                    // flex: 0 1 auto. Doesn't grow in the composer column,
+                    // but may shrink beside siblings (the queue row's
+                    // Send Now / Edit / Remove); flex_none pushed those
+                    // out of the row.
+                    this.flex_initial()
                 }
             })
             .children(image_previews)
