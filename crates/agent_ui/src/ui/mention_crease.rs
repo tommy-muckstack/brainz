@@ -220,6 +220,7 @@ fn open_mention_uri(
             cx.open_url(url.as_str());
         }
         MentionUri::PastedImage { .. }
+        | MentionUri::PastedText { .. }
         | MentionUri::Selection { abs_path: None, .. }
         | MentionUri::Diagnostics { .. }
         | MentionUri::TerminalSelection { .. }

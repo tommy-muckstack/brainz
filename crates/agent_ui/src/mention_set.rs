@@ -165,6 +165,7 @@ impl MentionSet {
                 "Untitled buffer selection mentions are not supported for paste"
             ))),
             MentionUri::PastedImage { .. }
+            | MentionUri::PastedText { .. }
             | MentionUri::TerminalSelection { .. }
             | MentionUri::MergeConflict { .. }
             | MentionUri::Rule { .. } => {
@@ -213,6 +214,49 @@ impl MentionSet {
         editor
             .update(cx, |editor, cx| {
                 editor.edit([(range, "")], cx);
+            })
+            .ok();
+        self.remove_mention(&crease_id, cx);
+    }
+
+    /// Brainz: every pasted-text object, in insertion order, with its name
+    /// and the text it carries, for the cards above the text.
+    pub fn pasted_texts(&self) -> Vec<(CreaseId, String, String)> {
+        let mut pasted: Vec<(CreaseId, String, String)> = self
+            .mentions
+            .iter()
+            .filter_map(|(crease_id, (uri, task))| match uri {
+                MentionUri::PastedText { name } => {
+                    // The task is ready from the start; polling it once
+                    // makes the shared result visible to every clone.
+                    let content = match task.clone().now_or_never() {
+                        Some(Ok(Mention::Text { content, .. })) => content,
+                        _ => return None,
+                    };
+                    Some((*crease_id, name.clone(), content))
+                }
+                _ => None,
+            })
+            .collect();
+        pasted.sort_by_key(|(crease_id, _, _)| *crease_id);
+        pasted
+    }
+
+    /// Brainz: turns a pasted-text object back into plain text in the
+    /// composer, where it can be edited like anything typed.
+    pub fn replace_mention_with_text(&mut self, crease_id: CreaseId, text: &str, cx: &mut App) {
+        let Some(entity) = self.crease_entities.get(&crease_id) else {
+            return;
+        };
+        let (range, editor) = {
+            let context = entity.read(cx);
+            (context.range.clone(), context.editor.clone())
+        };
+        editor
+            .update(cx, |editor, cx| {
+                editor.unfold_ranges(&[range.clone()], true, false, cx);
+                editor.remove_creases(vec![crease_id], cx);
+                editor.edit([(range, text)], cx);
             })
             .ok();
         self.remove_mention(&crease_id, cx);
@@ -389,10 +433,10 @@ impl MentionSet {
                 include_errors,
                 include_warnings,
             } => self.confirm_mention_for_diagnostics(include_errors, include_warnings, cx),
-            MentionUri::PastedImage { .. } => {
-                debug_panic!("pasted image URI should not be included in completions");
+            MentionUri::PastedImage { .. } | MentionUri::PastedText { .. } => {
+                debug_panic!("pasted content URI should not be included in completions");
                 Task::ready(Err(anyhow!(
-                    "pasted imaged URI should not be included in completions"
+                    "pasted content URI should not be included in completions"
                 )))
             }
             MentionUri::Selection { .. } => {
@@ -1173,6 +1217,7 @@ pub(crate) fn insert_crease_for_mention(
         let end = snapshot.anchor_before(start.to_offset(&snapshot) + content_len);
 
         let hidden_chip = image.is_some()
+            || matches!(&mention_uri, Some(MentionUri::PastedText { .. }))
             || matches!(
                 &mention_uri,
                 Some(MentionUri::File { abs_path }) if crate::message_editor::is_thumbnail_document(abs_path)
@@ -1474,9 +1519,12 @@ impl LoadingContext {
 
 impl Render for LoadingContext {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Brainz: pasted images and thumbnailed documents are shown above the
-        // text, so the inline chip is just noise.
-        if self.image.is_some() || self.thumbnail.is_some() {
+        // Brainz: pasted images, pasted text, and thumbnailed documents are
+        // shown above the text, so the inline chip is just noise.
+        if self.image.is_some()
+            || self.thumbnail.is_some()
+            || matches!(self.mention_uri, Some(MentionUri::PastedText { .. }))
+        {
             return div().into_any_element();
         }
         let is_in_text_selection = self
