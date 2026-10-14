@@ -4,7 +4,7 @@
 
 ### New
 
-- A long paste in the chat composer becomes one pasted-text card above the text, like a screenshot, instead of filling the composer. The card shows the first lines; click it to read the whole thing in a tab, use the pencil to turn it back into editable text, or hover for Remove. Sent messages show the same card, and the agent receives every line.
+- A long paste in the chat composer becomes one pasted-text card above the text, like a screenshot, instead of filling the composer. The card shows the first lines; click it to read the whole thing in a tab, use the pencil to turn it back into editable text, or hover for Remove. The agent receives every line, and sent messages keep the card when the agent accepts embedded resources (Claude and Codex do).
 
 ### Fixed
 

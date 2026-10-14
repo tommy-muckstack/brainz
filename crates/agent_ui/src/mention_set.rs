@@ -62,6 +62,9 @@ pub struct MentionSet {
     thread_store: Option<Entity<ThreadStore>>,
     mentions: HashMap<CreaseId, (MentionUri, MentionTask)>,
     crease_entities: HashMap<CreaseId, Entity<LoadingContext>>,
+    /// Brainz: each pasted text's words and line count, shared rather than
+    /// cloned on every frame the card is drawn.
+    pasted_text_contents: HashMap<CreaseId, (Arc<str>, usize)>,
 }
 
 impl MentionSet {
@@ -71,6 +74,7 @@ impl MentionSet {
             thread_store,
             mentions: HashMap::default(),
             crease_entities: HashMap::default(),
+            pasted_text_contents: HashMap::default(),
         }
     }
 
@@ -177,6 +181,7 @@ impl MentionSet {
     pub fn remove_mention(&mut self, crease_id: &CreaseId, cx: &mut App) {
         self.mentions.remove(crease_id);
         self.crease_entities.remove(crease_id);
+        self.pasted_text_contents.remove(crease_id);
         self.recompute_disambiguation(cx);
     }
 
@@ -219,27 +224,46 @@ impl MentionSet {
         self.remove_mention(&crease_id, cx);
     }
 
-    /// Brainz: every pasted-text object, in insertion order, with its name
-    /// and the text it carries, for the cards above the text.
-    pub fn pasted_texts(&self) -> Vec<(CreaseId, String, String)> {
-        let mut pasted: Vec<(CreaseId, String, String)> = self
+    /// Brainz: every pasted-text object, in insertion order, with its name,
+    /// its words, and its line count, for the cards above the text.
+    pub fn pasted_texts(&mut self) -> Vec<(CreaseId, String, Arc<str>, usize)> {
+        let mut pasted: Vec<(CreaseId, String, Arc<str>, usize)> = self
             .mentions
             .iter()
-            .filter_map(|(crease_id, (uri, task))| match uri {
-                MentionUri::PastedText { name } => {
-                    // The task is ready from the start; polling it once
-                    // makes the shared result visible to every clone.
-                    let content = match task.clone().now_or_never() {
-                        Some(Ok(Mention::Text { content, .. })) => content,
-                        _ => return None,
-                    };
-                    Some((*crease_id, name.clone(), content))
-                }
-                _ => None,
+            .filter_map(|(crease_id, (uri, task))| {
+                let MentionUri::PastedText { name } = uri else {
+                    return None;
+                };
+                let (content, line_count) = match self.pasted_text_contents.get(crease_id) {
+                    Some(cached) => cached.clone(),
+                    None => {
+                        // The task is ready from the start; polling it once
+                        // makes the shared result visible to every clone.
+                        let content: Arc<str> = match task.clone().now_or_never() {
+                            Some(Ok(Mention::Text { content, .. })) => content.into(),
+                            _ => return None,
+                        };
+                        (content.clone(), content.lines().count())
+                    }
+                };
+                Some((*crease_id, name.clone(), content, line_count))
             })
             .collect();
-        pasted.sort_by_key(|(crease_id, _, _)| *crease_id);
+        for (crease_id, _, content, line_count) in &pasted {
+            self.pasted_text_contents
+                .entry(*crease_id)
+                .or_insert_with(|| (content.clone(), *line_count));
+        }
+        pasted.sort_by_key(|(crease_id, _, _, _)| *crease_id);
         pasted
+    }
+
+    /// Brainz: the words behind one pasted-text card, if it resolved.
+    pub fn pasted_text_content(&mut self, crease_id: CreaseId) -> Option<Arc<str>> {
+        self.pasted_texts()
+            .into_iter()
+            .find(|(id, _, _, _)| *id == crease_id)
+            .map(|(_, _, content, _)| content)
     }
 
     /// Brainz: turns a pasted-text object back into plain text in the
@@ -254,7 +278,7 @@ impl MentionSet {
         };
         editor
             .update(cx, |editor, cx| {
-                editor.unfold_ranges(&[range.clone()], true, false, cx);
+                editor.unfold_ranges(std::slice::from_ref(&range), true, false, cx);
                 editor.remove_creases(vec![crease_id], cx);
                 editor.edit([(range, text)], cx);
             })
@@ -314,6 +338,7 @@ impl MentionSet {
 
     pub fn clear(&mut self) -> impl Iterator<Item = (CreaseId, (MentionUri, MentionTask))> {
         self.crease_entities.clear();
+        self.pasted_text_contents.clear();
         self.mentions.drain()
     }
 

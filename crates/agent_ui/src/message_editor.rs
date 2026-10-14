@@ -38,7 +38,7 @@ use project::{
 };
 use rope::Point;
 use settings::Settings;
-use std::{cmp::min, fmt::Write, ops::Range, path::PathBuf, rc::Rc, sync::Arc};
+use std::{cmp::min, ops::Range, path::PathBuf, rc::Rc, sync::Arc};
 use text::LineEnding;
 use theme_settings::ThemeSettings;
 use ui::{
@@ -1441,8 +1441,10 @@ impl MessageEditor {
                         // Drop the tx after inserting to signal the crease is ready
                         drop(tx);
                     }
-                    return;
                 }
+                // The text is already in the editor; falling through would
+                // paste it a second time.
+                return;
             }
         }
 
@@ -1480,12 +1482,22 @@ impl MessageEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let existing = self.mention_set.read(cx).pasted_texts().len();
-        let name = if existing == 0 {
-            "Pasted text".to_owned()
-        } else {
-            format!("Pasted text {}", existing + 1)
-        };
+        let taken = self
+            .mention_set
+            .update(cx, |mention_set, _| mention_set.pasted_texts())
+            .into_iter()
+            .map(|(_, name, _, _)| name)
+            .collect::<HashSet<_>>();
+        let name = (1..)
+            .map(|n| {
+                if n == 1 {
+                    "Pasted text".to_owned()
+                } else {
+                    format!("Pasted text {n}")
+                }
+            })
+            .find(|name| !taken.contains(name))
+            .unwrap();
         let mention_uri = MentionUri::PastedText { name: name.clone() };
         let mention_text = mention_uri.as_link().to_string();
         let snapshot = self.editor.read(cx).buffer().read(cx).snapshot(cx);
@@ -1499,8 +1511,9 @@ impl MessageEditor {
             let snapshot = buffer.snapshot(cx);
             let buffer_snapshot = snapshot.as_singleton().unwrap();
             let text_anchor = insertion_target.bias_left(&buffer_snapshot);
+            // No space after it: the chip is hidden, so a space would only
+            // indent whatever is typed next (pasted images do the same).
             editor.insert(&mention_text, window, cx);
-            editor.insert(" ", window, cx);
             (text_anchor, mention_text.len())
         });
         let Some((crease_id, tx, crease_entity)) = insert_crease_for_mention(
@@ -1533,13 +1546,9 @@ impl MessageEditor {
     /// Brainz: puts a pasted-text object's words back into the composer as
     /// ordinary text, so they can be edited before sending.
     fn unpack_pasted_text(&mut self, crease_id: CreaseId, cx: &mut Context<Self>) {
-        let Some((_, _, content)) = self
-            .mention_set
-            .read(cx)
-            .pasted_texts()
-            .into_iter()
-            .find(|(id, _, _)| *id == crease_id)
-        else {
+        let Some(content) = self.mention_set.update(cx, |mention_set, _| {
+            mention_set.pasted_text_content(crease_id)
+        }) else {
             return;
         };
         self.mention_set.update(cx, |mention_set, cx| {
@@ -1557,14 +1566,26 @@ impl MessageEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((_, name, content)) = self
+        let Some((_, name, content, _)) = self
             .mention_set
-            .read(cx)
-            .pasted_texts()
+            .update(cx, |mention_set, _| mention_set.pasted_texts())
             .into_iter()
-            .find(|(id, _, _)| *id == crease_id)
+            .find(|(id, _, _, _)| *id == crease_id)
         else {
             return;
+        };
+        // The name can come from any restored message, so only plain
+        // characters reach the file system.
+        let file_stem = name
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
+            .collect::<String>()
+            .trim()
+            .to_owned();
+        let file_stem = if file_stem.is_empty() {
+            "Pasted text".to_owned()
+        } else {
+            file_stem
         };
         let digest = {
             use std::hash::{Hash as _, Hasher as _};
@@ -1575,7 +1596,7 @@ impl MessageEditor {
         let path = paths::data_dir()
             .join("pasted-text")
             .join(format!("{digest:016x}"))
-            .join(format!("{name}.txt"));
+            .join(format!("{file_stem}.txt"));
         let workspace = self.workspace.clone();
         cx.spawn_in(window, async move |_, cx| {
             let path = cx
@@ -1583,7 +1604,7 @@ impl MessageEditor {
                     if let Some(directory) = path.parent() {
                         std::fs::create_dir_all(directory)?;
                     }
-                    std::fs::write(&path, content)?;
+                    std::fs::write(&path, content.as_bytes())?;
                     anyhow::Ok(path)
                 })
                 .await?;
@@ -1613,6 +1634,7 @@ impl MessageEditor {
         crease_id: CreaseId,
         name: &str,
         content: &str,
+        line_count: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let read_only = self.editor.read(cx).read_only(cx);
@@ -1626,7 +1648,6 @@ impl MessageEditor {
             colors.text
         };
         let muted = ink.opacity(0.7);
-        let line_count = content.lines().count();
         let tooltip = if read_only {
             format!("{name}: {line_count} lines. Click to open.")
         } else {
@@ -2510,6 +2531,14 @@ impl MessageEditor {
         let display_snapshot = self
             .editor
             .update(cx, |editor, cx| editor.display_snapshot(cx));
+        // Brainz: a pasted-text card copies as its words, not as a link no
+        // other composer could resolve.
+        let pasted_words = self
+            .mention_set
+            .update(cx, |mention_set, _| mention_set.pasted_texts())
+            .into_iter()
+            .map(|(crease_id, _, content, _)| (crease_id, content))
+            .collect::<HashMap<_, _>>();
         let editor = self.editor.read(cx);
         if !expand_empty_to_line && !editor.has_non_empty_selection(&display_snapshot) {
             return None;
@@ -2523,10 +2552,14 @@ impl MessageEditor {
             .into_iter()
             .filter_map(|(crease_id, range)| {
                 mention_set.mention_uri_for_crease(&crease_id).map(|uri| {
+                    let serialized = match pasted_words.get(&crease_id) {
+                        Some(words) => words.to_string(),
+                        None => uri.as_link().to_string(),
+                    };
                     (
                         range.start.to_offset(&snapshot),
                         range.end.to_offset(&snapshot),
-                        uri,
+                        serialized,
                     )
                 })
             })
@@ -2562,14 +2595,14 @@ impl MessageEditor {
             prev_was_entire_line = is_entire_line;
 
             let mut cursor = range.start;
-            for (start, end, uri) in mention_ranges
+            for (start, end, serialized) in mention_ranges
                 .iter()
                 .filter(|(start, end, _)| *start < range.end && range.start < *end)
             {
                 if cursor < *start {
                     text.extend(snapshot.text_for_range(cursor..*start));
                 }
-                write!(text, "{}", uri.as_link()).unwrap();
+                text.push_str(serialized);
                 cursor = *end;
                 has_mentions = true;
             }
@@ -2847,14 +2880,17 @@ impl MessageEditor {
                     .map(|image| (crease_id, path, image))
             })
             .collect();
-        let pasted = self.mention_set.read(cx).pasted_texts();
+        let pasted = self
+            .mention_set
+            .update(cx, |mention_set, _| mention_set.pasted_texts());
         if previews.is_empty() && file_tiles.is_empty() && pasted.is_empty() {
             return None;
         }
 
         let mut thumbnails = Vec::with_capacity(previews.len() + file_tiles.len() + pasted.len());
-        for (ix, (crease_id, name, content)) in pasted.into_iter().enumerate() {
-            thumbnails.push(self.render_pasted_text_tile(ix, crease_id, &name, &content, cx));
+        for (ix, (crease_id, name, content, line_count)) in pasted.into_iter().enumerate() {
+            thumbnails
+                .push(self.render_pasted_text_tile(ix, crease_id, &name, &content, line_count, cx));
         }
         for (ix, (crease_id, path, image)) in file_tiles.into_iter().enumerate() {
             thumbnails.push(
@@ -6567,15 +6603,18 @@ mod tests {
         .to_uri()
         .to_string();
         editor.update(&mut cx, |editor, cx| {
-            assert_eq!(editor.text(cx), format!("[@Pasted text]({expected_uri}) "));
+            assert_eq!(editor.text(cx), format!("[@Pasted text]({expected_uri})"));
             assert_eq!(fold_ranges(editor, cx).len(), 1);
         });
         let cards = message_editor.update(&mut cx, |message_editor, cx| {
-            message_editor.mention_set().read(cx).pasted_texts()
+            message_editor
+                .mention_set()
+                .update(cx, |mention_set, _| mention_set.pasted_texts())
         });
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].1, "Pasted text");
-        assert_eq!(cards[0].2, pasted);
+        assert_eq!(&*cards[0].2, pasted.as_str());
+        assert_eq!(cards[0].3, 12);
 
         // Without embedded-resource support the words go inline; with it they
         // ride as a text resource. Either way the agent gets every line.
@@ -6603,13 +6642,15 @@ mod tests {
         });
         cx.run_until_parked();
         editor.update(&mut cx, |editor, cx| {
-            assert_eq!(editor.text(cx), format!("{pasted} "));
+            assert_eq!(editor.text(cx), pasted);
             assert!(fold_ranges(editor, cx).is_empty());
         });
         assert!(
             message_editor
                 .update(&mut cx, |message_editor, cx| {
-                    message_editor.mention_set().read(cx).pasted_texts()
+                    message_editor
+                        .mention_set()
+                        .update(cx, |mention_set, _| mention_set.pasted_texts())
                 })
                 .is_empty()
         );
