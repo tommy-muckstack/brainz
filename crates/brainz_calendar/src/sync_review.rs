@@ -154,25 +154,42 @@ pub(crate) fn outgoing_commits(repo: &Path, base: &str, head: &str) -> Result<us
     let mut reviewed_blobs = HashSet::new();
     let mut count = 0;
     for commit in commits.lines().filter(|commit| !commit.is_empty()) {
-        let changed = paths(
-            repo,
-            &[
-                "diff-tree",
-                "--root",
-                "--no-commit-id",
-                "-r",
-                "-m",
-                "--name-only",
-                "-z",
-                "--no-renames",
-                "--diff-filter=ACMRT",
-                commit,
-            ],
-        )?;
+        // A merge that folded `base` in is reviewed only for what it adds
+        // beyond the published side; its other parent's content is already
+        // on GitHub and would otherwise be re-scanned on every later sync.
+        let published_parent = published_parent(repo, base, commit)?;
+        let mut args = vec![
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "-r",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--diff-filter=ACMRT",
+        ];
+        match published_parent.as_deref() {
+            Some(parent) => args.extend([parent, commit]),
+            None => args.extend(["-m", commit]),
+        }
+        let changed = paths(repo, &args)?;
         review_paths(repo, commit, &changed, &mut reviewed_blobs)?;
         count += 1;
     }
     Ok(count)
+}
+
+/// For a merge commit, the parent already contained in `base`, if any.
+fn published_parent(repo: &Path, base: &str, commit: &str) -> Result<Option<String>> {
+    let parents = run(repo, "git", &["rev-list", "--parents", "-n", "1", commit])?;
+    let parents = parents.split_whitespace().skip(1).collect::<Vec<_>>();
+    if parents.len() < 2 {
+        return Ok(None);
+    }
+    Ok(parents
+        .into_iter()
+        .find(|parent| run(repo, "git", &["merge-base", "--is-ancestor", parent, base]).is_ok())
+        .map(str::to_owned))
 }
 
 #[allow(clippy::disallowed_methods)]

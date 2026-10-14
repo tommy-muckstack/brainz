@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Sync to GitHub merges GitHub's newer commits into the local brain before opening its pull request, so a note changed in both places no longer leaves a conflicting pull request behind. An overlapping edit now names the note and leaves every file untouched, and pull requests from earlier attempts are closed instead of duplicated.
+
 ## 0.1.42 (2026-10-14)
 
 ### New

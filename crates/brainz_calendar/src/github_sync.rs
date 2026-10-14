@@ -211,6 +211,114 @@ fn pull_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
     Ok(format!("Pulled the latest from GitHub. Now at {head}"))
 }
 
+/// Merges `origin/main` into the committed local `main`. On an overlapping
+/// edit the merge is abandoned, every file is left as it was, and the error
+/// names the notes that need a decision.
+fn merge_origin_main(repo: &Path) -> Result<()> {
+    ensure_no_git_operation(repo)?;
+    if run(repo, "git", &["branch", "--show-current"])? != "main" {
+        bail!("The active branch changed. Local work was kept; return to main before syncing.");
+    }
+    if !run(
+        repo,
+        "git",
+        &["status", "--porcelain", "-z", "--untracked-files=all"],
+    )?
+    .is_empty()
+    {
+        bail!("Local edits are waiting to be committed. Sync again so they are reviewed first.");
+    }
+    let merge = run(
+        repo,
+        "git",
+        &[
+            "merge",
+            "--no-ff",
+            "--no-autostash",
+            "--no-edit",
+            "-m",
+            "notes: merge the latest from GitHub",
+            "origin/main",
+        ],
+    );
+    if merge.is_ok() {
+        return Ok(());
+    }
+    let conflicted = run(repo, "git", &["diff", "--name-only", "--diff-filter=U"])
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    // Put every file back as it was before the merge began; nothing is
+    // published and no conflict markers reach a note. `merge --abort` refuses
+    // to touch a file edited meanwhile, which is the right call: surface that
+    // rather than reset over a fresh edit.
+    run(repo, "git", &["merge", "--abort"]).with_context(|| {
+        "Could not undo the merge attempt. Nothing was published; check the brain folder in Terminal."
+    })?;
+    if conflicted.is_empty() {
+        return Err(merge.unwrap_err());
+    }
+    let list = conflicted
+        .iter()
+        .map(|path| format!("  {path}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    bail!(
+        "This Mac and GitHub both changed the same notes, so Brainz can't merge them on its own:\n{list}\n\nYour files were left exactly as they are. In Terminal, run `git merge origin/main` in the brain folder, keep the lines you want from each side, commit, then sync again."
+    )
+}
+
+/// Earlier sync attempts can leave pull requests open on GitHub when they
+/// stopped before merging. Once their commits are part of `publish_head`
+/// they are superseded, so close them instead of adding a duplicate.
+fn close_superseded_sync_requests(repo: &Path, publish_head: &str) {
+    let Ok(listing) = run(
+        repo,
+        "gh",
+        &[
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "number,headRefName,headRefOid",
+            "--jq",
+            r#".[] | select(.headRefName | startswith("brainz/sync-")) | "\(.number) \(.headRefOid)""#,
+        ],
+    ) else {
+        return;
+    };
+    for line in listing.lines() {
+        let Some((number, head)) = line.split_once(' ') else {
+            continue;
+        };
+        let superseded = run(
+            repo,
+            "git",
+            &["merge-base", "--is-ancestor", head, publish_head],
+        )
+        .is_ok();
+        if !superseded {
+            continue;
+        }
+        if let Err(error) = run(
+            repo,
+            "gh",
+            &[
+                "pr",
+                "close",
+                number,
+                "--delete-branch",
+                "--comment",
+                "Superseded by a newer Brainz sync that includes these commits.",
+            ],
+        ) {
+            log::warn!("brainz sync: could not close superseded pull request #{number}: {error}");
+        }
+    }
+}
+
 fn finish_sync(repo: &Path, pr_url: &str, progress: &mut dyn FnMut(String)) -> Result<()> {
     run(repo, "git", &["fetch", "--prune", "origin", "main"])?;
     progress("Updating local main".into());
@@ -338,10 +446,24 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
         progress(format!("Committing {changed} change(s)"));
         commit_local_changes(repo)?;
     }
+    if behind > 0 {
+        // Bring GitHub's commits in here first, so the pull request never
+        // conflicts on GitHub, and an overlapping edit is named while the
+        // files are still in front of the person instead of in a browser.
+        progress("Merging the latest from GitHub".into());
+        merge_origin_main(repo)?;
+    }
 
     progress("Reviewing commits".into());
     let publish_head = run(repo, "git", &["rev-parse", "HEAD"])?;
-    let commit_count = crate::sync_review::outgoing_commits(repo, "origin/main", &publish_head)?;
+    crate::sync_review::outgoing_commits(repo, "origin/main", &publish_head)?;
+    let commit_count = run(
+        repo,
+        "git",
+        &["rev-list", "--no-merges", "--count", "origin/main..HEAD"],
+    )?
+    .parse::<usize>()
+    .unwrap_or(1);
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let sync_branch = format!("brainz/sync-{stamp}");
     progress("Pushing branch".into());
@@ -380,6 +502,8 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
             &body,
         ],
     )?;
+
+    close_superseded_sync_requests(repo, &publish_head);
 
     progress("Checking the pull request".into());
     let mut mergeable = false;
@@ -1222,6 +1346,89 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(repositories.local.join("note.md")).expect("note"),
             "My committed paragraph\n"
+        );
+        repositories.assert_no_integration_state();
+    }
+
+    #[test]
+    fn diverged_sync_merges_github_before_publishing() {
+        let repositories = Repositories::new();
+        // Content already on GitHub is not re-reviewed, even when it looks
+        // like a credential; only what this Mac adds is scanned.
+        repositories.remote_edit("other.md", "Remote paragraph\nAKIAIOSFODNN7EXAMPLE\n");
+        std::fs::write(repositories.local.join("note.md"), "My paragraph\n").expect("local edit");
+        run(&repositories.local, "git", &["add", "note.md"]).expect("stage");
+        run(
+            &repositories.local,
+            "git",
+            &["commit", "-m", "notes: my edit"],
+        )
+        .expect("commit");
+        run(&repositories.local, "git", &["fetch", "origin", "main"]).expect("fetch");
+
+        merge_origin_main(&repositories.local).expect("clean merge");
+
+        let parents =
+            run(&repositories.local, "git", &["log", "-1", "--format=%P"]).expect("parents");
+        assert_eq!(
+            parents.split_whitespace().count(),
+            2,
+            "a merge commit joins both sides"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repositories.local.join("note.md")).expect("note"),
+            "My paragraph\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repositories.local.join("other.md")).expect("other"),
+            "Remote paragraph\nAKIAIOSFODNN7EXAMPLE\n"
+        );
+        assert!(
+            run(&repositories.local, "git", &["status", "--porcelain"])
+                .expect("status")
+                .is_empty()
+        );
+        let head = run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("head");
+        assert_eq!(
+            crate::sync_review::outgoing_commits(&repositories.local, "origin/main", &head)
+                .expect("the merge commit passes review"),
+            2
+        );
+        repositories.assert_no_integration_state();
+    }
+
+    #[test]
+    fn overlapping_sync_names_the_note_and_leaves_files_untouched() {
+        let repositories = Repositories::new();
+        repositories.remote_edit("note.md", "Remote paragraph\n");
+        std::fs::write(repositories.local.join("note.md"), "My paragraph\n").expect("local edit");
+        run(&repositories.local, "git", &["add", "note.md"]).expect("stage");
+        run(
+            &repositories.local,
+            "git",
+            &["commit", "-m", "notes: my edit"],
+        )
+        .expect("commit");
+        run(&repositories.local, "git", &["fetch", "origin", "main"]).expect("fetch");
+        let head = run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("head");
+
+        let error = merge_origin_main(&repositories.local).expect_err("overlap is reported");
+        let message = format!("{error:#}");
+        assert!(message.contains("note.md"), "names the note: {message}");
+        assert!(message.contains("sync again"), "says what to do: {message}");
+
+        assert_eq!(
+            run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("head"),
+            head
+        );
+        assert_eq!(
+            std::fs::read_to_string(repositories.local.join("note.md")).expect("note"),
+            "My paragraph\n"
+        );
+        assert!(
+            run(&repositories.local, "git", &["status", "--porcelain"])
+                .expect("status")
+                .is_empty()
         );
         repositories.assert_no_integration_state();
     }
