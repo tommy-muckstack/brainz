@@ -11,6 +11,8 @@
 
 - The canvas header keeps its menu chevron right after the title, and only mentions saving when a save fails.
 
+- Queued messages show their Send Now, Edit, and Remove controls again; the message text no longer pushes them off the row.
+
 ## 0.1.41 (2026-10-13)
 
 ### Improved
