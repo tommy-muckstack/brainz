@@ -941,20 +941,23 @@ impl MessageEditor {
         cx.spawn(async move |_, cx| {
             let mut contents = contents.await?;
             let mut ocr_blocks = Vec::new();
+            // Brainz: the screenshot text is a bonus, never a gate. One
+            // deadline covers every screenshot; if the OCR helper is slow or
+            // wedged, the message still goes and the agent sees the images.
+            let mut deadline = cx
+                .background_executor()
+                .timer(OCR_SEND_TIMEOUT)
+                .fuse();
             for (index, (_, task)) in ocr_tasks.into_iter().enumerate() {
-                // Brainz: the screenshot text is a bonus, never a gate. If
-                // the OCR helper is slow or wedged, the message still goes
-                // and the agent sees the image itself.
-                let timeout = cx.background_executor().timer(OCR_SEND_TIMEOUT);
                 let outcome = futures::select_biased! {
                     outcome = task.fuse() => outcome,
-                    _ = timeout.fuse() => {
+                    _ = deadline => {
                         log::warn!(
-                            "brainz ocr: screenshot {} still being read after {:?}; sending without its text",
+                            "brainz ocr: screenshot {} still being read after {:?}; sending without the remaining screenshot text",
                             index + 1,
                             OCR_SEND_TIMEOUT
                         );
-                        continue;
+                        break;
                     }
                 };
                 if let Ok(outcome) = outcome
