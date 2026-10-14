@@ -228,12 +228,12 @@ fn merge_origin_main(repo: &Path) -> Result<()> {
     {
         bail!("Local edits are waiting to be committed. Sync again so they are reviewed first.");
     }
-    let head = run(repo, "git", &["rev-parse", "HEAD"])?;
     let merge = run(
         repo,
         "git",
         &[
             "merge",
+            "--no-ff",
             "--no-autostash",
             "--no-edit",
             "-m",
@@ -249,11 +249,13 @@ fn merge_origin_main(repo: &Path) -> Result<()> {
         .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    // Put every file back exactly as it was before the merge began; nothing
-    // is published and no conflict markers reach a note.
-    run(repo, "git", &["merge", "--abort"])
-        .or_else(|_| run(repo, "git", &["reset", "--hard", &head]))
-        .with_context(|| "Could not undo the merge attempt; check the brain folder in Terminal.")?;
+    // Put every file back as it was before the merge began; nothing is
+    // published and no conflict markers reach a note. `merge --abort` refuses
+    // to touch a file edited meanwhile, which is the right call: surface that
+    // rather than reset over a fresh edit.
+    run(repo, "git", &["merge", "--abort"]).with_context(|| {
+        "Could not undo the merge attempt. Nothing was published; check the brain folder in Terminal."
+    })?;
     if conflicted.is_empty() {
         return Err(merge.unwrap_err());
     }
@@ -454,8 +456,14 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
 
     progress("Reviewing commits".into());
     let publish_head = run(repo, "git", &["rev-parse", "HEAD"])?;
-    let commit_count = crate::sync_review::outgoing_commits(repo, "origin/main", &publish_head)?;
-    close_superseded_sync_requests(repo, &publish_head);
+    crate::sync_review::outgoing_commits(repo, "origin/main", &publish_head)?;
+    let commit_count = run(
+        repo,
+        "git",
+        &["rev-list", "--no-merges", "--count", "origin/main..HEAD"],
+    )?
+    .parse::<usize>()
+    .unwrap_or(1);
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let sync_branch = format!("brainz/sync-{stamp}");
     progress("Pushing branch".into());
@@ -494,6 +502,8 @@ fn sync_repo(repo: &Path, progress: &mut dyn FnMut(String)) -> Result<String> {
             &body,
         ],
     )?;
+
+    close_superseded_sync_requests(repo, &publish_head);
 
     progress("Checking the pull request".into());
     let mut mergeable = false;
@@ -1343,7 +1353,9 @@ mod tests {
     #[test]
     fn diverged_sync_merges_github_before_publishing() {
         let repositories = Repositories::new();
-        repositories.remote_edit("other.md", "Remote paragraph\n");
+        // Content already on GitHub is not re-reviewed, even when it looks
+        // like a credential; only what this Mac adds is scanned.
+        repositories.remote_edit("other.md", "Remote paragraph\nAKIAIOSFODNN7EXAMPLE\n");
         std::fs::write(repositories.local.join("note.md"), "My paragraph\n").expect("local edit");
         run(&repositories.local, "git", &["add", "note.md"]).expect("stage");
         run(
@@ -1369,7 +1381,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(repositories.local.join("other.md")).expect("other"),
-            "Remote paragraph\n"
+            "Remote paragraph\nAKIAIOSFODNN7EXAMPLE\n"
         );
         assert!(
             run(&repositories.local, "git", &["status", "--porcelain"])
