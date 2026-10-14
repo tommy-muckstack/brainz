@@ -2185,6 +2185,23 @@ impl Render for McpView {
 mod tests {
     use super::*;
 
+    /// Every catalog connector's logo must be a real file under assets/, or
+    /// its tile silently falls back to the generic MCP glyph.
+    #[test]
+    fn hosted_connector_logos_exist() {
+        let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        for hosted in HOSTED_CONNECTORS {
+            let logo = hosted
+                .logo()
+                .unwrap_or_else(|| panic!("{} has no logo", hosted.name));
+            assert!(
+                assets.join(logo).is_file(),
+                "{} logo missing at assets/{logo}",
+                hosted.name
+            );
+        }
+    }
+
     #[test]
     fn connector_install_preserves_other_settings_and_refuses_invalid_config_files() {
         let directory = tempfile::tempdir().expect("config directory");
