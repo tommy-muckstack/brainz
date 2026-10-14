@@ -137,10 +137,17 @@ This file records implementation and validation; an unchecked item is not shippe
   template creation, and Connectors in a synthetic workspace. The GitHub asset
   digest, versioned download, stable download, and public feed were verified.
   [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.40)
-- 0.1.41 candidate: Markdown viewer safeguards (stale task rejection, viewer
-  Undo/Redo and dirty state, untouched-file saves, whitespace-preserving
-  Markdown defaults, Alt-click to source) and sync review of every outgoing
-  commit. Publication and signed-artifact verification are pending.
+- 0.1.41: published 2026-10-13. Markdown viewer safeguards (stale task
+  rejection, viewer Undo/Redo and dirty state, untouched-file saves,
+  whitespace-preserving Markdown defaults, Alt-click to source) and sync review
+  of every outgoing commit. All four CI jobs passed; the app and DMG passed
+  notarization. [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.41)
+- 0.1.42 candidate: a six-second OCR deadline so a pasted screenshot never
+  holds a send in "Loading Added Context", Connect instead of Reconnect for
+  connectors the current agent has not configured, queued-message Send Now /
+  Edit / Remove controls kept on the row, a canvas header that hugs the title
+  and reports saving only on failure, and Dropbox in the connector catalog.
+  Publication and signed-artifact verification are pending.
 
 ## Work in progress
 

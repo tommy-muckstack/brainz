@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.42 (2026-10-14)
+
 ### New
 
 - Dropbox is in the connector catalog: add it from the MCP tab and sign in with your Dropbox account.
