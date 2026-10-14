@@ -109,30 +109,26 @@ pub fn claude_server_names() -> Vec<String> {
     read_claude_servers().keys().cloned().collect()
 }
 
-/// The connector names either client has configured, Claude's spelling
-/// first so a shared connector shows up once.
-pub fn server_names() -> Vec<String> {
-    let mut names = claude_server_names();
-    for name in read_codex_servers().keys() {
-        if !names
-            .iter()
-            .any(|known| Connector::key(known) == Connector::key(name))
-        {
-            names.push(name.clone());
-        }
+/// The connector names one client has configured, so a Codex chat never
+/// gets told to reconnect a server only Claude knows about.
+pub fn server_names_for(client: McpClient) -> Vec<String> {
+    match client {
+        McpClient::Claude => claude_server_names(),
+        McpClient::Codex => read_codex_servers().keys().cloned().collect(),
     }
-    names
+}
+
+/// The spelling-insensitive key two connector names share ("granola",
+/// "granola-mcp", "Granola"), for matching a name a chat mentions.
+pub fn connector_key(name: &str) -> String {
+    Connector::key(name)
 }
 
 /// The name the client's own config uses for a connector, since Claude
 /// and Codex spell the same server differently ("Amplitude" vs
 /// "amplitude") and `mcp login` only knows its own spelling.
 pub fn server_name_for(client: McpClient, name: &str) -> Option<String> {
-    let names: Vec<String> = match client {
-        McpClient::Claude => read_claude_servers().keys().cloned().collect(),
-        McpClient::Codex => read_codex_servers().keys().cloned().collect(),
-    };
-    names
+    server_names_for(client)
         .into_iter()
         .find(|known| Connector::key(known) == Connector::key(name))
 }
@@ -940,11 +936,7 @@ impl HostedConnector {
         text: &str,
         client: McpClient,
     ) -> Option<&'static HostedConnector> {
-        let configured: Vec<String> = match client {
-            McpClient::Claude => read_claude_servers().keys().cloned().collect(),
-            McpClient::Codex => read_codex_servers().keys().cloned().collect(),
-        };
-        Self::mentioned_missing(text, &configured)
+        Self::mentioned_missing(text, &server_names_for(client))
     }
 
     fn mentioned_missing(text: &str, configured: &[String]) -> Option<&'static HostedConnector> {

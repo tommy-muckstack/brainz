@@ -238,6 +238,10 @@ pub enum InputAttempt {
     Paste(ClipboardItem),
 }
 
+/// Brainz: how long a send waits for a screenshot's OCR text before going
+/// without it.
+const OCR_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
+
 /// Brainz: text read from one attached image plus what it looks like.
 #[derive(Debug)]
 pub struct OcrOutcome {
@@ -937,8 +941,26 @@ impl MessageEditor {
         cx.spawn(async move |_, cx| {
             let mut contents = contents.await?;
             let mut ocr_blocks = Vec::new();
+            // Brainz: the screenshot text is a bonus, never a gate. One
+            // deadline covers every screenshot; if the OCR helper is slow or
+            // wedged, the message still goes and the agent sees the images.
+            let mut deadline = cx
+                .background_executor()
+                .timer(OCR_SEND_TIMEOUT)
+                .fuse();
             for (index, (_, task)) in ocr_tasks.into_iter().enumerate() {
-                if let Ok(outcome) = task.await
+                let outcome = futures::select_biased! {
+                    outcome = task.fuse() => outcome,
+                    _ = deadline => {
+                        log::warn!(
+                            "brainz ocr: screenshot {} still being read after {:?}; sending without the remaining screenshot text",
+                            index + 1,
+                            OCR_SEND_TIMEOUT
+                        );
+                        break;
+                    }
+                };
+                if let Ok(outcome) = outcome
                     && !outcome.text.trim().is_empty()
                 {
                     let mut text = format!(

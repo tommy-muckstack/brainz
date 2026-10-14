@@ -12021,18 +12021,36 @@ impl ThreadView {
             .dismiss_action(self.dismiss_error_button(cx))
     }
 
+    /// Brainz: which CLI's connector config this conversation runs on.
+    fn brainz_mcp_client(&self) -> brainz_calendar::mcp::McpClient {
+        if self.agent_id.0.starts_with("codex") {
+            brainz_calendar::mcp::McpClient::Codex
+        } else {
+            brainz_calendar::mcp::McpClient::Claude
+        }
+    }
+
     /// Brainz: the connector the newest reply or failed tool call says has
     /// lost its sign-in, matched against the agent's configured servers.
     fn brainz_mcp_needing_reconnect(&self, cx: &App) -> Option<String> {
         if !self.agent_id.0.ends_with("-acp") {
             return None;
         }
-        let servers = brainz_calendar::mcp::server_names();
+        // Only this agent's own connectors: a Codex chat talking about a
+        // server configured just for Claude can't reconnect it, and the
+        // "Connect … to Codex" card is the right offer instead.
+        let client = self.brainz_mcp_client();
+        let servers = brainz_calendar::mcp::server_names_for(client);
+        // Match on the shared key so Codex's "granola-mcp" still finds a
+        // reply that just says "granola".
         let find_server = |text: &str| -> Option<String> {
             let lower = text.to_lowercase();
             servers
                 .iter()
-                .find(|server| lower.contains(&server.to_lowercase()))
+                .find(|server| {
+                    lower.contains(&server.to_lowercase())
+                        || lower.contains(&brainz_calendar::mcp::connector_key(server))
+                })
                 .cloned()
         };
         let auth_words = [
@@ -12070,7 +12088,9 @@ impl ThreadView {
                         .map(|value| value.to_string())
                         .unwrap_or_default();
                     if mentions_auth(&output) {
-                        let server = servers
+                        // A tool server this agent doesn't configure can't
+                        // be reconnected here, so it isn't offered.
+                        return servers
                             .iter()
                             .find(|server| {
                                 let normalize = |text: &str| {
@@ -12081,9 +12101,7 @@ impl ThreadView {
                                 };
                                 normalize(server) == normalize(segment)
                             })
-                            .cloned()
-                            .unwrap_or_else(|| segment.to_owned());
-                        return Some(server);
+                            .cloned();
                     }
                 }
                 AgentThreadEntry::AssistantMessage(message) => {
@@ -12107,11 +12125,7 @@ impl ThreadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let client = if self.agent_id.0.starts_with("codex") {
-            brainz_calendar::mcp::McpClient::Codex
-        } else {
-            brainz_calendar::mcp::McpClient::Claude
-        };
+        let client = self.brainz_mcp_client();
         self.brainz_mcp_reconnecting = Some(server.clone());
         cx.notify();
         let task = brainz_calendar::mcp::spawn_mcp_login(
@@ -12342,11 +12356,7 @@ impl ThreadView {
                 _ => {}
             }
         }
-        let client = if self.agent_id.0.starts_with("codex") {
-            brainz_calendar::mcp::McpClient::Codex
-        } else {
-            brainz_calendar::mcp::McpClient::Claude
-        };
+        let client = self.brainz_mcp_client();
         brainz_calendar::mcp::HostedConnector::mentioned_needing_setup(&text, client)
     }
 
@@ -12361,11 +12371,7 @@ impl ThreadView {
         }
         self.brainz_mcp_connect_pending = Some(hosted);
         self.brainz_mcp_connect_error = None;
-        let client = if self.agent_id.0.starts_with("codex") {
-            brainz_calendar::mcp::McpClient::Codex
-        } else {
-            brainz_calendar::mcp::McpClient::Claude
-        };
+        let client = self.brainz_mcp_client();
         let brain_root = self
             .workspace
             .upgrade()
@@ -12480,11 +12486,7 @@ impl ThreadView {
             return None;
         }
         self.brainz_mcp_dismissed.insert(server.clone());
-        let client = if self.agent_id.0.starts_with("codex") {
-            brainz_calendar::mcp::McpClient::Codex
-        } else {
-            brainz_calendar::mcp::McpClient::Claude
-        };
+        let client = self.brainz_mcp_client();
         let this = cx.weak_entity();
         let after: Box<dyn FnOnce(&mut Window, &mut App)> = Box::new(move |window, cx| {
             this.update(cx, |this, cx| {
