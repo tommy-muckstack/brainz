@@ -800,6 +800,8 @@ fn logo_for(name: &str) -> Option<&'static str> {
         Some("icons/brainz/logos/slack.png")
     } else if lower.contains("granola") {
         Some("icons/brainz/logos/granola.png")
+    } else if lower.contains("dropbox") {
+        Some("icons/brainz/logos/dropbox.png")
     } else if lower.contains("linear") {
         Some("icons/brainz/logos/linear.png")
     } else if lower.contains("figma") {
@@ -883,6 +885,15 @@ pub const HOSTED_CONNECTORS: &[HostedConnector] = &[
             url: "https://mcp.railway.com",
         },
         blurb: "Projects, services, deployments, and logs on Railway",
+    },
+    HostedConnector {
+        name: "dropbox",
+        label: "Dropbox",
+        // From https://help.dropbox.com/integrations/connect-dropbox-mcp-server
+        transport: HostedTransport::Http {
+            url: "https://mcp.dropbox.com/mcp",
+        },
+        blurb: "Files, folders, and search in your Dropbox",
     },
     HostedConnector {
         name: "wisprflow",

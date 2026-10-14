@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New
+
+- Dropbox is in the connector catalog: add it from the MCP tab and sign in with your Dropbox account.
+
 ### Fixed
 
 - Send a message with a screenshot even when reading its text takes too long: the composer waits at most six seconds for the OCR helper, then sends the image on its own instead of sitting in "Loading Added Context".
