@@ -151,12 +151,15 @@ This file records implementation and validation; an unchecked item is not shippe
   notarization, Gatekeeper accepts the DMG, and the GitHub asset, stable
   download, and public feed were verified.
   [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.42)
-- 0.1.43 candidate: Sync to GitHub merges GitHub's newer commits into the
-  local brain before opening its pull request (overlapping notes are named,
-  files left untouched, superseded sync pull requests closed), and a long
-  paste in the chat composer becomes one pasted-text card with open,
-  edit-as-text, and remove controls. Publication and signed-artifact
-  verification are pending.
+- 0.1.43: published 2026-10-14. Sync to GitHub merges GitHub's newer commits
+  into the local brain before opening its pull request (overlapping notes are
+  named, files left untouched, superseded sync pull requests closed), and a
+  long paste in the chat composer becomes one pasted-text card with open,
+  edit-as-text, and remove controls. All four CI jobs passed on each PR; the
+  app and DMG passed notarization and the signature smoke check, and the
+  GitHub asset, stable download, and public feed were verified. The card's
+  look in the running app is not yet checked by eye.
+  [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.43)
 
 ## Work in progress
 
