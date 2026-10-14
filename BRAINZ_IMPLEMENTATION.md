@@ -142,12 +142,15 @@ This file records implementation and validation; an unchecked item is not shippe
   whitespace-preserving Markdown defaults, Alt-click to source) and sync review
   of every outgoing commit. All four CI jobs passed; the app and DMG passed
   notarization. [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.41)
-- 0.1.42 candidate: a six-second OCR deadline so a pasted screenshot never
-  holds a send in "Loading Added Context", Connect instead of Reconnect for
-  connectors the current agent has not configured, queued-message Send Now /
-  Edit / Remove controls kept on the row, a canvas header that hugs the title
-  and reports saving only on failure, and Dropbox in the connector catalog.
-  Publication and signed-artifact verification are pending.
+- 0.1.42: published 2026-10-14. A six-second OCR deadline so a pasted
+  screenshot never holds a send in "Loading Added Context", Connect instead of
+  Reconnect for connectors the current agent has not configured, queued-message
+  Send Now / Edit / Remove controls kept on the row, a canvas header that hugs
+  the title and reports saving only on failure, and Dropbox in the connector
+  catalog. All four CI jobs passed on each PR; the app and DMG passed
+  notarization, Gatekeeper accepts the DMG, and the GitHub asset, stable
+  download, and public feed were verified.
+  [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.42)
 
 ## Work in progress
 
