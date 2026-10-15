@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.44 (2026-10-15)
+
 ### Fixed
 
 - Sync to GitHub no longer closes the pull request it has just opened. Since 0.1.43 every sync ended with "GitHub hasn't finished checking the pull request" after the superseded-request cleanup matched the new request itself; only older sync requests that the new one includes are closed now.
