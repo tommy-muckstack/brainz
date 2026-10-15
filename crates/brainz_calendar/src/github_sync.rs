@@ -1365,7 +1365,12 @@ mod tests {
         let repositories = Repositories::new();
         let first = run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("head");
         std::fs::write(repositories.local.join("note.md"), "Second edit\n").expect("edit");
-        run(&repositories.local, "git", &["commit", "-am", "notes: second"]).expect("commit");
+        run(
+            &repositories.local,
+            "git",
+            &["commit", "-am", "notes: second"],
+        )
+        .expect("commit");
         let second = run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("head");
 
         assert!(
