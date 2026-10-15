@@ -293,13 +293,7 @@ fn close_superseded_sync_requests(repo: &Path, publish_head: &str) {
         let Some((number, head)) = line.split_once(' ') else {
             continue;
         };
-        let superseded = run(
-            repo,
-            "git",
-            &["merge-base", "--is-ancestor", head, publish_head],
-        )
-        .is_ok();
-        if !superseded {
+        if !supersedes(repo, publish_head, head) {
             continue;
         }
         if let Err(error) = run(
@@ -317,6 +311,22 @@ fn close_superseded_sync_requests(repo: &Path, publish_head: &str) {
             log::warn!("brainz sync: could not close superseded pull request #{number}: {error}");
         }
     }
+}
+
+/// Whether publishing `publish_head` makes an open sync request at
+/// `candidate_head` redundant. The request for `publish_head` itself is never
+/// redundant: a commit is its own ancestor, and the sync that opened it still
+/// needs it to merge.
+fn supersedes(repo: &Path, publish_head: &str, candidate_head: &str) -> bool {
+    if candidate_head == publish_head {
+        return false;
+    }
+    run(
+        repo,
+        "git",
+        &["merge-base", "--is-ancestor", candidate_head, publish_head],
+    )
+    .is_ok()
 }
 
 fn finish_sync(repo: &Path, pr_url: &str, progress: &mut dyn FnMut(String)) -> Result<()> {
@@ -1348,6 +1358,28 @@ mod tests {
             "My committed paragraph\n"
         );
         repositories.assert_no_integration_state();
+    }
+
+    #[test]
+    fn the_sync_request_being_published_is_never_superseded() {
+        let repositories = Repositories::new();
+        let first = run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("head");
+        std::fs::write(repositories.local.join("note.md"), "Second edit\n").expect("edit");
+        run(&repositories.local, "git", &["commit", "-am", "notes: second"]).expect("commit");
+        let second = run(&repositories.local, "git", &["rev-parse", "HEAD"]).expect("head");
+
+        assert!(
+            !supersedes(&repositories.local, &second, &second),
+            "the request just opened for this sync stays open"
+        );
+        assert!(
+            supersedes(&repositories.local, &second, &first),
+            "an older request whose commits are included is closed"
+        );
+        assert!(
+            !supersedes(&repositories.local, &first, &second),
+            "a request with commits this sync lacks is left alone"
+        );
     }
 
     #[test]
