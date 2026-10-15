@@ -160,6 +160,9 @@ This file records implementation and validation; an unchecked item is not shippe
   GitHub asset, stable download, and public feed were verified. The card's
   look in the running app is not yet checked by eye.
   [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.43)
+- 0.1.44 candidate: Sync to GitHub keeps the pull request it just opened
+  (0.1.43 closed it as superseded, so every sync stopped at the mergeable
+  check). Covered by a unit test on the supersede predicate.
 
 ## Work in progress
 
