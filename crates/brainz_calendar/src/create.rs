@@ -229,6 +229,7 @@ impl Render for CreateMenu {
             .on_action(cx.listener(Self::select_previous))
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel))
+            .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
             .w(px(260.))
             .p_1()
             .gap_0p5()

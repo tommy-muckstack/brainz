@@ -806,8 +806,7 @@ pub fn init(cx: &mut App) {
                 .first()
                 .map(|root| root.join("Canvases"))
                 .unwrap_or_else(|| paths::data_dir().join("whiteboards"));
-            // A blank canvas is only written once it is drawn on, so an open
-            // tab holds its name as much as a file on disk does.
+            // An open tab may not have reached disk yet, so it holds its name too.
             let open = workspace
                 .items_of_type::<WhiteboardView>(cx)
                 .map(|view| view.read(cx).target.path.clone())
