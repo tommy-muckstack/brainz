@@ -13,3 +13,4 @@ path = "src/brainz_editor.rs"
 
 [dependencies]
 pulldown-cmark.workspace = true
+serde.workspace = true

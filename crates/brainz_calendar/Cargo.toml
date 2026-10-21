@@ -26,6 +26,7 @@ pulldown-cmark.workspace = true
 text.workspace = true
 markdown.workspace = true
 markdown_preview.workspace = true
+brainz_editor.workspace = true
 editor.workspace = true
 file_icons.workspace = true
 fuzzy.workspace = true
