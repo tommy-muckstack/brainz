@@ -23,7 +23,14 @@ const MAX_DOCUMENT_BYTES: usize = 24 * 1024 * 1024;
 mod storage_v2;
 use storage_v2::{IncrementalStorage, StorageChange};
 
-actions!(brainz_whiteboard, [OpenWhiteboard]);
+actions!(
+    brainz_whiteboard,
+    [
+        OpenWhiteboard,
+        /// Start a blank canvas in the brain's Canvases folder.
+        NewCanvas,
+    ]
+);
 
 #[derive(Clone, PartialEq, Debug, Deserialize, schemars::JsonSchema, gpui::Action)]
 #[action(namespace = brainz_whiteboard)]
@@ -780,6 +787,40 @@ pub fn init(cx: &mut App) {
                     })
                     .unwrap_or_else(|| paths::data_dir().join("whiteboards/Personal.brainzboard"))
             });
+            WhiteboardView::open(
+                workspace,
+                BoardTarget {
+                    path,
+                    object: None,
+                    viewport: None,
+                },
+                true,
+                None,
+                window,
+                cx,
+            );
+        });
+        workspace.register_action(|workspace, _: &NewCanvas, window, cx| {
+            let directory = workspace
+                .root_paths(cx)
+                .first()
+                .map(|root| root.join("Canvases"))
+                .unwrap_or_else(|| paths::data_dir().join("whiteboards"));
+            // An open tab may not have reached disk yet, so it holds its name too.
+            let open = workspace
+                .items_of_type::<WhiteboardView>(cx)
+                .map(|view| view.read(cx).target.path.clone())
+                .collect::<Vec<_>>();
+            let path = (1..)
+                .map(|n| {
+                    directory.join(if n == 1 {
+                        "Untitled canvas.brainzboard".to_owned()
+                    } else {
+                        format!("Untitled canvas {n}.brainzboard")
+                    })
+                })
+                .find(|path| !path.exists() && !open.contains(path))
+                .unwrap_or_else(|| directory.join("Untitled canvas.brainzboard"));
             WhiteboardView::open(
                 workspace,
                 BoardTarget {
