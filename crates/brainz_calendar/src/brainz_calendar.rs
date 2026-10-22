@@ -1,6 +1,7 @@
 //! Brainz: a Calendar tab that shows the next seven days, read through the
 //! bundled `brainz-calendar` helper (a small EventKit program).
 
+pub mod backup;
 pub mod brain_config;
 pub mod brain_match;
 pub mod brief;
@@ -60,6 +61,7 @@ pub fn init(cx: &mut App) {
     todo::init(cx);
     themes::init(cx);
     github_sync::init(cx);
+    backup::init(cx);
     prep::init(cx);
     brief::init(cx);
     status_decay::init(cx);

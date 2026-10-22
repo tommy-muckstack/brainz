@@ -1379,6 +1379,11 @@ pub struct McpView {
     /// shows a paste field until one is.
     myman_token_saved: bool,
     myman_token_editor: Option<Entity<editor::Editor>>,
+    /// The open brain's note backup, read on refresh.
+    backup: Option<(PathBuf, crate::backup::BrainBackup)>,
+    notion_token_saved: bool,
+    notion_token_editor: Option<Entity<editor::Editor>>,
+    _backup_watch: Option<Task<()>>,
     /// Connectors with a sign-in running right now.
     reconnecting: std::collections::HashSet<String>,
     _reconnect: Option<Task<()>>,
@@ -1425,6 +1430,341 @@ impl McpView {
         }).detach();
     }
 
+    fn backup_running(&self) -> bool {
+        self.backup
+            .as_ref()
+            .is_some_and(|(root, _)| crate::backup::is_running(root))
+    }
+
+    /// A backup started by a sync runs on its own; follow it until it ends.
+    fn watch_backup(&mut self, cx: &mut Context<Self>) {
+        self._backup_watch = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let Ok(running) = this.read_with(cx, |this, _| this.backup_running()) else {
+                    return;
+                };
+                if !running {
+                    break;
+                }
+            }
+            this.update(cx, |this, cx| {
+                this._backup_watch = None;
+                this.refresh(cx);
+            })
+            .ok();
+        }));
+    }
+
+    fn backup_now(&mut self, cx: &mut Context<Self>) {
+        let Some((root, _)) = self.backup.clone() else {
+            return;
+        };
+        self._backup_watch = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { crate::backup::run(&root) })
+                .await;
+            this.update(cx, |this, cx| {
+                this._backup_watch = None;
+                // The run records its own failure on the card; this catches
+                // the ones that stop it before it starts.
+                if let Err(error) = result {
+                    log::warn!("brainz backup: {error:#}");
+                }
+                this.refresh(cx);
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    fn set_backup_target(
+        &mut self,
+        target: crate::backup::Target,
+        vault: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((root, _)) = self.backup.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn({
+                    let root = root.clone();
+                    async move { crate::backup::set_target(&root, target, vault) }
+                })
+                .await;
+            this.update(cx, |this, cx| match result {
+                Ok(()) => {
+                    this.error = None;
+                    this.backup = Some((root.clone(), crate::backup::settings(&root)));
+                    let ready = match target {
+                        crate::backup::Target::Off => false,
+                        crate::backup::Target::Obsidian => true,
+                        crate::backup::Target::Notion => this.notion_token_saved,
+                    };
+                    if ready {
+                        this.backup_now(cx);
+                    }
+                    cx.notify();
+                }
+                Err(error) => {
+                    this.error = Some(format!("Couldn't change the backup: {error:#}"));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn choose_vault(&mut self, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Back up notes here".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = paths.await
+                && let Some(folder) = paths.into_iter().next()
+            {
+                this.update(cx, |this, cx| {
+                    this.set_backup_target(crate::backup::Target::Obsidian, Some(folder), cx)
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    fn save_notion_token(&mut self, cx: &mut Context<Self>) {
+        let Some(editor) = self.notion_token_editor.clone() else {
+            return;
+        };
+        let token = editor.read(cx).text(cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { crate::backup::save_notion_token(&token) })
+                .await;
+            this.update(cx, |this, cx| match result {
+                Ok(()) => {
+                    this.error = None;
+                    this.notion_token_saved = true;
+                    this.notion_token_editor = None;
+                    this.backup_now(cx);
+                }
+                Err(error) => {
+                    this.error = Some(format!("Couldn't save the Notion token: {error:#}"));
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn forget_notion_token(&mut self, cx: &mut Context<Self>) {
+        match crate::backup::forget_notion_token() {
+            Ok(()) => self.notion_token_saved = false,
+            Err(error) => self.error = Some(format!("Couldn't remove the Notion token: {error:#}")),
+        }
+        cx.notify();
+    }
+
+    fn render_backup_card(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        use crate::backup::Target;
+        let (root, backup) = self.backup.clone()?;
+        let busy = self._backup_watch.is_some() || self.backup_running();
+        let border = cx.theme().colors().border;
+        let editor_background = cx.theme().colors().editor_background;
+        let choice =
+            |id: &'static str, label: &'static str, target: Target, cx: &mut Context<Self>| {
+                Button::new(id, label)
+                    .style(if backup.target == target {
+                        ButtonStyle::Filled
+                    } else {
+                        ButtonStyle::Subtle
+                    })
+                    .toggle_state(backup.target == target)
+                    .label_size(LabelSize::Small)
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.set_backup_target(target, None, cx)),
+                    )
+            };
+        let mut card = v_flex()
+            .w_full()
+            .gap_2()
+            .p_3()
+            .rounded_lg()
+            .border_1()
+            .border_color(border)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(Icon::new(IconName::Archive))
+                    .child(Label::new("Back up notes").weight(gpui::FontWeight::SEMIBOLD)),
+            )
+            .child(
+                Label::new("Keep a second copy of every note outside GitHub. Brainz updates it after each sync.")
+                    .size(LabelSize::Small)
+                    .color(Color::Muted),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(choice("brainz-backup-off", "Off", Target::Off, cx))
+                    .child(choice("brainz-backup-obsidian", "Obsidian", Target::Obsidian, cx))
+                    .child(choice("brainz-backup-notion", "Notion", Target::Notion, cx)),
+            );
+        match backup.target {
+            Target::Off => return Some(card.into_any_element()),
+            Target::Obsidian => {
+                let vault = backup.vault(&root);
+                let shown = vault
+                    .strip_prefix(paths::home_dir())
+                    .map(|rest| format!("~/{}", rest.display()))
+                    .unwrap_or_else(|_| vault.display().to_string());
+                card = card
+                    .child(Label::new(format!("Copies go to {shown}")).size(LabelSize::Small))
+                    .child(
+                        Label::new("To read them in Obsidian, choose Open folder as vault and pick this folder.")
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("brainz-backup-vault", "Change folder")
+                                    .label_size(LabelSize::Small)
+                                    .on_click(cx.listener(|this, _, _, cx| this.choose_vault(cx))),
+                            )
+                            .child(
+                                Button::new("brainz-backup-reveal", "Show in Finder")
+                                    .label_size(LabelSize::Small)
+                                    .disabled(!vault.is_dir())
+                                    .on_click(move |_, _, cx| cx.reveal_path(&vault)),
+                            ),
+                    );
+            }
+            Target::Notion if !self.notion_token_saved => {
+                let editor = self
+                    .notion_token_editor
+                    .get_or_insert_with(|| {
+                        cx.new(|cx| {
+                            let mut editor = editor::Editor::single_line(window, cx);
+                            editor.set_placeholder_text("Paste the Notion token", window, cx);
+                            editor
+                        })
+                    })
+                    .clone();
+                card = card
+                    .child(
+                        Label::new("Make a personal access token with the Notion API capability, then paste it here. Notes go to a private page only you can see.")
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("brainz-backup-notion-get", "Get a token")
+                                    .end_icon(Icon::new(IconName::ArrowUpRight).size(IconSize::XSmall))
+                                    .label_size(LabelSize::Small)
+                                    .on_click(|_, _, cx| cx.open_url(crate::backup::NOTION_TOKEN_URL)),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(border)
+                                    .bg(editor_background)
+                                    .child(editor),
+                            )
+                            .child(
+                                Button::new("brainz-backup-notion-save", "Save")
+                                    .style(ButtonStyle::Filled)
+                                    .label_size(LabelSize::Small)
+                                    .on_click(cx.listener(|this, _, _, cx| this.save_notion_token(cx))),
+                            ),
+                    );
+                return Some(card.into_any_element());
+            }
+            Target::Notion => {
+                card = card
+                    .child(
+                        Label::new("Notes go to a private “Brainz backup” page in your Notion, one page per note.")
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .when_some(backup.notion_url.clone(), |row, url| {
+                                row.child(
+                                    Button::new("brainz-backup-notion-open", "Open in Notion")
+                                        .end_icon(Icon::new(IconName::ArrowUpRight).size(IconSize::XSmall))
+                                        .label_size(LabelSize::Small)
+                                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                                )
+                            })
+                            .child(
+                                Button::new("brainz-backup-notion-forget", "Remove token")
+                                    .label_size(LabelSize::Small)
+                                    .on_click(cx.listener(|this, _, _, cx| this.forget_notion_token(cx))),
+                            ),
+                    );
+            }
+        }
+        let status = if busy {
+            "Backing up…".to_owned()
+        } else if let Some(last_run) = backup.last_run {
+            format!(
+                "Last backup {} · {} {}",
+                last_run
+                    .with_timezone(&chrono::Local)
+                    .format("%b %-d, %-I:%M %p"),
+                backup.last_count,
+                if backup.last_count == 1 {
+                    "note"
+                } else {
+                    "notes"
+                }
+            )
+        } else {
+            "Not backed up yet".to_owned()
+        };
+        card = card.child(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .justify_between()
+                .child(
+                    Label::new(status)
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                )
+                .child(
+                    Button::new("brainz-backup-now", "Back up now")
+                        .label_size(LabelSize::Small)
+                        .disabled(busy)
+                        .on_click(cx.listener(|this, _, _, cx| this.backup_now(cx))),
+                ),
+        );
+        if let Some(error) = backup.last_error.filter(|_| !busy) {
+            card = card.child(Label::new(error).size(LabelSize::Small).color(Color::Error));
+        }
+        Some(card.into_any_element())
+    }
+
     fn render_canvas_connector(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex().w_full().gap_2().p_3().rounded_lg().border_1().border_color(cx.theme().colors().border)
             .child(h_flex().gap_2().child(Icon::new(IconName::BrainzWhiteboard)).child(Label::new("Brainz Canvas").weight(gpui::FontWeight::SEMIBOLD)))
@@ -1455,6 +1795,10 @@ impl McpView {
             connectors: Vec::new(),
             myman_token_saved: false,
             myman_token_editor: None,
+            backup: None,
+            notion_token_saved: false,
+            notion_token_editor: None,
+            _backup_watch: None,
             reconnecting: std::collections::HashSet::new(),
             _reconnect: None,
             loading: true,
@@ -1479,7 +1823,7 @@ impl McpView {
                 })
                 .ok()
                 .flatten();
-            let (connectors, token_saved) = cx
+            let (connectors, token_saved, backup, notion_token_saved) = cx
                 .background_spawn(async move {
                     let myman = crate::myman::MyMan::detect_for(root.as_deref());
                     if HostedConnector::legacy_myman_configured()
@@ -1487,13 +1831,27 @@ impl McpView {
                     {
                         log::warn!("brainz mcp: could not update the My Man connector: {error:#}");
                     }
-                    (load_connectors(), crate::myman::saved_token().is_some())
+                    let backup = root.map(|root| {
+                        let settings = crate::backup::settings(&root);
+                        (root.to_path_buf(), settings)
+                    });
+                    (
+                        load_connectors(),
+                        crate::myman::saved_token().is_some(),
+                        backup,
+                        crate::backup::saved_notion_token().is_some(),
+                    )
                 })
                 .await;
             this.update(cx, |this, cx| {
                 this.connectors = connectors;
                 this.myman_token_saved = token_saved;
+                this.backup = backup;
+                this.notion_token_saved = notion_token_saved;
                 this.loading = false;
+                if this.backup_running() && this._backup_watch.is_none() {
+                    this.watch_backup(cx);
+                }
                 cx.notify();
             })
             .ok();
@@ -2113,6 +2471,9 @@ impl Render for McpView {
                         .color(Color::Error)
                         .into_any_element(),
                 );
+            }
+            if let Some(card) = self.render_backup_card(window, cx) {
+                rows.push(card);
             }
             rows.push(
                 Label::new("Click a Claude or Codex tile to add that connector to it. When a tile reads Reconnect, that client's sign-in has lapsed; click the tile to sign in again.")
