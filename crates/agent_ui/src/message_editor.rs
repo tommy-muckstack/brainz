@@ -326,6 +326,15 @@ fn insert_mention_for_project_path(
         (file_name, mention_uri)
     };
 
+    // Brainz: images and thumbnailed documents show above the text with no
+    // inline chip, so a space after each would indent whatever is typed next
+    // by one space per attachment.
+    let hidden_chip = matches!(
+        &mention_uri,
+        MentionUri::File { abs_path }
+            if crate::mention_set::is_raster_image_path(abs_path)
+                || is_thumbnail_document(abs_path)
+    );
     let mention_text = mention_uri.as_link().to_string();
     let content_len = mention_text.len();
 
@@ -339,7 +348,9 @@ fn insert_mention_for_project_path(
             .bias_left(&buffer_snapshot);
 
         editor.insert(&mention_text, window, cx);
-        editor.insert(" ", window, cx);
+        if !hidden_chip {
+            editor.insert(" ", window, cx);
+        }
 
         Some(text_anchor)
     })?;
@@ -6753,6 +6764,39 @@ mod tests {
             message_editor.paste(&Paste, window, cx);
         });
         cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    async fn test_brainz_dragged_documents_do_not_indent_the_text(cx: &mut TestAppContext) {
+        init_test(cx);
+        let tree = json!({
+            "a.pdf": "", "b.pdf": "", "c.pdf": "", "d.pdf": "", "e.pdf": "", "f.pdf": "",
+            "note.md": "",
+        });
+        let (message_editor, editor, mut cx) = setup_paste_test_message_editor(tree, cx).await;
+        insert_dragged_project_paths(
+            &message_editor,
+            vec!["a.pdf", "b.pdf", "c.pdf", "d.pdf", "e.pdf", "f.pdf"],
+            &mut cx,
+        );
+        cx.simulate_input("process these");
+        editor.update(&mut cx, |editor, cx| {
+            let text = editor.text(cx);
+            assert!(text.ends_with(")process these"), "{text}");
+            assert!(
+                !text.contains(") "),
+                "no space may follow a hidden chip: {text}"
+            );
+        });
+
+        // A file that keeps its inline chip still gets its separating space.
+        message_editor.update_in(&mut cx, |message_editor, window, cx| {
+            message_editor.set_message(Vec::new(), window, cx);
+        });
+        insert_dragged_project_paths(&message_editor, vec!["note.md"], &mut cx);
+        editor.update(&mut cx, |editor, cx| {
+            assert!(editor.text(cx).ends_with(") "), "{}", editor.text(cx));
+        });
     }
 
     fn insert_dragged_project_paths(

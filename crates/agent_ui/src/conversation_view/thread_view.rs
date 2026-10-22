@@ -6452,6 +6452,35 @@ fn sandbox_fs_rows(fs: &SandboxFsDisplay) -> Vec<SandboxRow> {
 
 /// Rows for the network-access group: a message for the "all"/"none" cases, or
 /// one row per allowed domain.
+/// Lays an activity row out on the agent bubble's grid: the same 3/4 width,
+/// border and padding, so its icon sits under the bubble's first icon and its
+/// chevron lines up with the bubble's own disclosure.
+fn align_with_agent_bubble(row: Stateful<Div>, cx: &App) -> Div {
+    div()
+        .w_full()
+        .px_2()
+        .child(
+            row.w_3_4()
+                .border_1()
+                .border_color(gpui::transparent_black())
+                .pl_3()
+                .pr(px(40.)),
+        )
+        .text_ui(cx)
+}
+
+/// The bubble's header icons are Small; centring the XSmall glyph in a box
+/// that size keeps every row's label starting at the same x.
+fn activity_icon(icon: IconName) -> impl IntoElement {
+    div()
+        .flex_none()
+        .size(IconSize::Small.rems())
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(Icon::new(icon).size(IconSize::XSmall).color(Color::Muted))
+}
+
 fn sandbox_network_rows(network: &SandboxNetPolicy) -> Vec<SandboxRow> {
     match network {
         SandboxNetPolicy::Unrestricted => vec![SandboxRow::message("All domains (unrestricted)")],
@@ -6995,11 +7024,9 @@ impl ThreadView {
                     // The thread's own dots below already say "working", so
                     // the line just states the tally.
                     let text = group_last_label;
-                    return h_flex()
+                    let row = h_flex()
                         .id(("brainz-activity", group_start))
-                        .w_full()
                         .min_w_0()
-                        .px_2()
                         .py_1()
                         .gap_1p5()
                         .cursor_pointer()
@@ -7012,9 +7039,7 @@ impl ThreadView {
                         }))
                         .child({
                             let _ = group_running;
-                            Icon::new(IconName::ToolHammer)
-                                .size(IconSize::XSmall)
-                                .color(Color::Muted)
+                            activity_icon(IconName::ToolHammer)
                         })
                         .child(
                             div().min_w_0().flex_1().overflow_hidden().child(
@@ -7029,13 +7054,12 @@ impl ThreadView {
                             Icon::new(IconName::ChevronDown)
                                 .size(IconSize::XSmall)
                                 .color(Color::Muted),
-                        )
-                        .into_any();
+                        );
+                    return align_with_agent_bubble(row, cx).into_any();
                 }
                 let hide_steps = (group_expanded && entry_ix == group_start).then(|| {
-                    h_flex()
+                    let row = h_flex()
                         .id(("brainz-activity-hide", group_start))
-                        .px_2()
                         .py_1()
                         .gap_1p5()
                         .cursor_pointer()
@@ -7045,11 +7069,7 @@ impl ThreadView {
                             this.expanded_activity.remove(&group_start);
                             cx.notify();
                         }))
-                        .child(
-                            Icon::new(IconName::ChevronUp)
-                                .size(IconSize::XSmall)
-                                .color(Color::Muted),
-                        )
+                        .child(activity_icon(IconName::ChevronUp))
                         .child(
                             Label::new(if group_count == 1 {
                                 "Hide step".to_string()
@@ -7058,7 +7078,8 @@ impl ThreadView {
                             })
                             .size(LabelSize::Small)
                             .color(Color::Muted),
-                        )
+                        );
+                    align_with_agent_bubble(row, cx)
                 });
 
                 let tool_call = self.render_any_tool_call(

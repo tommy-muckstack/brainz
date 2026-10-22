@@ -5,6 +5,7 @@ pub mod brain_config;
 pub mod brain_match;
 pub mod brief;
 mod canvas_folder_picker;
+pub mod create;
 mod folder_defaults;
 pub mod github_sync;
 mod insights;
@@ -70,6 +71,7 @@ pub fn init(cx: &mut App) {
     folder_defaults::init(cx);
     palette::init(cx);
     rich_note::init(cx);
+    create::init(cx);
     slash::init(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenCalendar, window, cx| {
