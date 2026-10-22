@@ -204,13 +204,15 @@ impl MarkdownPreviewView {
                     else {
                         return;
                     };
+                    // The note shares the editor's file, and a pane activates
+                    // the open item for a file instead of adding a second
+                    // one, so the editor has to leave before the note arrives.
                     pane.update(cx, |pane, cx| {
                         let index = pane.index_for_item(item.as_ref());
+                        pane.remove_item(item.item_id(), false, false, window, cx);
                         pane.add_item(note.boxed_clone(), activate, focus, index, window, cx);
                         if replaces_temporary_editor {
                             pane.replace_preview_item_id(note.item_id(), window, cx);
-                        } else {
-                            pane.remove_item(item.item_id(), false, false, window, cx);
                         }
                     });
                     return;
@@ -4224,12 +4226,23 @@ mod tests {
         use workspace::item::test::TestItem;
         let (project, workspace, multi_workspace) =
             markdown_workspace(cx, json!({ "note.md": "# Note\n" }), false).await;
-        // The opener wins even with the preview setting off.
+        // The opener wins even with the preview setting off. Its item shows
+        // the same file as the editor, as the real note view does.
         cx.update(|cx| {
             set_auto_preview_enabled(cx, false);
             cx.set_global(super::RichNoteOpener(std::rc::Rc::new(
-                |_workspace, _editor, _pane, _focus, _window, cx| {
-                    Some(Box::new(cx.new(|cx| TestItem::new(cx))))
+                |_workspace, editor, _pane, _focus, _window, cx| {
+                    let entry_id = *editor.project_entry_ids(cx).first()?;
+                    let file = workspace::item::test::TestProjectItem::new(
+                        entry_id.to_proto(),
+                        "note.md",
+                        cx,
+                    );
+                    Some(Box::new(cx.new(|cx| {
+                        TestItem::new(cx)
+                            .with_buffer_kind(workspace::item::ItemBufferKind::Singleton)
+                            .with_project_items(&[file])
+                    })))
                 },
             )));
         });

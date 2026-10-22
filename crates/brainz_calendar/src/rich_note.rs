@@ -100,10 +100,12 @@ mod native {
                 else {
                     return;
                 };
+                // Both items show one file, and a pane only keeps one item per
+                // file, so the editor leaves before the note is added.
                 pane.update(cx, |pane, cx| {
                     let index = pane.index_for_item(&editor);
-                    pane.add_item(Box::new(view), true, true, index, window, cx);
                     pane.remove_item(editor.item_id(), false, false, window, cx);
+                    pane.add_item(Box::new(view), true, true, index, window, cx);
                 });
             });
         })
@@ -320,8 +322,8 @@ mod native {
                     MarkdownPreviewView::suppress_auto_preview_once(&editor, cx);
                     pane.update(cx, |pane: &mut Pane, cx| {
                         let index = pane.index_for_item(&this);
-                        pane.add_item(Box::new(editor), true, true, index, window, cx);
                         pane.remove_item(this.item_id(), false, false, window, cx);
+                        pane.add_item(Box::new(editor), true, true, index, window, cx);
                     });
                 });
             });
