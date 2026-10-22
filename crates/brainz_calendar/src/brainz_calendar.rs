@@ -16,6 +16,7 @@ pub mod memory_share;
 pub mod myman;
 pub mod nav;
 pub mod new_note;
+pub mod note_history;
 pub mod ocr;
 pub mod open_loops;
 pub mod palette;
@@ -64,6 +65,7 @@ pub fn init(cx: &mut App) {
     themes::init(cx);
     github_sync::init(cx);
     backup::init(cx);
+    note_history::init(cx);
     prep::init(cx);
     brief::init(cx);
     status_decay::init(cx);

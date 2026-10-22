@@ -434,6 +434,7 @@ mod native {
         CopyImage {
             data: String,
         },
+        History,
     }
 
     pub struct RichNoteView {
@@ -772,6 +773,19 @@ mod native {
                     )
                 }
                 Message::Source => self.show_source(window, cx),
+                Message::History => {
+                    // Adding a tab reads every item in the pane, this one
+                    // included, so it waits until this update has finished.
+                    let note = self.path.clone();
+                    let workspace = self.workspace.clone();
+                    window.defer(cx, move |window, cx| {
+                        workspace
+                            .update(cx, |workspace, cx| {
+                                crate::note_history::open(workspace, note, window, cx)
+                            })
+                            .log_err();
+                    });
+                }
                 Message::Image {
                     request,
                     mime,
