@@ -223,7 +223,7 @@ fn run_locked(brain: &Path) -> Result<usize> {
     clippy::disallowed_methods,
     reason = "backups run on the background executor"
 )]
-fn list_notes(brain: &Path) -> Result<Vec<String>> {
+pub(crate) fn list_notes(brain: &Path) -> Result<Vec<String>> {
     let output = github_sync::command(brain, "git")
         .args([
             "ls-files",

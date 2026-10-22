@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### New
+
+- Notes show images: a picture on its own line (`![alt](path)`, or `![alt|300](path)` for a width) appears as an image. Paste or drop an image into a note and Brainz saves it in an `attachments` folder beside the note; resizing keeps the width.
+- Hover a table or image in a note for Copy. Tables paste into Google Sheets or Excel as rows and columns with bold and italic kept; images copy as pictures.
+- Type `[[` in a note to link another note from a list of the brain's notes. Each note shows a "Mentioned in" list of the notes that link to it.
+
 ## 0.1.46 (2026-10-22)
 
 ### New
