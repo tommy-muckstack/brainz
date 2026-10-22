@@ -978,7 +978,26 @@ impl NotePicker {
                 cx.emit(DismissEvent);
             })?;
             if !without_opening {
-                open_note_editor(workspace, root.join(&note.path), note.cursor, cx).await?;
+                let path = root.join(&note.path);
+                // A Markdown note opens like any other, in the rich editor; the
+                // caret placement only applies to the Markdown source.
+                if path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+                {
+                    workspace
+                        .update_in(cx, |workspace, window, cx| {
+                            workspace.open_abs_path(
+                                path,
+                                workspace::OpenOptions::default(),
+                                window,
+                                cx,
+                            )
+                        })?
+                        .await?;
+                } else {
+                    open_note_editor(workspace, path, note.cursor, cx).await?;
+                }
             }
             Ok(())
         })
