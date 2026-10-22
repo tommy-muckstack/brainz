@@ -1182,7 +1182,22 @@ const BRAINZ_HOUSE_RULES: &str = "\
 else, put the complete draft in a fenced block tagged `email` (```email on its own \
 line, the message, then ``` on its own line). Only the message goes inside the fence: \
 no commentary, no quoting markers, no subject line unless asked. Say anything else \
-outside the fence. Brainz shows that block as a draft card with a Copy button.";
+outside the fence. Brainz shows that block as a draft card with a Copy button.
+- Notes are Markdown files in the brain; Brainz shows them in a rich editor and saves \
+Markdown back, so write plain Markdown. Tables are pipe tables with a header row.
+- To put a picture in a note, save the image file in an `attachments` folder beside \
+the note and add it on a line of its own: `![caption](attachments/name.png)`, or \
+`![caption|360](attachments/name.png)` for a 360-pixel width. Inline or web images \
+show as plain Markdown.
+- Link notes with relative Markdown links, for example `[Sam Lee](../people/Sam%20Lee.md)`; \
+Brainz lists those links under the linked note as \"Mentioned in\".
+- A note template is a Markdown file in `.brainz/templates/` with front matter \
+(`name`, `description`, `path: '{{folder}}/{{slug input.title}}.md'`, and an `inputs` \
+entry for `title`); New note lists it.
+- Canvases (`.brainzboard` files) are edited only through the brainz-canvas tools: \
+`canvas_create_board` makes one, `canvas_read` shows it, and `canvas_apply` proposes \
+stickies, shapes, text, frames, cards, arrows and images (a brain-relative `path`). \
+The user reviews proposals on the open canvas. Never write `.brainzboard` files directly.";
 
 /// The My Man rule, added only while the export folder exists on this Mac.
 const BRAINZ_MYMAN_RULE: &str = "\

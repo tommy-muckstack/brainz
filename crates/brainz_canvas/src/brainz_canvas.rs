@@ -190,6 +190,42 @@ pub fn list_boards(root: &Path) -> Result<Vec<Board>> {
     Ok(boards)
 }
 
+/// Makes an empty canvas named after `title` in `folder` (default
+/// `Canvases`), never replacing an existing one. Its data is an empty Yjs
+/// update, so the canvas page opens it like any other board.
+pub fn create_board(root: &Path, title: &str, folder: Option<&str>) -> Result<Board> {
+    let title = title.trim();
+    ensure!(!title.is_empty(), "Give the canvas a title");
+    ensure!(title.chars().count() <= 120, "Use a shorter title");
+    let stem: String = title
+        .chars()
+        .map(|character| match character {
+            '/' | '\\' | ':' | '\0' => '-',
+            character => character,
+        })
+        .collect();
+    let stem = stem.trim_start_matches('.');
+    let folder = Path::new(folder.unwrap_or("Canvases"));
+    for number in 1..1000 {
+        let name = if number == 1 {
+            format!("{stem}.brainzboard")
+        } else {
+            format!("{stem} {number}.brainzboard")
+        };
+        let path = scoped_path(root, &folder.join(name), true)?;
+        if path.exists() {
+            continue;
+        }
+        let id = format!("board-{}", uuid::Uuid::new_v4().simple());
+        atomic_json(
+            &path,
+            &json!({"format":"brainz-whiteboard","version":1,"id":id,"title":title,"data":"AAA="}),
+        )?;
+        return board(root, &path);
+    }
+    bail!("Too many canvases with that title")
+}
+
 pub fn resolve_board(root: &Path, selector: Option<&str>) -> Result<Board> {
     if let Some(selector) = selector {
         let path = Path::new(selector);
@@ -574,6 +610,30 @@ pub fn events(root: &Path, board: &Board, since: u64) -> Result<Vec<Value>> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn agents_create_empty_canvases_without_replacing_any() {
+        let root = tempfile::tempdir().unwrap();
+        let first = create_board(root.path(), "Launch plan", None).unwrap();
+        let second = create_board(root.path(), "Launch plan", None).unwrap();
+        assert!(first.path.ends_with("Canvases/Launch plan.brainzboard"));
+        assert!(second.path.ends_with("Canvases/Launch plan 2.brainzboard"));
+        assert_ne!(first.id, second.id);
+        assert_eq!(first.title, "Launch plan");
+        let document: Value =
+            serde_json::from_str(&fs::read_to_string(&first.path).unwrap()).unwrap();
+        assert_eq!(document["format"], "brainz-whiteboard");
+        assert_eq!(document["data"], "AAA=");
+        assert_eq!(
+            resolve_board(root.path(), Some(&first.id)).unwrap().path,
+            first.path
+        );
+        let nested = create_board(root.path(), "a/b: c", Some("Projects/Q4")).unwrap();
+        assert!(nested.path.ends_with("Projects/Q4/a-b- c.brainzboard"));
+        assert!(create_board(root.path(), "x", Some("../outside")).is_err());
+        assert!(create_board(root.path(), "  ", None).is_err());
+    }
+
     use super::*;
 
     fn fixture() -> (tempfile::TempDir, Board) {

@@ -4,14 +4,12 @@
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use anyhow::{Context as _, Result, anyhow};
-use feature_flags::{BrainzCanvasAgentApi, FeatureFlagAppExt as _};
 use gpui::{
     App, Entity, EventEmitter, FocusHandle, Focusable, Global, Subscription, Task, WeakEntity,
     Window, actions,
 };
 use terminal_view::terminal_panel::TerminalPanel;
 use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
-use util::ResultExt as _;
 use workspace::{Item, Workspace, dock::DockPosition};
 
 /// Which CLI owns a connector's sign-in.
@@ -761,6 +759,37 @@ pub fn init(cx: &mut App) {
         health
     });
     cx.set_global(GlobalMcpHealth(health));
+    // Agents get the brain's canvas tools without a setting or a Connect
+    // click: each brain that opens is added to Brainz's Claude and Codex.
+    cx.observe_new(|_: &mut Workspace, window, cx| {
+        let Some(window) = window else {
+            return;
+        };
+        cx.spawn_in(window, async move |workspace, cx| {
+            for _ in 0..50 {
+                let root = workspace
+                    .read_with(cx, |workspace, cx| {
+                        workspace.root_paths(cx).first().cloned()
+                    })
+                    .ok()
+                    .flatten();
+                if let Some(root) = root {
+                    cx.background_spawn(async move {
+                        if let Err(error) = connect_canvas(&root) {
+                            log::info!("brainz mcp: canvas tools not connected: {error:#}");
+                        }
+                    })
+                    .await;
+                    return;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(200))
+                    .await;
+            }
+        })
+        .detach();
+    })
+    .detach();
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenMcp, window, cx| {
             McpView::open(workspace, window, cx);
@@ -1300,6 +1329,46 @@ fn claude_to_codex(config: &serde_json::Value) -> toml::Value {
     toml::Value::Table(out)
 }
 
+/// Adds the brain's canvas server to Brainz's Claude and Codex, leaving
+/// them alone when it is already there. Development builds have no `cli`
+/// helper beside the app, so they skip it.
+fn connect_canvas(root: &std::path::Path) -> Result<()> {
+    let root = root.canonicalize()?;
+    let executable = std::env::current_exe()?
+        .parent()
+        .context("Brainz has no application folder")?
+        .join("cli");
+    anyhow::ensure!(executable.is_file(), "no canvas helper in this build");
+    let suffix = brainz_canvas::legacy_board_id(&root);
+    let name = format!(
+        "brainz-canvas-{}",
+        suffix.chars().skip(7).take(12).collect::<String>()
+    );
+    let config = serde_json::json!({"type":"stdio","command":executable,"args":["canvas","--workspace",root,"mcp"]});
+    let claude_path = claude_config_path();
+    let configured = std::fs::read_to_string(&claude_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .is_some_and(|json| json["mcpServers"][&name] == config);
+    if !configured {
+        connect_claude(&name, config.clone())?;
+    }
+    let codex = claude_to_codex(&config);
+    let codex_configured = std::fs::read_to_string(codex_config_path())
+        .ok()
+        .and_then(|text| text.parse::<toml::Value>().ok())
+        .is_some_and(|value| {
+            value
+                .get("mcp_servers")
+                .and_then(|servers| servers.get(&name))
+                == Some(&codex)
+        });
+    if !codex_configured {
+        connect_codex(&name, codex)?;
+    }
+    Ok(())
+}
+
 fn connect_claude(name: &str, config: serde_json::Value) -> anyhow::Result<()> {
     connect_claude_at(&claude_config_path(), name, config)
 }
@@ -1400,36 +1469,6 @@ enum Client {
 }
 
 impl McpView {
-    fn connect_canvas(&mut self, client: McpClient, cx: &mut Context<Self>) {
-        let Some(root) = self
-            .workspace
-            .upgrade()
-            .and_then(|workspace| workspace.read(cx).root_paths(cx).first().cloned())
-        else {
-            return;
-        };
-        cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move {
-                let root = root.canonicalize()?;
-                let executable = std::env::current_exe()?.parent().context("Brainz has no application folder")?.join("cli");
-                anyhow::ensure!(executable.is_file(), "Install the packaged Brainz app to connect its canvas helper");
-                let suffix = brainz_canvas::legacy_board_id(&root);
-                let name = format!("brainz-canvas-{}", suffix.chars().skip(7).take(12).collect::<String>());
-                let config = serde_json::json!({"type":"stdio","command":executable,"args":["canvas","--workspace",root,"mcp"]});
-                match client {
-                    McpClient::Claude => connect_claude(&name, config),
-                    McpClient::Codex => connect_codex(&name, claude_to_codex(&config)),
-                }
-            }).await;
-            this.update(cx, |this, cx| {
-                match result {
-                    Ok(()) => { this.error = None; this.refresh(cx); }
-                    Err(error) => { this.error = Some(format!("Couldn't connect Canvas: {error:#}")); cx.notify(); }
-                }
-            }).log_err();
-        }).detach();
-    }
-
     fn backup_running(&self) -> bool {
         self.backup
             .as_ref()
@@ -1763,15 +1802,6 @@ impl McpView {
             card = card.child(Label::new(error).size(LabelSize::Small).color(Color::Error));
         }
         Some(card.into_any_element())
-    }
-
-    fn render_canvas_connector(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex().w_full().gap_2().p_3().rounded_lg().border_1().border_color(cx.theme().colors().border)
-            .child(h_flex().gap_2().child(Icon::new(IconName::BrainzWhiteboard)).child(Label::new("Brainz Canvas").weight(gpui::FontWeight::SEMIBOLD)))
-            .child(Label::new("Let your assistant read this brain’s canvases and propose changes for you to review. Start a new chat after connecting.").size(LabelSize::Small).color(Color::Muted))
-            .child(h_flex().gap_2()
-                .child(Button::new("canvas-connect-claude", "Connect Claude").on_click(cx.listener(|this, _, _, cx| this.connect_canvas(McpClient::Claude, cx))))
-                .child(Button::new("canvas-connect-codex", "Connect Codex").on_click(cx.listener(|this, _, _, cx| this.connect_canvas(McpClient::Codex, cx)))))
     }
 
     pub fn open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -2457,14 +2487,6 @@ impl Render for McpView {
             ]
         } else {
             let mut rows: Vec<gpui::AnyElement> = Vec::new();
-            if cx.has_flag::<BrainzCanvasAgentApi>()
-                && self
-                    .workspace
-                    .upgrade()
-                    .is_some_and(|workspace| !workspace.read(cx).root_paths(cx).is_empty())
-            {
-                rows.push(self.render_canvas_connector(cx).into_any_element());
-            }
             if let Some(error) = &self.error {
                 rows.push(
                     Label::new(error.clone())

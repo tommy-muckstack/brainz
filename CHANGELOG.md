@@ -7,6 +7,11 @@
 - Notes show images: a picture on its own line (`![alt](path)`, or `![alt|300](path)` for a width) appears as an image. Paste or drop an image into a note and Brainz saves it in an `attachments` folder beside the note; resizing keeps the width.
 - Hover a table or image in a note for Copy. Tables paste into Google Sheets or Excel as rows and columns with bold and italic kept; images copy as pictures.
 - Type `[[` in a note to link another note from a list of the brain's notes. Each note shows a "Mentioned in" list of the notes that link to it.
+- Claude and Codex in Brainz can work with canvases out of the box: create a canvas, add stickies, shapes, text, frames, cards, arrows and images from the brain, all as proposals you apply on the canvas. They also follow Brainz's conventions for note images, tables, links between notes and templates.
+
+### Changed
+
+- The Canvas assistant setting is gone; canvas tools are always on and connected for every brain.
 
 ## 0.1.46 (2026-10-22)
 

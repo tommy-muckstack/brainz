@@ -73,7 +73,8 @@
                   "text",
                   "shape",
                   "frame",
-                  "card"
+                  "card",
+                  "image"
                 ]
               },
               "ref": {
@@ -143,7 +144,11 @@
               "path": {
                 "type": "string",
                 "maxLength": 4096,
-                "description": "Path relative to the current brain; cards require path or url."
+                "description": "A file relative to the brain: the file a card opens, or the PNG, JPEG, GIF or WebP an image shows. Images without size keep their natural size (up to 520 wide)."
+              },
+              "caption": {
+                "type": "string",
+                "maxLength": 2000
               }
             },
             "required": [
