@@ -553,6 +553,8 @@ mod tests {
             other.load(false).is_err(),
             "a second manifest must not bypass the board id lock"
         );
+        // A failed load can retain its path lock until the storage is dropped.
+        drop(other);
         drop(storage);
         let reopened = self::storage(temp.path(), path);
         let wire = reopened.load(false).expect("reopen");
