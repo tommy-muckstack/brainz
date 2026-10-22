@@ -255,9 +255,23 @@ fn snippet(line: &str) -> String {
 }
 
 /// Notes in the brain with a Markdown link that resolves to `note`.
-#[allow(clippy::disallowed_methods, reason = "runs on the background executor")]
 fn backlinks(brain: &std::path::Path, note: &std::path::Path) -> anyhow::Result<Vec<Backlink>> {
-    let note = note.canonicalize()?;
+    backlinks_to(brain, note, None)
+}
+
+/// Backlinks to `note`, which may already have moved to `renamed`: links are
+/// then compared by path rather than by the file they reach.
+#[allow(clippy::disallowed_methods, reason = "runs on the background executor")]
+fn backlinks_to(
+    brain: &std::path::Path,
+    note: &std::path::Path,
+    renamed: Option<&std::path::Path>,
+) -> anyhow::Result<Vec<Backlink>> {
+    let brain_canonical = brain.canonicalize()?;
+    let note = match renamed {
+        Some(_) => normalize(&brain_canonical.join(note.strip_prefix(brain).unwrap_or(note))),
+        None => note.canonicalize()?,
+    };
     let Some(name) = note
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -275,7 +289,9 @@ fn backlinks(brain: &std::path::Path, note: &std::path::Path) -> anyhow::Result<
     let mut found = Vec::new();
     for path in String::from_utf8_lossy(&output.stdout).lines() {
         let file = brain.join(path);
-        if file.canonicalize().ok().as_ref() == Some(&note) {
+        if file.canonicalize().ok().as_ref() == Some(&note)
+            || renamed.is_some_and(|renamed| file == renamed)
+        {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(&file) else {
@@ -284,8 +300,11 @@ fn backlinks(brain: &std::path::Path, note: &std::path::Path) -> anyhow::Result<
         let line = text.lines().find(|line| {
             link_targets(line).any(|target| {
                 !is_external_link(target)
-                    && resolve_note_link(&file, target)
-                        .and_then(|target| target.canonicalize().ok())
+                    && resolve_note_link(&brain_canonical.join(path), target)
+                        .map(|target| match renamed {
+                            Some(_) => normalize(&target),
+                            None => target.canonicalize().unwrap_or(target),
+                        })
                         .as_ref()
                         == Some(&note)
             })
@@ -344,6 +363,120 @@ fn claude_request(
         _ => return None,
     };
     Some(request)
+}
+
+/// The file name a note's heading suggests: characters a file name cannot
+/// hold become dashes, runs of spaces collapse, and `.md` is added.
+fn file_name_for_heading(heading: &str) -> Option<String> {
+    let cleaned: String = heading
+        .chars()
+        .map(|character| match character {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+            character if character.is_control() => ' ',
+            character => character,
+        })
+        .collect();
+    let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cleaned: String = cleaned.trim_matches(['.', ' ']).chars().take(100).collect();
+    let cleaned = cleaned.trim_end();
+    (!cleaned.is_empty()).then(|| format!("{cleaned}.md"))
+}
+
+/// The Markdown link from `from` (a note) to `to`, both absolute, with
+/// spaces encoded the way Brainz writes links.
+fn relative_link(from: &std::path::Path, to: &std::path::Path) -> Option<String> {
+    let from_folder = from.parent()?;
+    let mut common = 0;
+    let from_parts: Vec<_> = from_folder.components().collect();
+    let to_parts: Vec<_> = to.components().collect();
+    while common < from_parts.len()
+        && common + 1 < to_parts.len()
+        && from_parts[common] == to_parts[common]
+    {
+        common += 1;
+    }
+    let mut parts: Vec<String> = from_parts[common..]
+        .iter()
+        .map(|_| "..".to_owned())
+        .collect();
+    parts.extend(
+        to_parts[common..]
+            .iter()
+            .map(|part| part.as_os_str().to_string_lossy().replace(' ', "%20")),
+    );
+    Some(parts.join("/"))
+}
+
+/// Points every Markdown link to `old` in the brain at `new` instead (both
+/// relative to the brain), so a renamed note keeps its backlinks. Returns how
+/// many notes changed.
+fn rewrite_links(
+    brain: &std::path::Path,
+    old: &std::path::Path,
+    new: &std::path::Path,
+) -> anyhow::Result<usize> {
+    let brain = &brain.canonicalize()?;
+    let old = &normalize(&brain.join(old));
+    let new = &brain.join(new);
+    let mut changed = 0;
+    for link in backlinks_to(brain, old, Some(new))? {
+        let file = brain.join(&link.path);
+        let text = std::fs::read_to_string(&file)?;
+        let Some(replacement) = relative_link(&file, new) else {
+            continue;
+        };
+        let mut rewritten = String::with_capacity(text.len());
+        let mut rest = text.as_str();
+        while let Some(start) = rest.find("](") {
+            let (before, after) = rest.split_at(start + 2);
+            rewritten.push_str(before);
+            let (target, tail) = match after.strip_prefix('<') {
+                Some(inner) => match inner.find('>') {
+                    Some(end) => (&inner[..end], &inner[end + 1..]),
+                    None => ("", after),
+                },
+                None => match after.find([')', ' ']) {
+                    Some(end) => (&after[..end], &after[end..]),
+                    None => ("", after),
+                },
+            };
+            let fragment = target.find('#').map(|index| &target[index..]).unwrap_or("");
+            let points_here = !target.is_empty()
+                && !is_external_link(target)
+                && resolve_note_link(&file, target)
+                    .map(|path| normalize(&path))
+                    .as_deref()
+                    == Some(old);
+            if points_here {
+                rewritten.push_str(&replacement);
+                rewritten.push_str(fragment);
+                rest = tail;
+            } else {
+                rest = after;
+            }
+        }
+        rewritten.push_str(rest);
+        if rewritten != text {
+            std::fs::write(&file, rewritten)?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
+/// `a/./b/../c` as `a/c`, without touching the disk (the old path is gone).
+fn normalize(path: &std::path::Path) -> std::path::PathBuf {
+    let mut normal = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normal.pop();
+            }
+            component => normal.push(component),
+        }
+    }
+    normal
 }
 
 fn percent_decode(text: &str) -> String {
@@ -482,6 +615,9 @@ mod native {
             action: String,
             text: String,
         },
+        Rename {
+            heading: String,
+        },
         History,
     }
 
@@ -543,7 +679,19 @@ mod native {
             let subscriptions = vec![
                 cx.subscribe(&buffer, |this, _, event: &BufferEvent, cx| match event {
                     BufferEvent::Edited { .. } | BufferEvent::Reloaded => this.load_from_buffer(cx),
-                    BufferEvent::FileHandleChanged => cx.emit(ItemEvent::UpdateTab),
+                    BufferEvent::FileHandleChanged => {
+                        // The file moved (a rename here or elsewhere); follow it.
+                        if let Some(path) = this
+                            .buffer
+                            .read(cx)
+                            .file()
+                            .and_then(|file| file.as_local())
+                            .map(|file| file.abs_path(cx))
+                        {
+                            this.path = path;
+                        }
+                        cx.emit(ItemEvent::UpdateTab)
+                    }
                     _ => {}
                 }),
                 cx.on_focus(&focus_handle, window, |this, _, _| {
@@ -818,6 +966,107 @@ mod native {
             });
         }
 
+        /// Renames the note's file after its heading and points the brain's
+        /// links to it at the new name.
+        fn rename_to_heading(&mut self, heading: &str, cx: &mut Context<Self>) {
+            let Some(file_name) = super::file_name_for_heading(heading) else {
+                return;
+            };
+            let old = self.path.clone();
+            let new = old.with_file_name(&file_name);
+            if new == old {
+                return;
+            }
+            let project = self.project.clone();
+            let (project_path, entry_id, brain) = {
+                let project = project.read(cx);
+                let Some(project_path) = project.project_path_for_absolute_path(&old, cx) else {
+                    return;
+                };
+                let Some(entry) = project.entry_for_path(&project_path, cx) else {
+                    return;
+                };
+                let Some(brain) = project
+                    .find_worktree(&old, cx)
+                    .map(|(worktree, _)| worktree.read(cx).abs_path().to_path_buf())
+                else {
+                    return;
+                };
+                (project_path, entry.id, brain)
+            };
+            let workspace = self.workspace.clone();
+            let notice = move |message: String, cx: &mut gpui::AsyncApp| {
+                workspace
+                    .update(cx, |workspace, cx| {
+                        workspace.show_toast(
+                            workspace::Toast::new(
+                                workspace::notifications::NotificationId::unique::<RichNoteView>(),
+                                message,
+                            )
+                            .autohide(),
+                            cx,
+                        )
+                    })
+                    .log_err();
+            };
+            if new.exists() {
+                cx.spawn(async move |_, cx| {
+                    notice(
+                        format!("A note called {file_name} is already in this folder."),
+                        cx,
+                    )
+                })
+                .detach();
+                return;
+            }
+            let Some(new_relative) = project_path.path.parent().and_then(|folder| {
+                util::rel_path::RelPath::from_unix_str(&file_name)
+                    .ok()
+                    .map(|name| folder.join(name))
+            }) else {
+                return;
+            };
+            let rename = project.update(cx, |project, cx| {
+                project.rename_entry(
+                    entry_id,
+                    project::ProjectPath {
+                        worktree_id: project_path.worktree_id,
+                        path: new_relative.as_rel_path().into_arc(),
+                    },
+                    cx,
+                )
+            });
+            cx.spawn(async move |this, cx| {
+                if let Err(error) = rename.await {
+                    notice(format!("Couldn't rename the note: {error:#}"), cx);
+                    return;
+                }
+                let old_relative = old.strip_prefix(&brain).unwrap_or(&old).to_path_buf();
+                let new_relative = new.strip_prefix(&brain).unwrap_or(&new).to_path_buf();
+                let rewritten = cx
+                    .background_spawn(async move {
+                        super::rewrite_links(&brain, &old_relative, &new_relative)
+                    })
+                    .await;
+                let message = match rewritten {
+                    Ok(0) => format!("Renamed to {file_name}."),
+                    Ok(1) => format!("Renamed to {file_name}; one note's link updated."),
+                    Ok(count) => format!("Renamed to {file_name}; links in {count} notes updated."),
+                    Err(error) => format!(
+                        "Renamed to {file_name}, but links to it couldn't be updated: {error:#}"
+                    ),
+                };
+                notice(message, cx);
+                this.update(cx, |this, cx| {
+                    this.path = new;
+                    cx.emit(ItemEvent::UpdateTab);
+                    this.send_links(cx);
+                })
+                .ok();
+            })
+            .detach();
+        }
+
         fn save_image(&mut self, request: u64, mime: String, data: String, cx: &mut Context<Self>) {
             let note = self.path.clone();
             cx.spawn(async move |this, cx| {
@@ -862,6 +1111,7 @@ mod native {
                 }
                 Message::Source => self.show_source(window, cx),
                 Message::Claude { action, text } => self.ask_claude(&action, &text, window, cx),
+                Message::Rename { heading } => self.rename_to_heading(&heading, cx),
                 Message::History => {
                     // Adding a tab reads every item in the pane, this one
                     // included, so it waits until this update has finished.
@@ -1159,6 +1409,64 @@ mod tests {
         assert!(!send);
         assert!(ask.ends_with("```\n\n"));
         assert!(claude_request("delete everything", "a.md", "x", "TODO.md").is_none());
+    }
+
+    #[test]
+    fn headings_become_safe_file_names() {
+        assert_eq!(
+            file_name_for_heading("Q4 plan: budget / hiring").as_deref(),
+            Some("Q4 plan- budget - hiring.md")
+        );
+        assert_eq!(
+            file_name_for_heading("  Sam   Lee  ").as_deref(),
+            Some("Sam Lee.md")
+        );
+        assert_eq!(file_name_for_heading("...").as_deref(), None);
+        assert_eq!(file_name_for_heading("").as_deref(), None);
+    }
+
+    #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test setting up a git repository"
+    )]
+    fn renaming_a_note_rewrites_the_links_to_it() {
+        let brain = tempfile::tempdir().unwrap();
+        let root = brain.path();
+        assert!(
+            crate::github_sync::command(root, "git")
+                .args(["init", "-q"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::create_dir_all(root.join("people")).unwrap();
+        std::fs::create_dir_all(root.join("work")).unwrap();
+        std::fs::write(root.join("people/sam.md"), "# Sam Lee\n").unwrap();
+        std::fs::write(root.join("people/other.md"), "# Other\n").unwrap();
+        std::fs::write(
+            root.join("work/plan.md"),
+            "Talk to [Sam](../people/sam.md#notes) and [Other](../people/other.md).\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("people/team.md"), "- [Sam](<sam.md>) leads\n").unwrap();
+        std::fs::rename(root.join("people/sam.md"), root.join("people/Sam Lee.md")).unwrap();
+
+        let changed = rewrite_links(
+            root,
+            std::path::Path::new("people/sam.md"),
+            std::path::Path::new("people/Sam Lee.md"),
+        )
+        .unwrap();
+        assert_eq!(changed, 2);
+        assert_eq!(
+            std::fs::read_to_string(root.join("work/plan.md")).unwrap(),
+            "Talk to [Sam](../people/Sam%20Lee.md#notes) and [Other](../people/other.md).\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("people/team.md")).unwrap(),
+            "- [Sam](Sam%20Lee.md) leads\n"
+        );
     }
 
     #[test]
