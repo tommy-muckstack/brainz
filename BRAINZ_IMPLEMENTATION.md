@@ -167,11 +167,13 @@ This file records implementation and validation; an unchecked item is not shippe
   signature smoke check, and the GitHub asset, stable download, and public
   feed were uploaded. The first real sync on 0.1.44 is not yet confirmed.
   [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.44)
-- 0.1.45 candidate: Markdown notes open in a rich text editor (BlockSuite doc
-  mode in a web view, saving only changed blocks back to Markdown), a Create
-  menu in the sidebar, a Back up notes card in Connectors (Obsidian folder or
-  Notion), and chat activity-row and attachment-indent fixes. Publication and
-  signed-artifact verification are pending.
+- 0.1.45: published 2026-10-22. Markdown notes open in a rich text editor
+  (BlockSuite doc mode in a web view, saving only changed blocks back to
+  Markdown), a Create menu in the sidebar, a Back up notes card in Connectors
+  (Obsidian folder or Notion), and chat activity-row and attachment-indent
+  fixes. Signing, notarization and stapling were verified; the DMG, stable
+  download and feed were uploaded.
+  [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.45)
 
 ## Work in progress
 
