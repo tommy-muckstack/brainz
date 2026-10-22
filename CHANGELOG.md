@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New
+
+- Connectors has a Back up notes card: choose Obsidian or Notion and Brainz keeps a second copy of every note there, updated after each sync or with Back up now. Obsidian gets the Markdown files in a vault folder (Obsidian's iCloud folder by default); Notion gets a private "Brainz backup" page with a page per folder and per note, through a personal access token you paste once.
+
 ## 0.1.44 (2026-10-15)
 
 ### Fixed
