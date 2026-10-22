@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.47 (2026-10-22)
+
 ### New
 
 - Notes show images: a picture on its own line (`![alt](path)`, or `![alt|300](path)` for a width) appears as an image. Paste or drop an image into a note and Brainz saves it in an `attachments` folder beside the note; resizing keeps the width.

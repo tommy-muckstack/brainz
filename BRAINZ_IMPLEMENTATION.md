@@ -179,6 +179,9 @@ This file records implementation and validation; an unchecked item is not shippe
   spinning Create button. Signing, notarization and stapling were verified;
   the DMG, stable download and feed were uploaded.
   [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.46)
+- 0.1.47 candidate: Note images, tables, links, and history; agent canvas
+  tools; Claude actions in notes; quick capture; and automatic naming for
+  untitled notes. Publication and signed-artifact verification are pending.
 
 ## Work in progress
 
