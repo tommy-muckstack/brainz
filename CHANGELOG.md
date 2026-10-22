@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.46 (2026-10-22)
+
 ### New
 
 - Save as template (command palette) turns the open note into a template you can pick from New note. The note's own text, including any `{{` braces, is kept as written; New note asks for the new note's title.
