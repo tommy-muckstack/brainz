@@ -50,6 +50,258 @@ fn resolve_note_link(note: &std::path::Path, href: &str) -> Option<std::path::Pa
     })
 }
 
+const MAX_NOTE_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
+
+fn image_mime(path: &std::path::Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "heic" => "image/heic",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        _ => return None,
+    })
+}
+
+/// An image the note refers to, read only when it is an image file inside
+/// the brain: the page may ask for any path, so nothing else is served.
+fn read_brain_image(
+    note: &std::path::Path,
+    brain: &std::path::Path,
+    src: &str,
+) -> anyhow::Result<(Vec<u8>, &'static str)> {
+    use anyhow::Context as _;
+    let path = resolve_note_link(note, src).context("no image path")?;
+    let path = path.canonicalize().context("image not found")?;
+    anyhow::ensure!(
+        path.starts_with(brain.canonicalize()?),
+        "image is outside the brain"
+    );
+    let mime = image_mime(&path).context("not an image")?;
+    anyhow::ensure!(
+        std::fs::metadata(&path)?.len() <= MAX_NOTE_IMAGE_BYTES,
+        "image is too large"
+    );
+    Ok((std::fs::read(&path)?, mime))
+}
+
+/// Saves a pasted or dropped image in an `attachments` folder beside the
+/// note and returns the Markdown path to it, relative to the note.
+fn save_note_image(
+    note: &std::path::Path,
+    mime: &str,
+    bytes: &[u8],
+    now: chrono::DateTime<chrono::Local>,
+) -> anyhow::Result<String> {
+    use anyhow::Context as _;
+    use std::io::Write as _;
+    anyhow::ensure!(
+        (bytes.len() as u64) <= MAX_NOTE_IMAGE_BYTES,
+        "image is too large"
+    );
+    let extension = match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/avif" => "avif",
+        "image/heic" => "heic",
+        "image/bmp" => "bmp",
+        other => anyhow::bail!("{other} is not an image Brainz saves"),
+    };
+    let folder = note
+        .parent()
+        .context("note has no folder")?
+        .join("attachments");
+    std::fs::create_dir_all(&folder)?;
+    let stem: String = note
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let stem = stem.trim_matches('-');
+    let base = format!(
+        "{}{}",
+        if stem.is_empty() {
+            "image".to_owned()
+        } else {
+            format!("{stem}-")
+        },
+        now.format("%Y%m%d-%H%M%S")
+    );
+    for number in 1..1000 {
+        let name = if number == 1 {
+            format!("{base}.{extension}")
+        } else {
+            format!("{base}-{number}.{extension}")
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(folder.join(&name))
+        {
+            Ok(mut file) => {
+                file.write_all(bytes)?;
+                return Ok(format!("attachments/{name}"));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error).context("saving the image"),
+        }
+    }
+    anyhow::bail!("too many images saved this second")
+}
+
+/// A note the `[[` menu offers, by its path from the brain's folder.
+#[derive(serde::Serialize, Debug, PartialEq)]
+struct NoteEntry {
+    path: String,
+    title: String,
+}
+
+/// A note that links to the open one, with the line that holds the link.
+#[derive(serde::Serialize, Debug, PartialEq)]
+struct Backlink {
+    path: String,
+    title: String,
+    snippet: String,
+}
+
+/// The note's first `# ` heading, else its file name.
+fn note_title(path: &str, text: &str) -> String {
+    text.lines()
+        .take(40)
+        .find_map(|line| line.strip_prefix("# "))
+        .map(|heading| heading.trim().to_owned())
+        .filter(|heading| !heading.is_empty())
+        .unwrap_or_else(|| {
+            std::path::Path::new(path)
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_owned())
+        })
+}
+
+fn brain_notes(brain: &std::path::Path) -> anyhow::Result<Vec<NoteEntry>> {
+    use std::io::Read as _;
+    crate::backup::list_notes(brain).map(|paths| {
+        paths
+            .into_iter()
+            .map(|path| {
+                // The heading is near the top; a large note is not read whole.
+                let mut head = Vec::new();
+                if let Ok(file) = std::fs::File::open(brain.join(&path)) {
+                    file.take(8 * 1024).read_to_end(&mut head).ok();
+                }
+                let title = note_title(&path, &String::from_utf8_lossy(&head));
+                NoteEntry { path, title }
+            })
+            .collect()
+    })
+}
+
+/// Markdown link targets in a line: the part inside `](...)`.
+fn link_targets(line: &str) -> impl Iterator<Item = &str> {
+    line.match_indices("](").filter_map(move |(start, _)| {
+        let rest = &line[start + 2..];
+        match rest.strip_prefix('<') {
+            Some(inner) => inner.find('>').map(|end| &inner[..end]),
+            None => rest.find([')', ' ']).map(|end| &rest[..end]),
+        }
+    })
+}
+
+/// A line with Markdown marks removed, for showing as a snippet.
+fn snippet(line: &str) -> String {
+    let mut text = String::new();
+    let mut rest = line.trim();
+    while let Some(start) = rest.find('[') {
+        text.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match (after.find("]("), after.find(')')) {
+            (Some(close), Some(end)) if close < end => {
+                text.push_str(&after[..close]);
+                rest = &after[end + 1..];
+            }
+            _ => {
+                text.push('[');
+                rest = after;
+            }
+        }
+    }
+    text.push_str(rest);
+    let text: String = text
+        .trim_start_matches(['#', '>', '-', '*', ' '])
+        .replace(['*', '`'], "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if text.chars().count() > 160 {
+        format!("{}…", text.chars().take(159).collect::<String>())
+    } else {
+        text
+    }
+}
+
+/// Notes in the brain with a Markdown link that resolves to `note`.
+#[allow(clippy::disallowed_methods, reason = "runs on the background executor")]
+fn backlinks(brain: &std::path::Path, note: &std::path::Path) -> anyhow::Result<Vec<Backlink>> {
+    let note = note.canonicalize()?;
+    let Some(name) = note
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+    else {
+        return Ok(Vec::new());
+    };
+    let encoded = name.replace(' ', "%20");
+    // git grep narrows the brain to files naming this note; each match is then
+    // resolved, so "plan.md" in another folder does not count.
+    let output = crate::github_sync::command(brain, "git")
+        .args(["grep", "-l", "-I", "--untracked", "-F", "-e"])
+        .arg(&name)
+        .args(["-e", &encoded, "--", "*.md", "*.markdown"])
+        .output()?;
+    let mut found = Vec::new();
+    for path in String::from_utf8_lossy(&output.stdout).lines() {
+        let file = brain.join(path);
+        if file.canonicalize().ok().as_ref() == Some(&note) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let line = text.lines().find(|line| {
+            link_targets(line).any(|target| {
+                !is_external_link(target)
+                    && resolve_note_link(&file, target)
+                        .and_then(|target| target.canonicalize().ok())
+                        .as_ref()
+                        == Some(&note)
+            })
+        });
+        if let Some(line) = line {
+            found.push(Backlink {
+                path: path.to_owned(),
+                title: note_title(path, &text),
+                snippet: snippet(line),
+            });
+        }
+    }
+    found.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(found)
+}
+
 fn percent_decode(text: &str) -> String {
     url::form_urlencoded::parse(format!("p={}", text.replace('+', "%2B")).as_bytes())
         .next()
@@ -62,6 +314,7 @@ mod native {
     use std::{borrow::Cow, cell::Cell, path::PathBuf, rc::Rc};
 
     use anyhow::{Context as _, Result};
+    use base64::Engine as _;
     use editor::Editor;
     use gpui::{
         App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, Subscription,
@@ -162,10 +415,25 @@ mod native {
     #[serde(tag = "type", rename_all = "camelCase")]
     enum Message {
         Ready,
-        Save { revision: u64, markdown: String },
-        Open { href: String },
-        Error { message: String },
+        Save {
+            revision: u64,
+            markdown: String,
+        },
+        Open {
+            href: String,
+        },
+        Error {
+            message: String,
+        },
         Source,
+        Image {
+            request: u64,
+            mime: String,
+            data: String,
+        },
+        CopyImage {
+            data: String,
+        },
     }
 
     pub struct RichNoteView {
@@ -381,13 +649,20 @@ mod native {
                 root.join("note.html").is_file(),
                 "The note editor is missing from this build. Rebuild it with script/brainz-whiteboard-build."
             );
+            let note = self.path.clone();
+            let brain = self
+                .project
+                .read(cx)
+                .find_worktree(&self.path, cx)
+                .map(|(worktree, _)| worktree.read(cx).abs_path().to_path_buf())
+                .context("The note is not in an open brain")?;
             let (sender, receiver) = smol::channel::unbounded::<Message>();
             let webview = wry::WebViewBuilder::new()
                 .with_background_color((20, 20, 19, 255))
                 .with_visible(false)
                 .with_back_forward_navigation_gestures(false)
                 .with_custom_protocol("brainz-note".into(), move |_, request| {
-                    asset_response(&root, request)
+                    asset_response(&root, &note, &brain, request)
                 })
                 .with_navigation_handler(|url| url == "brainz-note://app/note.html")
                 .with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny)
@@ -417,12 +692,68 @@ mod native {
             Ok(())
         }
 
+        /// The notes `[[` offers and the ones linking here, found off the main thread.
+        fn send_links(&mut self, cx: &mut Context<Self>) {
+            let note = self.path.clone();
+            let Some(brain) = self
+                .project
+                .read(cx)
+                .find_worktree(&self.path, cx)
+                .map(|(worktree, _)| worktree.read(cx).abs_path().to_path_buf())
+            else {
+                return;
+            };
+            cx.spawn(async move |this, cx| {
+                let (notes, links) = cx
+                    .background_spawn(async move {
+                        let current = note
+                            .strip_prefix(&brain)
+                            .map(|path| path.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        let notes = super::brain_notes(&brain).log_err().unwrap_or_default();
+                        let links = super::backlinks(&brain, &note)
+                            .log_err()
+                            .unwrap_or_default();
+                        (
+                            json!({"type": "notes", "current": current, "notes": notes}),
+                            links,
+                        )
+                    })
+                    .await;
+                this.update(cx, |this, _| {
+                    this.send(notes);
+                    this.send(json!({"type": "backlinks", "items": links}));
+                })
+                .ok();
+            })
+            .detach();
+        }
+
+        fn save_image(&mut self, request: u64, mime: String, data: String, cx: &mut Context<Self>) {
+            let note = self.path.clone();
+            cx.spawn(async move |this, cx| {
+                let result = cx
+                    .background_spawn(async move {
+                        let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
+                        super::save_note_image(&note, &mime, &bytes, chrono::Local::now())
+                    })
+                    .await;
+                this.update(cx, |this, _| match result {
+                    Ok(src) => this.send(json!({"type": "imageSaved", "request": request, "src": src})),
+                    Err(error) => this.send(json!({"type": "imageFailed", "request": request, "message": format!("{error:#}")})),
+                })
+                .ok();
+            })
+            .detach();
+        }
+
         fn handle(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
             match message {
                 Message::Ready => {
                     self.ready = true;
                     self.page_text = None;
                     self.load_from_buffer(cx);
+                    self.send_links(cx);
                     if self.focus_handle.is_focused(window) {
                         if let Some(webview) = &self.webview {
                             webview.focus().log_err();
@@ -441,12 +772,29 @@ mod native {
                     )
                 }
                 Message::Source => self.show_source(window, cx),
+                Message::Image {
+                    request,
+                    mime,
+                    data,
+                } => self.save_image(request, mime, data, cx),
+                Message::CopyImage { data } => {
+                    match base64::engine::general_purpose::STANDARD.decode(data) {
+                        Ok(bytes) if bytes.starts_with(b"\x89PNG\r\n\x1a\n") => {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_image(
+                                &gpui::Image::from_bytes(gpui::ImageFormat::Png, bytes),
+                            ));
+                        }
+                        _ => log::warn!("Note editor sent an image that is not a PNG"),
+                    }
+                }
             }
         }
     }
 
     fn asset_response(
         root: &std::path::Path,
+        note: &std::path::Path,
+        brain: &std::path::Path,
         request: wry::http::Request<Vec<u8>>,
     ) -> wry::http::Response<Cow<'static, [u8]>> {
         let read = || -> Result<(Vec<u8>, String)> {
@@ -455,6 +803,15 @@ mod native {
                 "Invalid asset request"
             );
             let relative = request.uri().path().trim_start_matches('/');
+            if relative == "brain-file" {
+                let src =
+                    url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
+                        .find(|(key, _)| key == "path")
+                        .map(|(_, value)| value.into_owned())
+                        .context("no image path")?;
+                let (bytes, mime) = super::read_brain_image(note, brain, &src)?;
+                return Ok((bytes, mime.to_owned()));
+            }
             crate::whiteboard::native::bundle_asset(
                 root,
                 if relative.is_empty() {
@@ -625,6 +982,99 @@ mod native {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    #[allow(clippy::disallowed_methods, reason = "a test setting up a git repository")]
+    fn backlinks_resolve_each_link_to_this_note() {
+        let brain = tempfile::tempdir().unwrap();
+        let root = brain.path();
+        let git = |args: &[&str]| {
+            assert!(
+                crate::github_sync::command(root, "git")
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            )
+        };
+        git(&["init", "-q"]);
+        std::fs::create_dir_all(root.join("people")).unwrap();
+        std::fs::create_dir_all(root.join("work")).unwrap();
+        std::fs::create_dir_all(root.join("other")).unwrap();
+        std::fs::write(root.join("people/Sam Lee.md"), "# Sam Lee\n").unwrap();
+        std::fs::write(root.join("other/Sam Lee.md"), "# Another Sam\n").unwrap();
+        std::fs::write(
+            root.join("work/plan.md"),
+            "# Q4 plan\n\nTalk to **[Sam](../people/Sam%20Lee.md)** about the budget.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("work/other.md"),
+            "See [Sam](../other/Sam Lee.md).\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("people/team.md"), "- [Sam](<Sam Lee.md>) leads\n").unwrap();
+
+        let found = backlinks(root, &root.join("people/Sam Lee.md")).unwrap();
+        assert_eq!(
+            found,
+            vec![
+                Backlink {
+                    path: "people/team.md".into(),
+                    title: "team".into(),
+                    snippet: "Sam leads".into(),
+                },
+                Backlink {
+                    path: "work/plan.md".into(),
+                    title: "Q4 plan".into(),
+                    snippet: "Talk to Sam about the budget.".into(),
+                },
+            ]
+        );
+        let notes = brain_notes(root).unwrap();
+        assert!(notes.contains(&NoteEntry {
+            path: "work/plan.md".into(),
+            title: "Q4 plan".into()
+        }));
+    }
+
+    #[test]
+    fn only_image_files_inside_the_brain_are_served() {
+        let brain = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let note = brain.path().join("trips/rome.md");
+        std::fs::create_dir_all(brain.path().join("trips/attachments")).unwrap();
+        std::fs::write(&note, "# Rome").unwrap();
+        std::fs::write(brain.path().join("trips/attachments/view one.png"), b"png").unwrap();
+        std::fs::write(brain.path().join("secret.md"), b"text").unwrap();
+        std::fs::write(outside.path().join("other.png"), b"png").unwrap();
+
+        let (bytes, mime) =
+            read_brain_image(&note, brain.path(), "attachments/view%20one.png").unwrap();
+        assert_eq!((bytes.as_slice(), mime), (b"png".as_slice(), "image/png"));
+        assert!(read_brain_image(&note, brain.path(), "attachments/view one.png").is_ok());
+        assert!(read_brain_image(&note, brain.path(), "../secret.md").is_err());
+        let escape = format!("{}", outside.path().join("other.png").display());
+        assert!(read_brain_image(&note, brain.path(), &escape).is_err());
+        assert!(read_brain_image(&note, brain.path(), "../../other.png").is_err());
+        assert!(read_brain_image(&note, brain.path(), "attachments/missing.png").is_err());
+    }
+
+    #[test]
+    fn pasted_images_land_in_attachments_with_unique_names() {
+        use chrono::TimeZone as _;
+        let brain = tempfile::tempdir().unwrap();
+        let note = brain.path().join("Trip Plan.md");
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 10, 22, 17, 5, 9)
+            .unwrap();
+        let first = save_note_image(&note, "image/png", b"one", now).unwrap();
+        let second = save_note_image(&note, "image/png", b"two", now).unwrap();
+        assert_eq!(first, "attachments/trip-plan-20261022-170509.png");
+        assert_eq!(second, "attachments/trip-plan-20261022-170509-2.png");
+        assert_eq!(std::fs::read(brain.path().join(&second)).unwrap(), b"two");
+        assert!(save_note_image(&note, "text/html", b"<b>", now).is_err());
+    }
 
     #[test]
     fn links_resolve_against_the_note_folder() {
