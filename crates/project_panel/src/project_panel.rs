@@ -55,6 +55,7 @@ use std::{
     collections::HashSet,
     ops::{Neg, Range},
     path::{Path, PathBuf},
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -7421,6 +7422,20 @@ impl Render for ProjectPanel {
             self._brainz_mcp_subscription = Some(cx.observe(&state, |_, _, cx| cx.notify()));
         }
         let brainz_mcp_banner = brainz_calendar::mcp::render_banner(&self.workspace, cx);
+        let brainz_create = brainz_calendar::create::render(
+            {
+                let panel = cx.entity().downgrade();
+                Rc::new(move |window, cx| {
+                    panel
+                        .update(cx, |panel, cx| {
+                            window.focus(&panel.focus_handle, cx);
+                            panel.add_entry(true, window, cx);
+                        })
+                        .log_err();
+                })
+            },
+            cx,
+        );
         let brainz_nav = brainz_calendar::nav::render(&self.workspace, cx);
         let brainz_tree_heading = brainz_calendar::nav::render_tree_heading(cx);
         if self._brainz_decay_subscription.is_none()
@@ -7543,6 +7558,7 @@ impl Render for ProjectPanel {
                 .children(brainz_banner)
                 .children(brainz_prep_banner)
                 .children(brainz_mcp_banner)
+                .child(brainz_create)
                 .child(brainz_nav)
                 .child(brainz_tree_heading)
                 .child(

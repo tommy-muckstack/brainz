@@ -176,3 +176,46 @@ fn five_thousand_lines_keep_their_original_source() {
     assert_eq!(map.roots().len(), 2500);
     assert_eq!(map.source_segments().collect::<String>(), source);
 }
+
+#[test]
+fn note_segments_rejoin_to_the_exact_source() {
+    let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus");
+    for entry in std::fs::read_dir(corpus).expect("synthetic fixtures") {
+        let path = entry.expect("fixture entry").path();
+        if path.extension().is_none_or(|extension| extension != "md") {
+            continue;
+        }
+        let original = std::fs::read_to_string(&path).expect("fixture text");
+        let map = BlockMap::parse(original.clone());
+        let segments = map.note_segments();
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| segment.text)
+                .collect::<String>(),
+            original,
+            "{path:?}"
+        );
+        assert!(
+            segments
+                .iter()
+                .filter(|segment| segment.kind == "gap")
+                .all(|segment| segment.text.trim().is_empty()),
+            "{path:?}"
+        );
+    }
+}
+
+#[test]
+fn note_segments_name_frontmatter_and_blocks() {
+    let map = BlockMap::parse("---\ntitle: x\n---\n\n# Head\n\n- [ ] a\n- b\n\ntext\n");
+    let kinds = map
+        .note_segments()
+        .iter()
+        .map(|segment| segment.kind)
+        .collect::<Vec<_>>();
+    assert_eq!(kinds.first(), Some(&"metadata"));
+    assert!(kinds.contains(&"heading"));
+    assert!(kinds.contains(&"list"));
+    assert!(kinds.contains(&"paragraph"));
+}

@@ -383,9 +383,15 @@ impl MentionSet {
         let Some(start_anchor) = snapshot.buffer_snapshot().anchor_in_excerpt(start) else {
             return Task::ready(());
         };
-        let end_anchor = snapshot.buffer_snapshot().anchor_before(
-            start_anchor.to_offset(&snapshot.buffer_snapshot()) + content_len + 1usize,
-        );
+        // The failure path removes the mention with the space typed after
+        // it; hidden chips (images, thumbnailed documents) have no space.
+        let end_offset = start_anchor.to_offset(&snapshot.buffer_snapshot()) + content_len;
+        let end_offset = if snapshot.buffer_snapshot().chars_at(end_offset).next() == Some(' ') {
+            end_offset + 1usize
+        } else {
+            end_offset
+        };
+        let end_anchor = snapshot.buffer_snapshot().anchor_before(end_offset);
 
         let crease = if let MentionUri::File { abs_path } = &mention_uri
             && is_raster_image_path(abs_path)
@@ -1135,7 +1141,7 @@ fn image_format_from_external_content(format: image::ImageFormat) -> Option<Imag
 
 // Case-insensitive so that e.g. `foo.PNG` is recognized the same as `foo.png`.
 // SVG is excluded because it is handled separately.
-fn is_raster_image_path(path: &Path) -> bool {
+pub(crate) fn is_raster_image_path(path: &Path) -> bool {
     let Some(extension) = path.extension().and_then(OsStr::to_str) else {
         return false;
     };

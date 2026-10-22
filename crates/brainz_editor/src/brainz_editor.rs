@@ -20,6 +20,44 @@ pub enum BlockKind {
     Divider,
 }
 
+fn push_between<'a>(segments: &mut Vec<NoteSegment<'a>>, text: &'a str) {
+    if text.is_empty() {
+        return;
+    }
+    let kind = if text.trim().is_empty() {
+        "gap"
+    } else {
+        "other"
+    };
+    segments.push(NoteSegment { kind, text });
+}
+
+impl BlockKind {
+    fn note_kind(&self) -> &'static str {
+        match self {
+            BlockKind::Paragraph => "paragraph",
+            BlockKind::Heading(_) => "heading",
+            BlockKind::Quote => "quote",
+            BlockKind::List(_) => "list",
+            BlockKind::Code(_) => "code",
+            BlockKind::Html => "html",
+            BlockKind::Table => "table",
+            BlockKind::Metadata => "metadata",
+            BlockKind::Footnote => "footnote",
+            BlockKind::Divider => "divider",
+            BlockKind::Item | BlockKind::TableHead | BlockKind::TableRow | BlockKind::TableCell => {
+                "other"
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct NoteSegment<'a> {
+    pub kind: &'static str,
+    pub text: &'a str,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {
     pub kind: BlockKind,
@@ -128,6 +166,36 @@ impl BlockMap {
         ranges
             .into_iter()
             .filter_map(|range| self.source.get(range))
+    }
+
+    /// The source cut into top-level blocks and the bytes between them, each
+    /// with a kind name the rich note editor understands. Joined in order the
+    /// texts are exactly the source.
+    pub fn note_segments(&self) -> Vec<NoteSegment<'_>> {
+        let mut segments = Vec::new();
+        let mut previous_end = 0;
+        for index in &self.roots {
+            let Some(block) = self.blocks.get(*index) else {
+                continue;
+            };
+            if block.range.start < previous_end {
+                continue;
+            }
+            if let Some(text) = self.source.get(previous_end..block.range.start) {
+                push_between(&mut segments, text);
+            }
+            if let Some(text) = self.source.get(block.range.clone()) {
+                segments.push(NoteSegment {
+                    kind: block.kind.note_kind(),
+                    text,
+                });
+                previous_end = block.range.end;
+            }
+        }
+        if let Some(text) = self.source.get(previous_end..) {
+            push_between(&mut segments, text);
+        }
+        segments
     }
 
     pub fn deepest_block_at(&self, offset: usize) -> Option<usize> {

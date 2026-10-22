@@ -23,7 +23,14 @@ const MAX_DOCUMENT_BYTES: usize = 24 * 1024 * 1024;
 mod storage_v2;
 use storage_v2::{IncrementalStorage, StorageChange};
 
-actions!(brainz_whiteboard, [OpenWhiteboard]);
+actions!(
+    brainz_whiteboard,
+    [
+        OpenWhiteboard,
+        /// Start a blank canvas in the brain's Canvases folder.
+        NewCanvas,
+    ]
+);
 
 #[derive(Clone, PartialEq, Debug, Deserialize, schemars::JsonSchema, gpui::Action)]
 #[action(namespace = brainz_whiteboard)]
@@ -793,6 +800,40 @@ pub fn init(cx: &mut App) {
                 cx,
             );
         });
+        workspace.register_action(|workspace, _: &NewCanvas, window, cx| {
+            let directory = workspace
+                .root_paths(cx)
+                .first()
+                .map(|root| root.join("Canvases"))
+                .unwrap_or_else(|| paths::data_dir().join("whiteboards"));
+            // An open tab may not have reached disk yet, so it holds its name too.
+            let open = workspace
+                .items_of_type::<WhiteboardView>(cx)
+                .map(|view| view.read(cx).target.path.clone())
+                .collect::<Vec<_>>();
+            let path = (1..)
+                .map(|n| {
+                    directory.join(if n == 1 {
+                        "Untitled canvas.brainzboard".to_owned()
+                    } else {
+                        format!("Untitled canvas {n}.brainzboard")
+                    })
+                })
+                .find(|path| !path.exists() && !open.contains(path))
+                .unwrap_or_else(|| directory.join("Untitled canvas.brainzboard"));
+            WhiteboardView::open(
+                workspace,
+                BoardTarget {
+                    path,
+                    object: None,
+                    viewport: None,
+                },
+                true,
+                None,
+                window,
+                cx,
+            );
+        });
         workspace.register_action(|workspace, action: &ReferenceCanvas, window, cx| {
             if !action.path.is_absolute()
                 || action
@@ -1353,7 +1394,7 @@ impl Render for WhiteboardView {
 }
 
 #[cfg(target_os = "macos")]
-mod native {
+pub(crate) mod native {
     use super::*;
     use feature_flags::{BrainzCanvasAgentApi, BrainzCanvasStorageV2, FeatureFlagAppExt as _};
     use gpui::{ClipboardItem, Image, ImageFormat, PathPromptOptions};
@@ -1460,7 +1501,7 @@ mod native {
         Files(Vec<PathBuf>, Option<[f64; 2]>),
     }
 
-    fn asset_root() -> Result<PathBuf> {
+    pub(crate) fn asset_root() -> Result<PathBuf> {
         let executable = std::env::current_exe()?;
         let bundled = executable
             .parent()
@@ -1476,6 +1517,46 @@ mod native {
             "Whiteboard resources are missing. Build them with script/brainz-whiteboard-build."
         );
         Ok(development)
+    }
+
+    /// A file from the web bundle, or the installed Brainz font the bundle
+    /// asks for by a fixed name. Shared by the canvas and the note editor.
+    pub(crate) fn bundle_asset(root: &Path, relative: &str) -> Result<(Vec<u8>, String)> {
+        let local_font = match relative {
+            "fonts/Brainz-Regular.ttf" => Some("Gellix-Regular.ttf"),
+            "fonts/Brainz-Italic.ttf" => Some("Gellix-RegularItalic.ttf"),
+            _ => None,
+        };
+        if let Some(name) = local_font {
+            let path = util::paths::home_dir().join("Library/Fonts").join(name);
+            match std::fs::read(path) {
+                Ok(bytes) => return Ok((bytes, "font/ttf".into())),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => log::warn!("Brainz could not load the installed font: {error}"),
+            }
+        }
+        let path = root
+            .join(if relative.is_empty() {
+                "index.html"
+            } else {
+                relative
+            })
+            .canonicalize()?;
+        ensure!(
+            path.starts_with(root.canonicalize()?),
+            "Asset is outside the bundle"
+        );
+        let mime = match path.extension().and_then(|extension| extension.to_str()) {
+            Some("html") => "text/html; charset=utf-8",
+            Some("js") => "text/javascript; charset=utf-8",
+            Some("css") => "text/css; charset=utf-8",
+            Some("woff2") => "font/woff2",
+            Some("ttf") => "font/ttf",
+            Some("svg") => "image/svg+xml",
+            Some("png") => "image/png",
+            _ => "application/octet-stream",
+        };
+        Ok((std::fs::read(path)?, mime.into()))
     }
 
     fn asset_response(
@@ -1499,42 +1580,7 @@ mod native {
                 request.method() == "GET" && request.uri().host() == Some("app"),
                 "Invalid asset request"
             );
-            let relative = request.uri().path().trim_start_matches('/');
-            let local_font = match relative {
-                "fonts/Brainz-Regular.ttf" => Some("Gellix-Regular.ttf"),
-                "fonts/Brainz-Italic.ttf" => Some("Gellix-RegularItalic.ttf"),
-                _ => None,
-            };
-            if let Some(name) = local_font {
-                let path = util::paths::home_dir().join("Library/Fonts").join(name);
-                match std::fs::read(path) {
-                    Ok(bytes) => return Ok((bytes, "font/ttf".into())),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => log::warn!("Canvas could not load the installed font: {error}"),
-                }
-            }
-            let path = root
-                .join(if relative.is_empty() {
-                    "index.html"
-                } else {
-                    relative
-                })
-                .canonicalize()?;
-            ensure!(
-                path.starts_with(root.canonicalize()?),
-                "Asset is outside the bundle"
-            );
-            let mime = match path.extension().and_then(|extension| extension.to_str()) {
-                Some("html") => "text/html; charset=utf-8",
-                Some("js") => "text/javascript; charset=utf-8",
-                Some("css") => "text/css; charset=utf-8",
-                Some("woff2") => "font/woff2",
-                Some("ttf") => "font/ttf",
-                Some("svg") => "image/svg+xml",
-                Some("png") => "image/png",
-                _ => "application/octet-stream",
-            };
-            Ok((std::fs::read(path)?, mime.into()))
+            bundle_asset(root, request.uri().path().trim_start_matches('/'))
         };
         let mut response = wry::http::Response::new(Cow::Owned(Vec::new()));
         match read() {
