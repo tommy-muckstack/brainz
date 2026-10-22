@@ -174,9 +174,11 @@ This file records implementation and validation; an unchecked item is not shippe
   fixes. Signing, notarization and stapling were verified; the DMG, stable
   download and feed were uploaded.
   [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.45)
-- 0.1.46 candidate: Save as template, Create > Note opening a blank note in
-  the rich editor, New note listing only saved templates, and a spinning
-  Create button. Publication and signed-artifact verification are pending.
+- 0.1.46: published 2026-10-22. Save as template, Create > Note opening a
+  blank note in the rich editor, New note listing only saved templates, and a
+  spinning Create button. Signing, notarization and stapling were verified;
+  the DMG, stable download and feed were uploaded.
+  [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.46)
 
 ## Work in progress
 
