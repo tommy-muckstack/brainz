@@ -2,9 +2,18 @@
 
 ## Unreleased
 
+## 0.1.45 (2026-10-22)
+
 ### New
 
+- Markdown notes open in a rich text editor: type straight into headings, lists, checklists, quotes, code and tables, and Brainz saves Markdown back, rewriting only the blocks you changed. Cmd-Shift-M or the Markdown button switches to the source and back, and links to other notes open them in Brainz.
+- A yellow Create button at the top of the sidebar makes a new canvas, note, folder, to-do (under Today) or Google Calendar invite.
 - Connectors has a Back up notes card: choose Obsidian or Notion and Brainz keeps a second copy of every note there, updated after each sync or with Back up now. Obsidian gets the Markdown files in a vault folder (Obsidian's iCloud folder by default); Notion gets a private "Brainz backup" page with a page per folder and per note, through a personal access token you paste once.
+
+### Fixed
+
+- Chat activity rows ("Ran N commands") line up with the agent's reply bubble, and composer text no longer starts indented after attaching many images or files.
+- Arrow keys in the canvas's text no longer type stray characters.
 
 ## 0.1.44 (2026-10-15)
 
