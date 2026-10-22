@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, ops::Range, sync::Arc, time::Duration};
+use std::{collections::VecDeque, ops::Range, path::Path, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use futures::{AsyncReadExt, FutureExt};
@@ -19,6 +19,9 @@ pub(crate) enum LinkKind {
     Granola,
     WisprFlow,
     GitHub,
+    ClaudeArtifact,
+    BrainzCanvas,
+    BrainzFile,
 }
 
 impl LinkKind {
@@ -30,6 +33,9 @@ impl LinkKind {
             LinkKind::Granola => "Granola notes".to_owned(),
             LinkKind::WisprFlow => "Wispr Flow notes".to_owned(),
             LinkKind::GitHub => github_label(url).unwrap_or_else(|| "GitHub".to_owned()),
+            LinkKind::ClaudeArtifact => "Claude artifact".to_owned(),
+            LinkKind::BrainzCanvas => brainz_file_label(url, "Canvas", true),
+            LinkKind::BrainzFile => brainz_file_label(url, "Note", false),
         }
     }
 
@@ -37,13 +43,21 @@ impl LinkKind {
     pub(crate) fn logo(self) -> Option<&'static str> {
         match self {
             LinkKind::Granola => Some("icons/brainz/logos/granola.png"),
-            LinkKind::GoogleDoc | LinkKind::WisprFlow | LinkKind::GitHub => None,
+            LinkKind::GoogleDoc
+            | LinkKind::WisprFlow
+            | LinkKind::GitHub
+            | LinkKind::ClaudeArtifact
+            | LinkKind::BrainzCanvas
+            | LinkKind::BrainzFile => None,
         }
     }
 
     pub(crate) fn icon(self) -> IconName {
         match self {
             LinkKind::GitHub => IconName::Github,
+            LinkKind::ClaudeArtifact => IconName::BrainzClaude,
+            LinkKind::BrainzCanvas => IconName::BrainzWhiteboard,
+            LinkKind::BrainzFile => IconName::FileMarkdown,
             LinkKind::GoogleDoc | LinkKind::Granola | LinkKind::WisprFlow => IconName::File,
         }
     }
@@ -56,6 +70,11 @@ impl LinkKind {
             LinkKind::Granola => lower == "granola" || lower == "granola notes",
             LinkKind::WisprFlow => lower.starts_with("wispr flow"),
             LinkKind::GitHub => lower == "github",
+            LinkKind::ClaudeArtifact => matches!(
+                lower.as_str(),
+                "claude" | "claude artifact" | "artifact | claude"
+            ),
+            LinkKind::BrainzCanvas | LinkKind::BrainzFile => false,
         }
     }
 
@@ -63,6 +82,13 @@ impl LinkKind {
     /// "<title> by <user> · Pull Request #33 · owner/repo" becomes
     /// "#33 <title>", and a repo page becomes "owner/repo".
     fn clean_title(self, title: String, url: &str) -> String {
+        if self == LinkKind::ClaudeArtifact {
+            return title
+                .trim_end_matches(" | Claude")
+                .trim_end_matches(" - Claude")
+                .trim()
+                .to_owned();
+        }
         if self != LinkKind::GitHub {
             return title;
         }
@@ -82,6 +108,32 @@ impl LinkKind {
         }
         github_label(url).unwrap_or(title)
     }
+
+    fn fetches_title(self) -> bool {
+        !matches!(self, LinkKind::BrainzCanvas | LinkKind::BrainzFile)
+    }
+}
+
+fn brainz_file_label(url: &str, fallback: &str, canvas: bool) -> String {
+    let path = Url::parse(url).ok().and_then(|url| {
+        if canvas {
+            url.query_pairs()
+                .find(|(key, _)| key == "path")
+                .map(|(_, path)| path.into_owned())
+        } else {
+            urlencoding::decode(url.path())
+                .ok()
+                .map(|path| path.into_owned())
+        }
+    });
+    let name = path.as_deref().and_then(|path| {
+        Path::new(path)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+    });
+    name.filter(|name| !name.is_empty())
+        .map(|name| format!("{fallback}: {name}"))
+        .unwrap_or_else(|| fallback.to_owned())
 }
 
 /// `owner/repo`, `owner/repo #33`, `owner/repo@abc1234`, or
@@ -112,6 +164,29 @@ pub(crate) fn known_link(url: &str) -> Option<(LinkKind, String)> {
         return Some((LinkKind::GoogleDoc, metadata_url));
     }
     let parsed = Url::parse(url).ok()?;
+    if parsed.scheme() == "brainz" {
+        if !parsed.username().is_empty() || parsed.password().is_some() || parsed.port().is_some() {
+            return None;
+        }
+        let kind = match parsed.host_str()? {
+            "whiteboard"
+                if parsed.query_pairs().any(|(key, path)| {
+                    key == "path"
+                        && Path::new(path.as_ref()).is_absolute()
+                        && path.ends_with(".brainzboard")
+                }) =>
+            {
+                LinkKind::BrainzCanvas
+            }
+            "file" if parsed.path().starts_with('/') && parsed.path().len() > 1 => {
+                LinkKind::BrainzFile
+            }
+            _ => return None,
+        };
+        let mut clean = parsed.clone();
+        clean.set_fragment(None);
+        return Some((kind, clean.into()));
+    }
     if !matches!(parsed.scheme(), "https" | "http") || !parsed.username().is_empty() {
         return None;
     }
@@ -131,6 +206,17 @@ pub(crate) fn known_link(url: &str) -> Option<(LinkKind, String)> {
             let mut metadata_url = parsed.clone();
             metadata_url.set_fragment(None);
             Some((LinkKind::GitHub, metadata_url.into()))
+        }
+        ("claude.ai" | "www.claude.ai", ["artifact", id])
+            if parsed.scheme() == "https"
+                && parsed.port().is_none()
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')) =>
+        {
+            let mut metadata_url = parsed.clone();
+            metadata_url.set_fragment(None);
+            Some((LinkKind::ClaudeArtifact, metadata_url.into()))
         }
         _ => None,
     }
@@ -211,8 +297,9 @@ const TITLE_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// The URL to fetch for a recognized link's title, if the link is one Brainz
 /// turns into a pill.
+#[cfg(test)]
 pub(crate) fn document_metadata_url(url: &str) -> Option<String> {
-    known_link(url).map(|(_, metadata_url)| metadata_url)
+    known_link(url).and_then(|(kind, metadata_url)| kind.fetches_title().then_some(metadata_url))
 }
 
 fn google_doc_metadata_url(url: &str) -> Option<String> {
@@ -264,13 +351,27 @@ fn google_doc_metadata_url(url: &str) -> Option<String> {
 pub(crate) fn pasted_document_links(text: &str) -> Vec<(Range<usize>, Url)> {
     let mut finder = linkify::LinkFinder::new();
     finder.kinds(&[linkify::LinkKind::Url]);
-    finder
+    let mut links: Vec<_> = finder
         .links(text)
         .filter_map(|link| {
             known_link(link.as_str())?;
             Some((link.start()..link.end(), Url::parse(link.as_str()).ok()?))
         })
-        .collect()
+        .collect();
+    for (start, _) in text.match_indices("brainz://") {
+        let end = text[start..]
+            .find(char::is_whitespace)
+            .map_or(text.len(), |offset| start + offset);
+        let raw = text[start..end].trim_end_matches([',', ';', '.', ')', ']', '>', '"', '\'']);
+        if known_link(raw).is_some()
+            && let Ok(url) = Url::parse(raw)
+        {
+            links.push((start..start + raw.len(), url));
+        }
+    }
+    links.sort_by_key(|(range, _)| range.start);
+    links.dedup_by(|left, right| left.0 == right.0);
+    links
 }
 
 fn document_title(html: &[u8], kind: LinkKind) -> Option<String> {
@@ -345,9 +446,10 @@ fn document_title(html: &[u8], kind: LinkKind) -> Option<String> {
             .strip_suffix(" - Google Docs")?
             .trim()
             .to_owned(),
-        LinkKind::Granola | LinkKind::WisprFlow | LinkKind::GitHub => {
+        LinkKind::Granola | LinkKind::WisprFlow | LinkKind::GitHub | LinkKind::ClaudeArtifact => {
             og_title.or(page_title)?.trim().to_owned()
         }
+        LinkKind::BrainzCanvas | LinkKind::BrainzFile => return None,
     };
     if title.is_empty() || kind.is_generic_title(&title) {
         return None;
@@ -459,7 +561,7 @@ impl DocumentLink {
         cx: &mut Context<Self>,
     ) -> Self {
         let (kind, metadata_url) = match known_link(&url) {
-            Some((kind, metadata_url)) => (kind, Some(metadata_url)),
+            Some((kind, metadata_url)) => (kind, kind.fetches_title().then_some(metadata_url)),
             None => (LinkKind::GoogleDoc, None),
         };
         let title_task = cx.spawn(async move |this, cx| {
@@ -695,6 +797,61 @@ mod tests {
             Some(LinkKind::WisprFlow)
         );
         assert_eq!(known_link("https://example.com/t/abc"), None);
+        let artifact = "https://claude.ai/artifact/PAwwJL4K2VE5BHF4tHqrQn?sk=shareKey#section";
+        assert_eq!(
+            known_link(artifact),
+            Some((
+                LinkKind::ClaudeArtifact,
+                "https://claude.ai/artifact/PAwwJL4K2VE5BHF4tHqrQn?sk=shareKey".to_owned()
+            ))
+        );
+        assert_eq!(
+            LinkKind::ClaudeArtifact.fallback_label(artifact),
+            "Claude artifact"
+        );
+        assert_eq!(
+            document_title(
+                b"<meta property=\"og:title\" content=\"Report design | Claude\">",
+                LinkKind::ClaudeArtifact
+            )
+            .map(|title| LinkKind::ClaudeArtifact.clean_title(title, artifact)),
+            Some("Report design".into())
+        );
+        for url in [
+            "https://claude.ai/artifact/",
+            "https://claude.ai.evil.example/artifact/abc",
+            "http://claude.ai/artifact/abc",
+            "https://user@claude.ai/artifact/abc",
+            "https://claude.ai/artifact/abc/extra",
+        ] {
+            assert!(known_link(url).is_none());
+        }
+        let canvas = "brainz://whiteboard?path=%2FUsers%2Ftommy%2FCanvases%2FOptise+Onboarding.brainzboard&x=0.00&y=0.00&zoom=1.000";
+        let note = "brainz://file/Users/tommy/Notes/Launch%20plan.md";
+        assert_eq!(link_kind(canvas), Some(LinkKind::BrainzCanvas));
+        assert_eq!(link_kind(note), Some(LinkKind::BrainzFile));
+        assert_eq!(
+            LinkKind::BrainzCanvas.fallback_label(canvas),
+            "Canvas: Optise Onboarding"
+        );
+        assert_eq!(
+            LinkKind::BrainzFile.fallback_label(note),
+            "Note: Launch plan"
+        );
+        assert!(document_metadata_url(canvas).is_none());
+        let text = format!("Open ({canvas}) and {note}, then update both.");
+        let links = pasted_document_links(&text);
+        assert_eq!(links.len(), 2);
+        assert_eq!(&text[links[0].0.clone()], canvas);
+        assert_eq!(&text[links[1].0.clone()], note);
+        for url in [
+            "brainz://whiteboard?path=relative.brainzboard",
+            "brainz://whiteboard?path=%2Ftmp%2Fother.txt",
+            "brainz://file",
+            "brainz://other?path=%2Ftmp%2Fnote.md",
+        ] {
+            assert!(known_link(url).is_none());
+        }
         assert_eq!(
             known_link("https://github.com/acme/widgets/pull/33#discussion_r1"),
             Some((

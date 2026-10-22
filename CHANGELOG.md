@@ -20,6 +20,12 @@
 ### Changed
 
 - The Canvas assistant setting is gone; canvas tools are always on and connected for every brain.
+- Claude artifact links and Brainz note and canvas links appear as named pills in chat, while retaining their original destinations.
+
+### Fixed
+
+- Canvas names have more room in the title bar and show the full name on hover.
+- Screenshots copied to the macOS clipboard paste onto canvases, including when the embedded web view omits image data from its paste event.
 
 ## 0.1.46 (2026-10-22)
 

@@ -1422,7 +1422,7 @@ impl MessageEditor {
                         // Create the confirmation task based on the mention URI type.
                         // This properly loads file content, fetches URLs, etc.
                         let task = if matches!(&mention_uri, MentionUri::Fetch { url }
-                            if crate::google_doc_link::document_metadata_url(url.as_str()).is_some())
+                            if crate::google_doc_link::link_kind(url.as_str()).is_some())
                         {
                             Task::ready(Ok(Mention::Link))
                         } else {
@@ -6550,13 +6550,18 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_google_doc_paste_keeps_text_and_sends_original_links(cx: &mut TestAppContext) {
+    async fn test_shared_link_paste_keeps_text_and_sends_original_links(cx: &mut TestAppContext) {
         init_test(cx);
         let (message_editor, editor, mut cx) =
             setup_paste_test_message_editor(json!({"file.txt": ""}), cx).await;
         let first = "https://docs.google.com/document/d/abc123/edit?usp=sharing#heading=h.one";
         let second = "https://docs.google.com/document/d/xyz456/edit";
-        let text = format!("Notes: {first}\nAlso {second}\nPlease read both.");
+        let artifact = "https://claude.ai/artifact/PAwwJL4K2VE5BHF4tHqrQn?sk=shareKey";
+        let canvas = "brainz://whiteboard?path=%2Ftmp%2FOptise+Onboarding.brainzboard&x=0.00&y=0.00&zoom=1.000";
+        let note = "brainz://file/tmp/Launch%20plan.md";
+        let text = format!(
+            "Notes: {first}\nAlso {second}\nArtifact: {artifact}\nCanvas: {canvas}\nNote: {note}\nPlease read all five."
+        );
         cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
         message_editor.update_in(&mut cx, |message_editor, window, cx| {
             message_editor.paste(&Paste, window, cx);
@@ -6564,7 +6569,7 @@ mod tests {
         cx.run_until_parked();
         editor.update(&mut cx, |editor, cx| {
             assert_eq!(editor.text(cx), text);
-            assert_eq!(fold_ranges(editor, cx).len(), 2);
+            assert_eq!(fold_ranges(editor, cx).len(), 5);
         });
         let (content, _) = message_editor
             .update(&mut cx, |editor, cx| editor.contents(false, cx))
@@ -6577,7 +6582,7 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(urls, vec![first, second]);
+        assert_eq!(urls, vec![first, second, artifact, canvas, note]);
         let surrounding_text = content
             .iter()
             .filter_map(|block| match block {
@@ -6585,7 +6590,10 @@ mod tests {
                 _ => None,
             })
             .collect::<String>();
-        assert_eq!(surrounding_text, "Notes: \nAlso \nPlease read both.");
+        assert_eq!(
+            surrounding_text,
+            "Notes: \nAlso \nArtifact: \nCanvas: \nNote: \nPlease read all five."
+        );
         assert!(
             !content
                 .iter()

@@ -181,7 +181,9 @@ This file records implementation and validation; an unchecked item is not shippe
   [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.46)
 - 0.1.47 candidate: Note images, tables, links, and history; agent canvas
   tools; Claude actions in notes; quick capture; and automatic naming for
-  untitled notes. Publication and signed-artifact verification are pending.
+  untitled notes. Chat turns Claude artifact and Brainz object links into pills;
+  canvas titles have more room, and macOS clipboard screenshots paste onto
+  canvases. Publication and signed-artifact verification are pending.
 
 ## Work in progress
 

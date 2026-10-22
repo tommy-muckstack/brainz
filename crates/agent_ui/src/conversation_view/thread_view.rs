@@ -11144,7 +11144,7 @@ impl ThreadView {
         cx: &Context<Self>,
     ) -> AnyElement {
         let uri: SharedString = resource_link.uri.clone().into();
-        if crate::google_doc_link::document_metadata_url(&uri).is_some() {
+        if crate::google_doc_link::link_kind(&uri).is_some() {
             return crate::google_doc_link::GoogleDocLink::new(
                 uri.to_string(),
                 Some(resource_link.name.clone()),

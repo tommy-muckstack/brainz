@@ -19,6 +19,7 @@ brainz_canvas.workspace = true
 brainz_templates.workspace = true
 chrono.workspace = true
 gpui.workspace = true
+image.workspace = true
 log.workspace = true
 language.workspace = true
 lsp.workspace = true

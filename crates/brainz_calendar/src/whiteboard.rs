@@ -1397,7 +1397,7 @@ impl Render for WhiteboardView {
 pub(crate) mod native {
     use super::*;
     use feature_flags::{BrainzCanvasStorageV2, FeatureFlagAppExt as _};
-    use gpui::{ClipboardItem, Image, ImageFormat, PathPromptOptions};
+    use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat, PathPromptOptions};
     use std::{borrow::Cow, rc::Rc};
 
     #[derive(Deserialize)]
@@ -1476,6 +1476,9 @@ pub(crate) mod native {
         },
         CopyImage {
             png: String,
+        },
+        PasteClipboard {
+            position: [f64; 2],
         },
         AttachToChat {
             scene: Value,
@@ -1872,6 +1875,47 @@ pub(crate) mod native {
                         _ => self.send(
                             json!({"type":"notice", "message":"The capture could not be copied"}),
                         ),
+                    }
+                }
+                NativeEvent::Message(Message::PasteClipboard { position }) => {
+                    let image = cx.read_from_clipboard().and_then(|item| {
+                        item.into_entries().find_map(|entry| match entry {
+                            ClipboardEntry::Image(image) => Some(image),
+                            _ => None,
+                        })
+                    });
+                    if let Some(image) = image {
+                        let converted = (|| -> Result<(String, Vec<u8>)> {
+                            let (mime, bytes) = match image.format() {
+                                ImageFormat::Png => ("image/png", image.bytes().to_vec()),
+                                ImageFormat::Jpeg => ("image/jpeg", image.bytes().to_vec()),
+                                ImageFormat::Webp => ("image/webp", image.bytes().to_vec()),
+                                ImageFormat::Gif => ("image/gif", image.bytes().to_vec()),
+                                format => {
+                                    let source = match format {
+                                        ImageFormat::Tiff => image::ImageFormat::Tiff,
+                                        ImageFormat::Bmp => image::ImageFormat::Bmp,
+                                        ImageFormat::Ico => image::ImageFormat::Ico,
+                                        ImageFormat::Pnm => image::ImageFormat::Pnm,
+                                        ImageFormat::Svg => anyhow::bail!(
+                                            "SVG images cannot be pasted into a canvas"
+                                        ),
+                                        _ => anyhow::bail!("Unsupported clipboard image format"),
+                                    };
+                                    let decoded =
+                                        image::load_from_memory_with_format(image.bytes(), source)?;
+                                    let mut png = std::io::Cursor::new(Vec::new());
+                                    decoded.write_to(&mut png, image::ImageFormat::Png)?;
+                                    ("image/png", png.into_inner())
+                                }
+                            };
+                            ensure!(bytes.len() <= 25 * 1024 * 1024, "Use an image under 25 MB");
+                            Ok((mime.into(), bytes))
+                        })();
+                        match converted {
+                            Ok((mime, bytes)) => self.send(json!({"type":"pasteImage","position":position,"mime":mime,"data":base64::engine::general_purpose::STANDARD.encode(bytes)})),
+                            Err(error) => self.send(json!({"type":"notice","message":format!("Could not paste the image: {error}")})),
+                        }
                     }
                 }
                 NativeEvent::Message(Message::AttachToChat {

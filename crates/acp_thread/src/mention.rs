@@ -287,6 +287,9 @@ impl MentionUri {
                 }
             }
             "http" | "https" => Ok(MentionUri::Fetch { url }),
+            "brainz" if matches!(url.host_str(), Some("whiteboard" | "file")) => {
+                Ok(MentionUri::Fetch { url })
+            }
             other => bail!("unrecognized scheme {:?}", other),
         }
     }
@@ -1427,6 +1430,19 @@ mod tests {
             _ => panic!("Expected Fetch variant"),
         }
         assert_eq!(parsed.to_uri().to_string(), https_uri);
+    }
+
+    #[test]
+    fn test_parse_brainz_object_uri() {
+        for uri in [
+            "brainz://whiteboard?path=%2Ftmp%2FLaunch+plan.brainzboard&zoom=1.000",
+            "brainz://file/%2Ftmp%2FMeeting%20notes.md",
+        ] {
+            let parsed = MentionUri::parse(uri, PathStyle::local()).unwrap();
+            assert!(matches!(&parsed, MentionUri::Fetch { .. }));
+            assert_eq!(parsed.to_uri().to_string(), uri);
+        }
+        assert!(MentionUri::parse("brainz://other?path=x", PathStyle::local()).is_err());
     }
 
     #[test]
