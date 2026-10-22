@@ -2464,6 +2464,7 @@ dependencies = [
  "base64 0.22.1",
  "brainz_ai",
  "brainz_canvas",
+ "brainz_editor",
  "brainz_templates",
  "chrono",
  "collections",
@@ -2524,6 +2525,7 @@ name = "brainz_editor"
 version = "0.1.0"
 dependencies = [
  "pulldown-cmark 0.13.4",
+ "serde",
 ]
 
 [[package]]

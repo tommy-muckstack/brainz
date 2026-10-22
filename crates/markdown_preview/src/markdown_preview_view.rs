@@ -115,6 +115,22 @@ struct SuppressedAutoPreviews(HashSet<EntityId>);
 
 impl Global for SuppressedAutoPreviews {}
 
+/// Brainz: opens a Markdown note in an editable view instead of this
+/// read-only preview. Registered by the rich note editor, which lives in a
+/// crate that depends on this one; returns the item that replaces `editor`.
+pub type RichNoteOpenerFn = dyn Fn(
+    &mut Workspace,
+    Entity<Editor>,
+    Entity<Pane>,
+    bool,
+    &mut Window,
+    &mut Context<Workspace>,
+) -> Option<Box<dyn workspace::ItemHandle>>;
+
+pub struct RichNoteOpener(pub std::rc::Rc<RichNoteOpenerFn>);
+
+impl Global for RichNoteOpener {}
+
 #[derive(Clone, Copy, Debug)]
 pub enum MarkdownPreviewEvent {
     SourceEditorChanged,
@@ -151,7 +167,11 @@ impl MarkdownPreviewView {
                 {
                     return;
                 }
-                if !MarkdownPreviewSettings::get_global(cx).open_markdown_files_in_preview
+                let rich_opener = cx
+                    .try_global::<RichNoteOpener>()
+                    .map(|opener| opener.0.clone());
+                if (rich_opener.is_none()
+                    && !MarkdownPreviewSettings::get_global(cx).open_markdown_files_in_preview)
                     || workspace.is_restoring()
                 {
                     return;
@@ -174,6 +194,29 @@ impl MarkdownPreviewView {
                         .active_item()
                         .is_some_and(|active_item| active_item.item_id() == item.item_id());
                 let focus = editor.focus_handle(cx).contains_focused(window, cx);
+                if let Some(opener) = rich_opener {
+                    // The editable note takes the editor's place; a dirty
+                    // editor stays so its unsaved text is never dropped.
+                    if !replaces_editor {
+                        return;
+                    }
+                    let Some(note) = opener(workspace, editor, pane.clone(), focus, window, cx)
+                    else {
+                        return;
+                    };
+                    // The note shares the editor's file, and a pane activates
+                    // the open item for a file instead of adding a second
+                    // one, so the editor has to leave before the note arrives.
+                    pane.update(cx, |pane, cx| {
+                        let index = pane.index_for_item(item.as_ref());
+                        pane.remove_item(item.item_id(), false, false, window, cx);
+                        pane.add_item(note.boxed_clone(), activate, focus, index, window, cx);
+                        if replaces_temporary_editor {
+                            pane.replace_preview_item_id(note.item_id(), window, cx);
+                        }
+                    });
+                    return;
+                }
                 let preview = Self::activate_or_add_preview(
                     workspace,
                     editor,
@@ -4174,6 +4217,49 @@ mod tests {
             assert_eq!(
                 workspace.items_of_type::<MarkdownPreviewView>(cx).count(),
                 1
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn rich_note_opener_replaces_clean_markdown_editors(cx: &mut TestAppContext) {
+        use workspace::item::test::TestItem;
+        let (project, workspace, multi_workspace) =
+            markdown_workspace(cx, json!({ "note.md": "# Note\n" }), false).await;
+        // The opener wins even with the preview setting off. Its item shows
+        // the same file as the editor, as the real note view does.
+        cx.update(|cx| {
+            set_auto_preview_enabled(cx, false);
+            cx.set_global(super::RichNoteOpener(std::rc::Rc::new(
+                |_workspace, editor, _pane, _focus, _window, cx| {
+                    let entry_id = *editor.project_entry_ids(cx).first()?;
+                    let file = workspace::item::test::TestProjectItem::new(
+                        entry_id.to_proto(),
+                        "note.md",
+                        cx,
+                    );
+                    Some(Box::new(cx.new(|cx| {
+                        TestItem::new(cx)
+                            .with_buffer_kind(workspace::item::ItemBufferKind::Singleton)
+                            .with_project_items(&[file])
+                    })))
+                },
+            )));
+        });
+
+        let editor = open_project_file(cx, &project, &multi_workspace, "note.md", None, true).await;
+        cx.update(|cx| {
+            let workspace = workspace.read(cx);
+            assert!(workspace.active_item_as::<TestItem>(cx).is_some());
+            assert!(
+                workspace
+                    .panes()
+                    .iter()
+                    .all(|pane| pane.read(cx).index_for_item(editor.as_ref()).is_none())
+            );
+            assert_eq!(
+                workspace.items_of_type::<MarkdownPreviewView>(cx).count(),
+                0
             );
         });
     }

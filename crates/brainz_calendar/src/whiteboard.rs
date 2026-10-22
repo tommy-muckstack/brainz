@@ -1394,7 +1394,7 @@ impl Render for WhiteboardView {
 }
 
 #[cfg(target_os = "macos")]
-mod native {
+pub(crate) mod native {
     use super::*;
     use feature_flags::{BrainzCanvasAgentApi, BrainzCanvasStorageV2, FeatureFlagAppExt as _};
     use gpui::{ClipboardItem, Image, ImageFormat, PathPromptOptions};
@@ -1501,7 +1501,7 @@ mod native {
         Files(Vec<PathBuf>, Option<[f64; 2]>),
     }
 
-    fn asset_root() -> Result<PathBuf> {
+    pub(crate) fn asset_root() -> Result<PathBuf> {
         let executable = std::env::current_exe()?;
         let bundled = executable
             .parent()
@@ -1517,6 +1517,46 @@ mod native {
             "Whiteboard resources are missing. Build them with script/brainz-whiteboard-build."
         );
         Ok(development)
+    }
+
+    /// A file from the web bundle, or the installed Brainz font the bundle
+    /// asks for by a fixed name. Shared by the canvas and the note editor.
+    pub(crate) fn bundle_asset(root: &Path, relative: &str) -> Result<(Vec<u8>, String)> {
+        let local_font = match relative {
+            "fonts/Brainz-Regular.ttf" => Some("Gellix-Regular.ttf"),
+            "fonts/Brainz-Italic.ttf" => Some("Gellix-RegularItalic.ttf"),
+            _ => None,
+        };
+        if let Some(name) = local_font {
+            let path = util::paths::home_dir().join("Library/Fonts").join(name);
+            match std::fs::read(path) {
+                Ok(bytes) => return Ok((bytes, "font/ttf".into())),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => log::warn!("Brainz could not load the installed font: {error}"),
+            }
+        }
+        let path = root
+            .join(if relative.is_empty() {
+                "index.html"
+            } else {
+                relative
+            })
+            .canonicalize()?;
+        ensure!(
+            path.starts_with(root.canonicalize()?),
+            "Asset is outside the bundle"
+        );
+        let mime = match path.extension().and_then(|extension| extension.to_str()) {
+            Some("html") => "text/html; charset=utf-8",
+            Some("js") => "text/javascript; charset=utf-8",
+            Some("css") => "text/css; charset=utf-8",
+            Some("woff2") => "font/woff2",
+            Some("ttf") => "font/ttf",
+            Some("svg") => "image/svg+xml",
+            Some("png") => "image/png",
+            _ => "application/octet-stream",
+        };
+        Ok((std::fs::read(path)?, mime.into()))
     }
 
     fn asset_response(
@@ -1540,42 +1580,7 @@ mod native {
                 request.method() == "GET" && request.uri().host() == Some("app"),
                 "Invalid asset request"
             );
-            let relative = request.uri().path().trim_start_matches('/');
-            let local_font = match relative {
-                "fonts/Brainz-Regular.ttf" => Some("Gellix-Regular.ttf"),
-                "fonts/Brainz-Italic.ttf" => Some("Gellix-RegularItalic.ttf"),
-                _ => None,
-            };
-            if let Some(name) = local_font {
-                let path = util::paths::home_dir().join("Library/Fonts").join(name);
-                match std::fs::read(path) {
-                    Ok(bytes) => return Ok((bytes, "font/ttf".into())),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => log::warn!("Canvas could not load the installed font: {error}"),
-                }
-            }
-            let path = root
-                .join(if relative.is_empty() {
-                    "index.html"
-                } else {
-                    relative
-                })
-                .canonicalize()?;
-            ensure!(
-                path.starts_with(root.canonicalize()?),
-                "Asset is outside the bundle"
-            );
-            let mime = match path.extension().and_then(|extension| extension.to_str()) {
-                Some("html") => "text/html; charset=utf-8",
-                Some("js") => "text/javascript; charset=utf-8",
-                Some("css") => "text/css; charset=utf-8",
-                Some("woff2") => "font/woff2",
-                Some("ttf") => "font/ttf",
-                Some("svg") => "image/svg+xml",
-                Some("png") => "image/png",
-                _ => "application/octet-stream",
-            };
-            Ok((std::fs::read(path)?, mime.into()))
+            bundle_asset(root, request.uri().path().trim_start_matches('/'))
         };
         let mut response = wry::http::Response::new(Cow::Owned(Vec::new()));
         match read() {

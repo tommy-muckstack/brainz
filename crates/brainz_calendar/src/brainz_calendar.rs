@@ -21,6 +21,7 @@ pub mod palette;
 pub mod pdf;
 pub mod permissions;
 pub mod prep;
+pub mod rich_note;
 mod slash;
 pub mod status_decay;
 mod sync_review;
@@ -69,6 +70,7 @@ pub fn init(cx: &mut App) {
     new_note::init(cx);
     folder_defaults::init(cx);
     palette::init(cx);
+    rich_note::init(cx);
     create::init(cx);
     slash::init(cx);
     cx.observe_new(|workspace: &mut Workspace, _, _| {
