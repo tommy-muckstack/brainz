@@ -229,6 +229,13 @@ impl Registry {
         Ok(registry)
     }
 
+    /// Drops the templates bundled with Brainz, keeping the ones saved in
+    /// the brain or provided by skills.
+    pub fn retain_saved(&mut self) {
+        self.templates
+            .retain(|_, template| template.source != TemplateSource::Builtin);
+    }
+
     pub fn insert(&mut self, mut template: Template) {
         let id = template.metadata.id.clone();
         if let Some(existing) = self.templates.get(&id) {
@@ -631,6 +638,73 @@ pub fn relative_path(path: &str) -> Result<PathBuf> {
     }
     ensure!(!normalized.as_os_str().is_empty(), "Template path is empty");
     Ok(normalized)
+}
+
+/// Saves a note as a template in the brain's template folder and returns the
+/// new file and the template's name. The note's text is escaped, so a literal `{{` in it stays text
+/// instead of becoming a placeholder.
+pub fn save_note_as_template(root: &Path, note: &Path, text: &str) -> Result<(PathBuf, String)> {
+    let configured = TemplatesConfig::load(root)?.dir;
+    let directory = scoped_path(
+        root,
+        configured
+            .as_deref()
+            .unwrap_or(Path::new(".brainz/templates")),
+    )?;
+    fs::create_dir_all(&directory)?;
+    let name = note_template_name(note, text);
+    let mut base = helpers::slug(&name);
+    if base.is_empty() {
+        base = "template".into();
+    }
+    let description = format!("Saved from {}", note.display());
+    let mut number = 1;
+    loop {
+        let id = if number == 1 {
+            base.clone()
+        } else {
+            format!("{base}-{number}")
+        };
+        let path = directory.join(format!("{id}.md"));
+        let content = format!(
+            "---\nid: {}\nname: {}\ndescription: {}\nmodes: [new, insert]\npath: '{{{{folder}}}}/{{{{slug input.title}}}}.md'\ninputs:\n  - {{ id: title, type: text, label: Note title, required: true }}\n---\n{}",
+            serde_json::to_string(&id)?,
+            serde_json::to_string(&name)?,
+            serde_json::to_string(&description)?,
+            text.replace("{{", "\\{{"),
+        );
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(content.as_bytes())?;
+                return Ok((path, name));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && number < 1000 => {
+                number += 1;
+            }
+            Err(error) => return Err(error).with_context(|| format!("writing {}", path.display())),
+        }
+    }
+}
+
+/// The note's first heading, or its file name.
+fn note_template_name(note: &Path, text: &str) -> String {
+    let body = text
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.split_once("\n---\n").map(|(_, body)| body))
+        .unwrap_or(text);
+    body.lines()
+        .find_map(|line| line.strip_prefix("# "))
+        .map(|heading| heading.trim().to_owned())
+        .filter(|heading| !heading.is_empty())
+        .unwrap_or_else(|| {
+            note.file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Template".into())
+        })
 }
 
 pub fn scoped_path(root: &Path, relative: &Path) -> Result<PathBuf> {

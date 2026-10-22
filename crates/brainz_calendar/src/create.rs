@@ -10,10 +10,11 @@ use anyhow::{Context as _, Result, anyhow};
 use chrono::{Datelike as _, Days, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone as _, Utc};
 use editor::Editor;
 use gpui::{
-    Action, Anchor, Animation, AnimationExt, App, DismissEvent, Entity, EventEmitter, FocusHandle,
-    Focusable, WeakEntity, Window, actions, ease_out_quint, point,
+    Action, Anchor, Animation, AnimationExt, App, ClickEvent, CursorStyle, DismissEvent, Entity,
+    EventEmitter, FocusHandle, Focusable, Transformation, WeakEntity, Window, actions,
+    ease_out_quint, percentage, point,
 };
-use ui::{ButtonLike, PopoverMenu, prelude::*};
+use ui::{ButtonLike, PopoverMenu, Transformable as _, prelude::*};
 use workspace::{ModalView, Workspace};
 
 use crate::{brain_config::BrainConfig, open_loops};
@@ -49,38 +50,12 @@ pub fn init(cx: &mut App) {
 pub type SidebarCallback = Rc<dyn Fn(&mut Window, &mut App)>;
 
 /// The Create button, rendered by the project panel above the navigation.
-pub fn render(on_new_folder: SidebarCallback, cx: &mut App) -> gpui::AnyElement {
-    let colors = cx.theme().colors();
-    let accent = colors.text_accent;
-    let ink = colors.background;
-    let trigger = ButtonLike::new("brainz-create-trigger")
-        .size(ButtonSize::None)
-        .style(ButtonStyle::Transparent)
-        .full_width()
-        .child(
-            h_flex()
-                .id("brainz-create-face")
-                .w_full()
-                .h(px(30.))
-                .pl(px(12.))
-                .gap_2()
-                .items_center()
-                .rounded_md()
-                .bg(accent)
-                .text_color(ink)
-                .hover(|this| this.bg(accent.opacity(0.88)))
-                .child(
-                    Icon::new(IconName::Plus)
-                        .size(IconSize::Small)
-                        .color(Color::Custom(ink)),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child("Create"),
-                ),
-        );
+pub fn render(on_new_folder: SidebarCallback, _cx: &mut App) -> gpui::AnyElement {
+    let trigger = CreateTrigger {
+        open: false,
+        on_click: None,
+        cursor_style: None,
+    };
     div()
         .w_full()
         .px_1()
@@ -98,6 +73,107 @@ pub fn render(on_new_folder: SidebarCallback, cx: &mut App) -> gpui::AnyElement 
                 }),
         )
         .into_any_element()
+}
+
+/// A quarter turn and a half: the plus spins and settles as a cross.
+const PLUS_TURN: f32 = 0.375;
+
+/// The yellow face of the Create button. The popover tells it whether the
+/// menu is open, and its plus spins into a cross and back.
+#[derive(IntoElement)]
+struct CreateTrigger {
+    open: bool,
+    on_click: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
+    cursor_style: Option<CursorStyle>,
+}
+
+impl Clickable for CreateTrigger {
+    fn on_click(mut self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
+        self.on_click = Some(Rc::new(handler));
+        self
+    }
+
+    fn cursor_style(mut self, cursor_style: CursorStyle) -> Self {
+        self.cursor_style = Some(cursor_style);
+        self
+    }
+}
+
+impl Toggleable for CreateTrigger {
+    fn toggle_state(mut self, selected: bool) -> Self {
+        self.open = selected;
+        self
+    }
+}
+
+impl RenderOnce for CreateTrigger {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let colors = cx.theme().colors();
+        let accent = colors.text_accent;
+        let ink = colors.background;
+        // Count changes so only a real open or close spins the plus; the
+        // first paint after launch shows it at rest.
+        let state = window.use_keyed_state("brainz-create-plus", cx, |_, _| (self.open, 0usize));
+        let (was_open, mut turns) = *state.read(cx);
+        if was_open != self.open {
+            turns += 1;
+            state.update(cx, |state, _| *state = (self.open, turns));
+        }
+        let (from, to) = if self.open {
+            (0., PLUS_TURN)
+        } else {
+            (PLUS_TURN, 0.)
+        };
+        let plus = Icon::new(IconName::Plus)
+            .size(IconSize::Small)
+            .color(Color::Custom(ink));
+        let plus = if turns == 0 {
+            plus.into_any_element()
+        } else {
+            plus.with_animation(
+                ("brainz-create-plus", turns),
+                Animation::new(Duration::from_millis(MENU_OPEN_MS)).with_easing(ease_out_quint()),
+                move |plus, delta| {
+                    plus.transform(Transformation::rotate(percentage(
+                        from + (to - from) * delta,
+                    )))
+                },
+            )
+            .into_any_element()
+        };
+        let mut button = ButtonLike::new("brainz-create-trigger")
+            .size(ButtonSize::None)
+            .style(ButtonStyle::Transparent)
+            .full_width()
+            .toggle_state(self.open)
+            .child(
+                h_flex()
+                    .id("brainz-create-face")
+                    .w_full()
+                    .h(px(30.))
+                    .pl(px(12.))
+                    .gap_2()
+                    .items_center()
+                    .rounded_md()
+                    .bg(accent)
+                    .text_color(ink)
+                    .hover(|this| this.bg(accent.opacity(0.88)))
+                    .child(plus)
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Create"),
+                    ),
+            );
+        if let Some(handler) = self.on_click {
+            button = button.on_click(move |event, window, cx| handler(event, window, cx));
+        }
+        if let Some(cursor_style) = self.cursor_style {
+            button = button.cursor_style(cursor_style);
+        }
+        button
+    }
 }
 
 #[derive(Clone)]
@@ -122,9 +198,9 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         label: "Note",
-        hint: "From a template or blank",
+        hint: "A blank note in this folder",
         icon: IconName::FileTextOutlined,
-        choice: Choice::Action(|| Box::new(crate::new_note::NewNote)),
+        choice: Choice::Action(|| Box::new(crate::new_note::NewBlankNote)),
     },
     Entry {
         label: "Folder",

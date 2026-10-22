@@ -276,13 +276,14 @@ impl CompletionProvider for NoteCompletionProvider {
         let buffer = buffer.clone();
         let load = cx.background_spawn(async move { Registry::load_brain(&root, None) });
         cx.spawn(async move |_, _| {
-            let registry = match load.await {
+            let mut registry = match load.await {
                 Ok(registry) => registry,
                 Err(error) => {
                     log::warn!("Could not load note template completions: {error:#}");
-                    Registry::builtin()?
+                    Registry::default()
                 }
             };
+            registry.retain_saved();
             let mut completions = Vec::new();
             for template in registry
                 .templates

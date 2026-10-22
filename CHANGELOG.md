@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### New
+
+- Save as template (command palette) turns the open note into a template you can pick from New note. The note's own text, including any `{{` braces, is kept as written; New note asks for the new note's title.
+- Create → Note opens a blank "Untitled" note in the current folder, straight in the rich text editor.
+
+### Changed
+
+- New note and the `/` menu list only your saved templates; the bundled examples (1:1, Bug report, Meeting notes and the rest) are gone. Open daily note still works.
+- The Create button's plus spins into a cross while its menu is open and back when it closes.
+
 ## 0.1.45 (2026-10-22)
 
 ### New
