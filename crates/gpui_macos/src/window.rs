@@ -2559,6 +2559,22 @@ extern "C" fn reset_cursor_rects(this: &Object, _: Sel) {
 }
 
 extern "C" fn handle_key_equivalent(this: &Object, _: Sel, native_event: id) -> BOOL {
+    // Brainz: AppKit offers arrow, Home and End keys to every view as key
+    // equivalents. When a native child view such as a web view holds the
+    // keyboard, those keys are its own; handling them here would send them to
+    // that view's input context as text instead of moving its caret.
+    // Shortcuts with Cmd or Ctrl still come to GPUI.
+    unsafe {
+        let window: id = msg_send![this, window];
+        let first_responder: id = msg_send![window, firstResponder];
+        let modifiers: NSEventModifierFlags = msg_send![native_event, modifierFlags];
+        if first_responder != this as *const Object as id
+            && !modifiers.contains(NSEventModifierFlags::NSCommandKeyMask)
+            && !modifiers.contains(NSEventModifierFlags::NSControlKeyMask)
+        {
+            return NO;
+        }
+    }
     handle_key_event(this, native_event, true)
 }
 
