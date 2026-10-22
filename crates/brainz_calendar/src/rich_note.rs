@@ -302,6 +302,50 @@ fn backlinks(brain: &std::path::Path, note: &std::path::Path) -> anyhow::Result<
     Ok(found)
 }
 
+/// What a note's Claude menu asks for, as the message Claude receives, and
+/// whether it is sent straight away (Ask leaves it for the user to finish).
+fn claude_request(
+    action: &str,
+    note: &str,
+    text: &str,
+    todo_board: &str,
+) -> Option<(String, bool)> {
+    // A fence longer than any backtick run in the passage keeps it whole.
+    let longest = text
+        .split(|character| character != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    let fence = "`".repeat(longest.max(2) + 1);
+    let passage = format!("{fence}markdown\n{}\n{fence}", text.trim());
+    let request = match action {
+        "rewrite" => (
+            format!(
+                "In the note `{note}`, rewrite this passage so it reads more clearly. Keep its meaning, facts, names and Markdown formatting. Replace exactly that passage in the file and change nothing else.\n\n{passage}"
+            ),
+            true,
+        ),
+        "summarize" => (
+            format!(
+                "In the note `{note}`, add a short summary (two to four sentences) of this passage directly below it, as a quote block that starts with **Summary:**. Change nothing else in the note.\n\n{passage}"
+            ),
+            true,
+        ),
+        "todos" => (
+            format!(
+                "Turn the action items in this passage from `{note}` into to-dos on my To-Do board (`{todo_board}`), under Today, one line per action, each ending with a link back to the note. Don't edit the note itself.\n\n{passage}"
+            ),
+            true,
+        ),
+        "ask" => (
+            format!("About this passage in `{note}`:\n\n{passage}\n\n"),
+            false,
+        ),
+        _ => return None,
+    };
+    Some(request)
+}
+
 fn percent_decode(text: &str) -> String {
     url::form_urlencoded::parse(format!("p={}", text.replace('+', "%2B")).as_bytes())
         .next()
@@ -433,6 +477,10 @@ mod native {
         },
         CopyImage {
             data: String,
+        },
+        Claude {
+            action: String,
+            text: String,
         },
         History,
     }
@@ -730,6 +778,46 @@ mod native {
             .detach();
         }
 
+        /// Hands the selected passage to Claude in the chat, which edits the
+        /// note file itself, so the change arrives like any agent edit.
+        fn ask_claude(
+            &mut self,
+            action: &str,
+            text: &str,
+            window: &mut Window,
+            cx: &mut Context<Self>,
+        ) {
+            let Some(brain) = self
+                .project
+                .read(cx)
+                .find_worktree(&self.path, cx)
+                .map(|(worktree, _)| worktree.read(cx).abs_path().to_path_buf())
+            else {
+                return;
+            };
+            let note = self
+                .path
+                .strip_prefix(&brain)
+                .unwrap_or(&self.path)
+                .to_string_lossy()
+                .into_owned();
+            let board = crate::brain_config::BrainConfig::load(&brain).todo;
+            let Some((message, send)) = super::claude_request(action, &note, text, &board) else {
+                return;
+            };
+            window.defer(cx, move |window, cx| {
+                if send {
+                    window
+                        .dispatch_action(Box::new(crate::palette::AskClaude { text: message }), cx);
+                } else {
+                    window.dispatch_action(
+                        Box::new(crate::prep::OpenClaudePrefilled { text: message }),
+                        cx,
+                    );
+                }
+            });
+        }
+
         fn save_image(&mut self, request: u64, mime: String, data: String, cx: &mut Context<Self>) {
             let note = self.path.clone();
             cx.spawn(async move |this, cx| {
@@ -773,6 +861,7 @@ mod native {
                     )
                 }
                 Message::Source => self.show_source(window, cx),
+                Message::Claude { action, text } => self.ask_claude(&action, &text, window, cx),
                 Message::History => {
                     // Adding a tab reads every item in the pane, this one
                     // included, so it waits until this update has finished.
@@ -1053,6 +1142,23 @@ mod tests {
             path: "work/plan.md".into(),
             title: "Q4 plan".into()
         }));
+    }
+
+    #[test]
+    fn claude_requests_name_the_note_and_keep_the_passage_whole() {
+        let (rewrite, send) =
+            claude_request("rewrite", "work/plan.md", "Use ```code``` here", "TODO.md").unwrap();
+        assert!(send);
+        assert!(rewrite.contains("`work/plan.md`"));
+        assert!(rewrite.contains("````markdown\nUse ```code``` here\n````"));
+        let (todos, _) =
+            claude_request("todos", "work/plan.md", "Call Sam", "ops/TODO.md").unwrap();
+        assert!(todos.contains("`ops/TODO.md`"));
+        assert!(todos.contains("Don't edit the note"));
+        let (ask, send) = claude_request("ask", "work/plan.md", "Call Sam", "TODO.md").unwrap();
+        assert!(!send);
+        assert!(ask.ends_with("```\n\n"));
+        assert!(claude_request("delete everything", "a.md", "x", "TODO.md").is_none());
     }
 
     #[test]
