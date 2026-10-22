@@ -846,6 +846,8 @@ fn logo_for(name: &str) -> Option<&'static str> {
         Some("icons/brainz/logos/asana.png")
     } else if lower.contains("notion") {
         Some("icons/brainz/logos/notion.png")
+    } else if lower.contains("miro") {
+        Some("icons/brainz/logos/miro.png")
     } else if lower.contains("vercel") {
         Some("icons/brainz/logos/vercel.png")
     } else if lower.contains("railway") {
@@ -898,6 +900,16 @@ pub const HOSTED_CONNECTORS: &[HostedConnector] = &[
             url: "https://mcp.notion.com/mcp",
         },
         blurb: "Pages, databases, and search in your Notion workspace",
+    },
+    HostedConnector {
+        name: "miro",
+        label: "Miro",
+        // Miro's OAuth-enabled remote MCP endpoint, scoped to the team
+        // selected during sign-in.
+        transport: HostedTransport::Http {
+            url: "https://mcp.miro.com/",
+        },
+        blurb: "Read and create boards, diagrams, documents, and comments in Miro",
     },
     HostedConnector {
         name: "vercel",
@@ -2653,6 +2665,27 @@ mod tests {
         );
         assert!(
             HostedConnector::mentioned_missing("Install Granola", &["notion".into()]).is_some()
+        );
+    }
+
+    #[test]
+    fn miro_uses_its_official_oauth_mcp_endpoint() {
+        let miro = HOSTED_CONNECTORS
+            .iter()
+            .find(|connector| connector.name == "miro")
+            .expect("Miro is available in Connectors");
+        assert_eq!(miro.label, "Miro");
+        assert_eq!(
+            miro.transport,
+            HostedTransport::Http {
+                url: "https://mcp.miro.com/"
+            }
+        );
+        assert_eq!(miro.logo(), Some("icons/brainz/logos/miro.png"));
+        assert_eq!(
+            HostedConnector::mentioned_missing("Can you connect Miro MCP?", &[])
+                .map(|connector| connector.name),
+            Some("miro")
         );
     }
 

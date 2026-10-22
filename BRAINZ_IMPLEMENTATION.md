@@ -183,7 +183,8 @@ This file records implementation and validation; an unchecked item is not shippe
   tools; Claude actions in notes; quick capture; and automatic naming for
   untitled notes. Chat turns Claude artifact and Brainz object links into pills;
   canvas titles have more room, and macOS clipboard screenshots paste onto
-  canvases. Publication and signed-artifact verification are pending.
+  canvases. Connectors offers Miro's hosted MCP server. Publication and
+  signed-artifact verification are pending.
 
 ## Work in progress
 

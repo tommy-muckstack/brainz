@@ -14,6 +14,7 @@
 - Select text in a note for a Claude menu: Rewrite clearer, Summarize below, Turn into to-dos (added to your To-Do board) or Ask Claude. Claude works in the chat and edits the note itself, using your Claude sign-in.
 - Quick capture: press Control-Option-N in any app to jot a thought; Enter adds it to Inbox.md in your brain under today's date.
 - A new untitled note offers to take its first heading as its file name, and links to it from other notes are updated.
+- Connectors includes Miro, using Miro's hosted MCP server and OAuth sign-in to work with boards, diagrams, documents, and comments.
 - Notes made from a template open in the rich editor.
 - Every note has a History button: see each synced version of the note, read it, and restore it in one click (Undo in the note takes the restore back).
 
