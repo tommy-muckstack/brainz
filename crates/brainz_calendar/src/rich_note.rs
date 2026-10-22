@@ -13,6 +13,9 @@ actions!(
         OpenRichNote,
         /// Show the Markdown source of the open note.
         ShowMarkdownSource,
+        /// Switch the active note between rich text and Markdown; anywhere
+        /// else, show the project's diagnostics as before.
+        ToggleNoteView,
     ]
 );
 
@@ -76,7 +79,7 @@ mod native {
         item::{ItemBufferKind, ItemEvent},
     };
 
-    use super::{OpenRichNote, ShowMarkdownSource};
+    use super::{OpenRichNote, ShowMarkdownSource, ToggleNoteView};
 
     pub(super) fn init(cx: &mut App) {
         cx.set_global(RichNoteOpener(Rc::new(
@@ -87,29 +90,72 @@ mod native {
         )));
         cx.observe_new(|workspace: &mut Workspace, _, _| {
             workspace.register_action(|workspace, _: &OpenRichNote, window, cx| {
-                let Some(editor) = workspace
+                if let Some(editor) = workspace
                     .active_item(cx)
                     .and_then(|item| item.downcast::<Editor>())
-                else {
+                {
+                    open_rich_note(workspace, &editor, window, cx);
+                }
+            });
+            // Cmd-Shift-M from the sidebar or a panel still means the open
+            // note; it only falls back to diagnostics when no note is active.
+            workspace.register_action(|workspace, _: &ToggleNoteView, window, cx| {
+                let active = workspace.active_item(cx);
+                if let Some(note) = active
+                    .as_ref()
+                    .and_then(|item| item.downcast::<RichNoteView>())
+                {
+                    note.update(cx, |note, cx| note.show_source(window, cx));
                     return;
-                };
-                let Some(pane) = workspace.pane_for(&editor) else {
+                }
+                if let Some(editor) = active
+                    .and_then(|item| item.downcast::<Editor>())
+                    .filter(|editor| is_markdown(editor, cx))
+                {
+                    open_rich_note(workspace, &editor, window, cx);
                     return;
-                };
-                let Some(view) = RichNoteView::for_editor(workspace, &editor, true, window, cx)
-                else {
-                    return;
-                };
-                // Both items show one file, and a pane only keeps one item per
-                // file, so the editor leaves before the note is added.
-                pane.update(cx, |pane, cx| {
-                    let index = pane.index_for_item(&editor);
-                    pane.remove_item(editor.item_id(), false, false, window, cx);
-                    pane.add_item(Box::new(view), true, true, index, window, cx);
-                });
+                }
+                if let Ok(deploy) = cx.build_action("diagnostics::Deploy", None) {
+                    window.dispatch_action(deploy, cx);
+                }
             });
         })
         .detach();
+    }
+
+    fn is_markdown(editor: &Entity<Editor>, cx: &App) -> bool {
+        editor
+            .read(cx)
+            .buffer()
+            .read(cx)
+            .as_singleton()
+            .and_then(|buffer| buffer.read(cx).file().map(|file| file.path().clone()))
+            .and_then(|path| {
+                path.extension()
+                    .map(|extension| extension.to_ascii_lowercase())
+            })
+            .is_some_and(|extension| matches!(extension.as_str(), "md" | "markdown"))
+    }
+
+    fn open_rich_note(
+        workspace: &mut Workspace,
+        editor: &Entity<Editor>,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        let Some(pane) = workspace.pane_for(editor) else {
+            return;
+        };
+        let Some(view) = RichNoteView::for_editor(workspace, editor, true, window, cx) else {
+            return;
+        };
+        // Both items show one file, and a pane only keeps one item per
+        // file, so the editor leaves before the note is added.
+        pane.update(cx, |pane, cx| {
+            let index = pane.index_for_item(editor);
+            pane.remove_item(editor.item_id(), false, false, window, cx);
+            pane.add_item(Box::new(view), true, true, index, window, cx);
+        });
     }
 
     #[derive(Deserialize)]
