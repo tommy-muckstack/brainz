@@ -25,6 +25,10 @@ actions!(
     [
         /// Create a note from a local Markdown template.
         NewNote,
+        /// Create an empty note in the current folder and open it.
+        NewBlankNote,
+        /// Save the open note as a template for New Note.
+        SaveAsTemplate,
         /// Open today's daily note, creating it only if it does not exist.
         OpenDailyNote,
     ]
@@ -34,6 +38,12 @@ pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &NewNote, window, cx| {
             open(workspace, false, window, cx)
+        });
+        workspace.register_action(|workspace, _: &NewBlankNote, window, cx| {
+            open_blank(workspace, window, cx)
+        });
+        workspace.register_action(|workspace, _: &SaveAsTemplate, window, cx| {
+            save_as_template(workspace, window, cx)
         });
         workspace.register_action(|workspace, _: &OpenDailyNote, window, cx| {
             open(workspace, true, window, cx)
@@ -94,26 +104,148 @@ pub(super) fn open_with_template(
         return;
     };
     let project = workspace.project().clone();
-    let folder = workspace
-        .active_item(cx)
-        .and_then(|item| item.project_path(cx))
-        .and_then(|path| {
-            let project = project.read(cx);
-            let worktree = project.worktree_for_id(path.worktree_id, cx)?.read(cx);
-            let path = worktree.absolutize(&path.path);
-            path.parent()?
-                .strip_prefix(&root)
-                .ok()
-                .map(|path| path.to_string_lossy().into_owned())
-        })
-        .filter(|path| !path.is_empty())
-        .unwrap_or_else(|| ".".into());
+    let folder = current_folder(workspace, &root, cx);
     let weak_workspace = cx.weak_entity();
     workspace.toggle_modal(window, cx, |window, cx| {
         let mut picker = NotePicker::new(root, folder, project, weak_workspace, daily, window, cx);
         picker.initial_template = template;
         picker
     });
+}
+
+/// The folder of the active note relative to the brain, or "." at the top.
+fn current_folder(workspace: &Workspace, root: &Path, cx: &App) -> String {
+    let project = workspace.project().read(cx);
+    workspace
+        .active_item(cx)
+        .and_then(|item| item.project_path(cx))
+        .and_then(|path| {
+            let worktree = project.worktree_for_id(path.worktree_id, cx)?.read(cx);
+            let path = worktree.absolutize(&path.path);
+            path.parent()?
+                .strip_prefix(root)
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned())
+        })
+        .filter(|path| !path.is_empty())
+        .unwrap_or_else(|| ".".into())
+}
+
+fn blank_template() -> anyhow::Result<Template> {
+    brainz_templates::parse(
+        "---\nname: Blank note\npath: '{{folder}}/{{slug title}}.md'\n---\n{{cursor}}",
+        "blank",
+        brainz_templates::TemplateSource::Builtin,
+    )
+}
+
+/// Creates "Untitled" in the current folder and opens it, skipping the picker.
+fn open_blank(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let root = workspace
+        .root_paths(cx)
+        .first()
+        .map(|root| root.to_path_buf());
+    let Some(root) = root.filter(|_| workspace.project().read(cx).is_local()) else {
+        Editor::new_file(workspace, &workspace::NewFile, window, cx);
+        return;
+    };
+    let folder = current_folder(workspace, &root, cx);
+    let weak_workspace = cx.weak_entity();
+    cx.spawn_in(window, async move |_, cx| {
+        let note = cx
+            .background_spawn({
+                let root = root.clone();
+                async move {
+                    let request = RenderRequest {
+                        title: "Untitled".into(),
+                        folder,
+                        ..Default::default()
+                    };
+                    let rendered = brainz_templates::render(&blank_template()?, &request)?;
+                    brainz_templates::create_note(&root, &rendered, CreatePolicy::Unique)
+                }
+            })
+            .await?;
+        // Opened like any note, so it lands in the rich editor rather than
+        // the Markdown source the template flow places its caret in.
+        weak_workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_abs_path(
+                    root.join(&note.path),
+                    workspace::OpenOptions::default(),
+                    window,
+                    cx,
+                )
+            })?
+            .await?;
+        anyhow::Ok(())
+    })
+    .detach_and_prompt_err("Could not create the note", window, cx, |error, _, _| {
+        Some(error.to_string())
+    });
+}
+
+/// Copies the open note into the brain's template folder, where New Note
+/// lists it. The file on disk is used, so unsaved edits are saved first.
+pub(super) fn save_as_template(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let root = workspace
+        .root_paths(cx)
+        .first()
+        .map(|root| root.to_path_buf());
+    let note = workspace.active_item(cx).and_then(|item| {
+        let path = item.project_path(cx)?;
+        let project = workspace.project().read(cx);
+        let worktree = project.worktree_for_id(path.worktree_id, cx)?.read(cx);
+        Some(worktree.absolutize(&path.path))
+    });
+    let note = note.filter(|note| {
+        note.extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+    });
+    let (Some(root), Some(note)) = (root, note) else {
+        show_template_toast(
+            "Open a note first, then save it as a template.",
+            workspace,
+            cx,
+        );
+        return;
+    };
+    let save = workspace.save_active_item(workspace::SaveIntent::Save, window, cx);
+    cx.spawn_in(window, async move |workspace, cx| {
+        save.await?;
+        let (_, name) = cx
+            .background_spawn(async move {
+                let relative = note.strip_prefix(&root).unwrap_or(&note).to_path_buf();
+                let text = std::fs::read_to_string(&note)?;
+                brainz_templates::save_note_as_template(&root, &relative, &text)
+            })
+            .await?;
+        workspace.update(cx, |workspace, cx| {
+            show_template_toast(
+                &format!("Saved as template \"{name}\". Pick it from New note."),
+                workspace,
+                cx,
+            )
+        })
+    })
+    .detach_and_prompt_err("Could not save the template", window, cx, |error, _, _| {
+        Some(error.to_string())
+    });
+}
+
+fn show_template_toast(message: &str, workspace: &mut Workspace, cx: &mut Context<Workspace>) {
+    workspace.show_toast(
+        workspace::Toast::new(
+            workspace::notifications::NotificationId::unique::<SaveAsTemplate>(),
+            message.to_owned(),
+        )
+        .autohide(),
+        cx,
+    );
 }
 
 pub fn insert_template_in_editor(
@@ -347,7 +479,11 @@ impl NotePicker {
         let load = cx.spawn_in(window, async move |this, cx| {
             let loaded = cx
                 .background_spawn(async move {
-                    let registry = Registry::load_brain(&load_root, None)?;
+                    let mut registry = Registry::load_brain(&load_root, None)?;
+                    // The daily note still needs its bundled template.
+                    if !daily {
+                        registry.retain_saved();
+                    }
                     let config = brainz_templates::TemplatesConfig::load(&load_root)?;
                     let recents = load_recents_path
                         .as_deref()
@@ -488,8 +624,12 @@ impl NotePicker {
                 let root = watch_root.clone();
                 let loaded = cx
                     .background_spawn(async move {
+                        let mut registry = Registry::load_brain(&root, None)?;
+                        if !daily {
+                            registry.retain_saved();
+                        }
                         Ok::<_, anyhow::Error>((
-                            Registry::load_brain(&root, None)?,
+                            registry,
                             brainz_templates::TemplatesConfig::load(&root)?,
                         ))
                     })
@@ -720,12 +860,7 @@ impl NotePicker {
                     brainz_templates::render(template, &self.request)
                 }
             } else {
-                brainz_templates::parse(
-                    "---\nname: Blank note\npath: '{{folder}}/{{slug title}}.md'\n---\n{{cursor}}",
-                    "blank",
-                    brainz_templates::TemplateSource::Builtin,
-                )
-                .and_then(|template| {
+                blank_template().and_then(|template| {
                     let mut request = self.request.clone();
                     if request.title.trim().is_empty() {
                         request.title = "Untitled".into();
@@ -1705,6 +1840,13 @@ mod tests {
             super::super::slash::init(cx);
         });
         let root = tempfile::tempdir().expect("temporary brain");
+        // Only templates saved in the brain are offered, so save one.
+        std::fs::create_dir_all(root.path().join(".brainz/templates")).expect("templates");
+        std::fs::write(
+            root.path().join(".brainz/templates/decision.md"),
+            include_str!("../../../assets/brainz/templates/decision.md"),
+        )
+        .expect("saved template");
         let fs = project::FakeFs::new(cx.executor());
         fs.insert_tree(
             root.path(),
@@ -1863,6 +2005,28 @@ mod tests {
                 assert_eq!(editor.text(cx), command);
             });
         }
+    }
+
+    #[test]
+    fn blank_notes_land_in_the_folder_without_overwriting() {
+        let root = tempfile::tempdir().expect("temporary brain");
+        let request = RenderRequest {
+            title: "Untitled".into(),
+            folder: "work".into(),
+            ..Default::default()
+        };
+        let rendered = brainz_templates::render(&blank_template().expect("template"), &request)
+            .expect("render");
+        let first = brainz_templates::create_note(root.path(), &rendered, CreatePolicy::Unique)
+            .expect("first note");
+        let second = brainz_templates::create_note(root.path(), &rendered, CreatePolicy::Unique)
+            .expect("second note");
+        assert_eq!(first.path, Path::new("work/untitled.md"));
+        assert_ne!(second.path, first.path);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(&first.path)).expect("written"),
+            ""
+        );
     }
 
     #[gpui::test]

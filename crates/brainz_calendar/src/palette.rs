@@ -50,6 +50,7 @@ pub fn init(cx: &mut App) {
 enum Target {
     NewNote,
     Daily,
+    SaveAsTemplate,
     Template(String),
     Navigate(usize),
 }
@@ -68,7 +69,7 @@ fn rows(root: Option<&Path>, use_recents: bool) -> (Vec<Row>, PathBuf, Option<St
     let mut rows = vec![
         Row {
             name: "New note".into(),
-            description: "Choose a template or start blank".into(),
+            description: "Choose one of your templates or start blank".into(),
             search: "new note blank create".into(),
             group: "Notes",
             icon: IconName::File,
@@ -82,12 +83,21 @@ fn rows(root: Option<&Path>, use_recents: bool) -> (Vec<Row>, PathBuf, Option<St
             icon: IconName::BrainzCalendar,
             target: Target::Daily,
         },
+        Row {
+            name: "Save note as template".into(),
+            description: "Use the open note as a starting point for new ones".into(),
+            search: "save template reuse copy".into(),
+            group: "Notes",
+            icon: IconName::FileTextOutlined,
+            target: Target::SaveAsTemplate,
+        },
     ];
     let mut directory = root.unwrap_or(Path::new("")).join(".brainz/templates");
     let mut error = None;
     if let Some(root) = root {
         let loaded = (|| {
-            let registry = Registry::load_brain(root, None)?;
+            let mut registry = Registry::load_brain(root, None)?;
+            registry.retain_saved();
             let config = TemplatesConfig::load(root)?;
             directory = root.join(
                 config
@@ -418,6 +428,9 @@ impl PickerDelegate for Delegate {
                         Target::Daily => {
                             super::new_note::open_with_template(workspace, true, None, window, cx)
                         }
+                        Target::SaveAsTemplate => {
+                            super::new_note::save_as_template(workspace, window, cx)
+                        }
                         Target::Navigate(index) => {
                             if let Some(item) = super::nav::ITEMS.get(index) {
                                 let action = (item.action)();
@@ -662,10 +675,21 @@ mod tests {
             "---\nname: [invalid\n---",
         )
         .expect("invalid fixture");
+        std::fs::write(
+            root.path().join(".brainz/templates/standup.md"),
+            "---\nname: Standup\n---\nYesterday, today, blockers",
+        )
+        .expect("saved fixture");
         let (rows, _, error) = rows(Some(root.path()), false);
         assert!(error.is_some());
         assert!(
             rows.iter()
+                .any(|row| matches!(&row.target, Target::Template(id) if id == "standup"))
+        );
+        // Bundled templates stay out of the list.
+        assert!(
+            !rows
+                .iter()
                 .any(|row| matches!(&row.target, Target::Template(id) if id == "decision"))
         );
         assert!(rows.iter().any(|row| row.name == "Connectors"));

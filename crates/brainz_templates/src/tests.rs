@@ -363,3 +363,61 @@ fn repeated_cursor_and_runaway_output_are_rejected() {
     ));
     assert!(render(&template, &request).is_err());
 }
+
+#[test]
+fn notes_save_as_templates_that_keep_their_text_literal() {
+    let brain = tempfile::tempdir().expect("brain");
+    let text = "---\ntags: [plan]\n---\n# Weekly plan\n\n- Ask {{name}} about it\n";
+    let (path, name) =
+        save_note_as_template(brain.path(), Path::new("work/plan.md"), text).expect("saved");
+    assert_eq!(name, "Weekly plan");
+    assert_eq!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("weekly-plan.md")
+    );
+    let (again, _) =
+        save_note_as_template(brain.path(), Path::new("work/plan.md"), text).expect("saved twice");
+    assert_eq!(
+        again.file_name().and_then(|name| name.to_str()),
+        Some("weekly-plan-2.md")
+    );
+
+    let mut registry = Registry::load_brain(brain.path(), None).expect("registry");
+    registry.retain_saved();
+    assert_eq!(registry.errors.len(), 0);
+    let template = registry.templates.get("weekly-plan").expect("listed");
+    assert_eq!(template.metadata.name, "Weekly plan");
+    assert_eq!(template.source, TemplateSource::Brain);
+    assert!(
+        template
+            .metadata
+            .inputs
+            .iter()
+            .any(|input| input.id == "title")
+    );
+    assert!(
+        registry
+            .templates
+            .values()
+            .all(|template| template.source != TemplateSource::Builtin)
+    );
+
+    let rendered = render(template, &request()).expect("renders");
+    assert_eq!(rendered.body, text);
+    assert_eq!(
+        rendered.path.as_deref(),
+        Some(Path::new("projects/demo/a-safer-launch.md"))
+    );
+}
+
+#[test]
+fn template_names_fall_back_to_the_file_name() {
+    assert_eq!(
+        note_template_name(Path::new("a/Trip ideas.md"), "no heading\n"),
+        "Trip ideas"
+    );
+    assert_eq!(
+        note_template_name(Path::new("a.md"), "---\nx: 1\n---\n# Real\n"),
+        "Real"
+    );
+}
