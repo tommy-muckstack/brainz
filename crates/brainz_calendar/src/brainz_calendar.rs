@@ -23,6 +23,7 @@ pub mod palette;
 pub mod pdf;
 pub mod permissions;
 pub mod prep;
+mod quick_capture;
 pub mod rich_note;
 mod slash;
 pub mod status_decay;
@@ -66,6 +67,7 @@ pub fn init(cx: &mut App) {
     github_sync::init(cx);
     backup::init(cx);
     note_history::init(cx);
+    quick_capture::init(cx);
     prep::init(cx);
     brief::init(cx);
     status_decay::init(cx);

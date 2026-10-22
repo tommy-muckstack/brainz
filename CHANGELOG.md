@@ -10,6 +10,7 @@
 - Claude and Codex in Brainz can work with canvases out of the box: create a canvas, add stickies, shapes, text, frames, cards, arrows and images from the brain, all as proposals you apply on the canvas. They also follow Brainz's conventions for note images, tables, links between notes and templates.
 
 - Select text in a note for a Claude menu: Rewrite clearer, Summarize below, Turn into to-dos (added to your To-Do board) or Ask Claude. Claude works in the chat and edits the note itself, using your Claude sign-in.
+- Quick capture: press Control-Option-N in any app to jot a thought; Enter adds it to Inbox.md in your brain under today's date.
 - Every note has a History button: see each synced version of the note, read it, and restore it in one click (Undo in the note takes the restore back).
 
 ### Changed
