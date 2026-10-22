@@ -28,7 +28,6 @@ macro_rules! brainz_flags {
 
 brainz_flags! {
     BrainzCanvasStorageV2 => ("brainz-canvas-storage-v2", "Incremental canvas storage", "Save small canvas edits efficiently and keep images in separate local files. Older canvases are backed up before upgrading."),
-    BrainzCanvasAgentApi => ("brainz-canvas-agent-api", "Canvas assistant", "Preview and apply structured canvas changes from your assistant."),
     BrainzTemplates => ("brainz-templates", "Templates", "Create notes and canvases from reusable templates."),
     BrainzSkills => ("brainz-skills", "Skills", "Find and run personal workflows with reviewable outputs."),
     BrainzSearch => ("brainz-search", "Semantic search", "Search the meaning and text of your local notes and canvases."),

@@ -1396,7 +1396,7 @@ impl Render for WhiteboardView {
 #[cfg(target_os = "macos")]
 pub(crate) mod native {
     use super::*;
-    use feature_flags::{BrainzCanvasAgentApi, BrainzCanvasStorageV2, FeatureFlagAppExt as _};
+    use feature_flags::{BrainzCanvasStorageV2, FeatureFlagAppExt as _};
     use gpui::{ClipboardItem, Image, ImageFormat, PathPromptOptions};
     use std::{borrow::Cow, rc::Rc};
 
@@ -1561,10 +1561,26 @@ pub(crate) mod native {
 
     fn asset_response(
         root: &Path,
+        brain: Option<&Path>,
         storage: &BoardStorage,
         request: wry::http::Request<Vec<u8>>,
     ) -> wry::http::Response<Cow<'static, [u8]>> {
         let read = || -> Result<(Vec<u8>, String)> {
+            // Images an agent places on the canvas, read from the brain.
+            if request.method() == "GET"
+                && request.uri().host() == Some("app")
+                && request.uri().path() == "/brain-file"
+            {
+                let brain = brain.context("This canvas is not in a brain")?;
+                let path =
+                    url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
+                        .find(|(key, _)| key == "path")
+                        .map(|(_, value)| value.into_owned())
+                        .context("Missing image path")?;
+                let (bytes, mime) =
+                    crate::rich_note::read_brain_image(&brain.join("_"), brain, &path)?;
+                return Ok((bytes, mime.to_owned()));
+            }
             if request.method() == "GET"
                 && request.uri().host() == Some("app")
                 && let Some(source) = request.uri().path().strip_prefix("/board-assets/")
@@ -1609,12 +1625,13 @@ pub(crate) mod native {
             let ipc_sender = sender.clone();
             let storage = self.storage.clone();
             let image_storage = storage.clone();
+            let brain = self.canvas_workspace(cx);
             let executor = cx.background_executor().clone();
             let webview = wry::WebViewBuilder::new()
                 .with_background_color((20, 20, 19, 255))
                 .with_visible(false)
                 .with_back_forward_navigation_gestures(false)
-                .with_custom_protocol("brainz-board".into(), move |_, request| asset_response(&root, &image_storage, request))
+                .with_custom_protocol("brainz-board".into(), move |_, request| asset_response(&root, brain.as_deref(), &image_storage, request))
                 .with_navigation_handler(|url| url == "brainz-board://app/index.html")
                 .with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny)
                 .with_ipc_handler(move |request| {
@@ -1748,7 +1765,7 @@ pub(crate) mod native {
                     self.send(json!({"type": "load", "document": self.document, "target": self.target,
                         "attach": self.chat_destination.is_some(), "workspace": root,
                         "boardId": brainz_canvas::legacy_board_id(&self.target.path), "baseHash": hash, "viewState": view_state,
-                        "agentEnabled": root.is_some() && cx.has_flag::<BrainzCanvasAgentApi>(),
+                        "agentEnabled": root.is_some(),
                         "incrementalStorage": cx.has_flag::<BrainzCanvasStorageV2>()}));
                 }
                 NativeEvent::Message(Message::Loaded) => self.watch_canvas(cx),
@@ -1988,7 +2005,6 @@ pub(crate) mod native {
             }
             let storage = self.storage.clone();
             let root = self.canvas_workspace(cx);
-            let enabled = cx.has_flag::<BrainzCanvasAgentApi>();
             self._watch = Some(cx.spawn(async move |this, cx| {
                 let mut sent = std::collections::HashSet::new();
                 let mut previous_error = None;
@@ -2002,7 +2018,7 @@ pub(crate) mod native {
                         .background_spawn(async move {
                             let external = storage.external_document();
                             let batches = (|| -> Result<Vec<Value>> {
-                                let Some(root) = root.filter(|_| enabled) else {
+                                let Some(root) = root else {
                                     return Ok(Vec::new());
                                 };
                                 let path = storage.path()?;

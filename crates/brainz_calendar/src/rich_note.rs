@@ -69,7 +69,7 @@ fn image_mime(path: &std::path::Path) -> Option<&'static str> {
 
 /// An image the note refers to, read only when it is an image file inside
 /// the brain: the page may ask for any path, so nothing else is served.
-fn read_brain_image(
+pub(crate) fn read_brain_image(
     note: &std::path::Path,
     brain: &std::path::Path,
     src: &str,
@@ -984,7 +984,10 @@ mod tests {
     use std::path::Path;
 
     #[test]
-    #[allow(clippy::disallowed_methods, reason = "a test setting up a git repository")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a test setting up a git repository"
+    )]
     fn backlinks_resolve_each_link_to_this_note() {
         let brain = tempfile::tempdir().unwrap();
         let root = brain.path();
