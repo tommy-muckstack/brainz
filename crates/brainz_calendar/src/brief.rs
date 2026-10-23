@@ -245,6 +245,9 @@ pub fn build(repo: &std::path::Path, now: DateTime<Local>) -> Brief {
         Ok((LoadState::NoAccess(message), _)) | Ok((LoadState::Failed(message), _)) => {
             calendar_problem = Some(message);
         }
+        Ok((LoadState::NeedsPermission, _)) => {
+            calendar_problem = Some("Open Calendar to allow access to your events.".into());
+        }
         Ok((LoadState::Loading, _)) => {}
         Err(error) => calendar_problem = Some(format!("{error:#}")),
     }

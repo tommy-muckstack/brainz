@@ -7,6 +7,7 @@
 ### Fixed
 
 - When asked to open a note or file, Claude and Codex in Brainz use Brainz directly on macOS instead of relying on the system's default app for Markdown files.
+- Calendar access is requested only when you click Allow Calendar Access in the Calendar tab; background refreshes no longer reopen the macOS permission prompt.
 
 ## 0.1.47 (2026-10-22)
 

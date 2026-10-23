@@ -14,7 +14,10 @@ func emit(_ status: String, _ events: [[String: Any]]) -> Never {
 
 let days = Int(CommandLine.arguments.dropFirst().first ?? "7") ?? 7
 
-if EKEventStore.authorizationStatus(for: .event) == .notDetermined {
+// Only show the macOS permission sheet after the user chooses Allow in Brainz.
+// Background refreshes must never trigger it repeatedly.
+if CommandLine.arguments.contains("--request-access") &&
+    EKEventStore.authorizationStatus(for: .event) == .notDetermined {
     let gate = DispatchSemaphore(value: 0)
     EKEventStore().requestFullAccessToEvents { _, _ in gate.signal() }
     gate.wait()

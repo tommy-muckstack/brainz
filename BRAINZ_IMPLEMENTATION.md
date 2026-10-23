@@ -187,7 +187,8 @@ This file records implementation and validation; an unchecked item is not shippe
   stapling, bundled executable checks, and live download verification passed.
   [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.47)
 - 0.1.48 candidate: Agent requests to open a file use Brainz directly on macOS.
-  Publication and signed-artifact verification are pending.
+  Calendar access is requested from an explicit button rather than from
+  background refreshes. Publication and signed-artifact verification are pending.
 
 ## Work in progress
 

@@ -144,6 +144,7 @@ pub struct CalendarEvent {
 pub enum LoadState {
     Loading,
     Ready,
+    NeedsPermission,
     NoAccess(String),
     Failed(String),
 }
@@ -174,9 +175,17 @@ fn parse_hex(hex: &str) -> Option<Hsla> {
 /// Blocking on purpose: the helper only ever runs on the background executor.
 #[allow(clippy::disallowed_methods)]
 pub fn load_events() -> Result<(LoadState, Vec<CalendarEvent>)> {
+    load_events_with_request(false)
+}
+
+fn load_events_with_request(request_access: bool) -> Result<(LoadState, Vec<CalendarEvent>)> {
     let helper = helper_path()?;
-    let output = std::process::Command::new(&helper)
-        .arg(DAYS.to_string())
+    let mut command = std::process::Command::new(&helper);
+    command.arg(DAYS.to_string());
+    if request_access {
+        command.arg("--request-access");
+    }
+    let output = command
         .output()
         .with_context(|| format!("running {}", helper.display()))?;
     if !output.status.success() {
@@ -190,6 +199,7 @@ pub fn load_events() -> Result<(LoadState, Vec<CalendarEvent>)> {
         serde_json::from_slice(&output.stdout).context("parsing calendar helper output")?;
     match parsed.status.as_str() {
         "ok" => {}
+        "not-determined" => return Ok((LoadState::NeedsPermission, Vec::new())),
         "denied" => {
             return Ok((
                 LoadState::NoAccess(
@@ -292,12 +302,22 @@ impl CalendarView {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.load(false, cx);
+    }
+
+    fn request_access(&mut self, cx: &mut Context<Self>) {
+        self.load(true, cx);
+    }
+
+    fn load(&mut self, request_access: bool, cx: &mut Context<Self>) {
         if self.events.is_empty() {
             self.state = LoadState::Loading;
         }
         cx.notify();
         self._load = Some(cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async { load_events() }).await;
+            let result = cx
+                .background_spawn(async move { load_events_with_request(request_access) })
+                .await;
             this.update(cx, |this, cx| {
                 match result {
                     Ok((state, events)) => {
@@ -760,6 +780,26 @@ impl Render for CalendarView {
                     .px_3()
                     .py_4()
                     .child(Label::new("Reading your calendar…").color(Color::Muted))
+                    .into_any_element(),
+            ],
+            LoadState::NeedsPermission => vec![
+                v_flex()
+                    .mx_3()
+                    .my_4()
+                    .p_4()
+                    .gap_3()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(cx.theme().colors().border)
+                    .bg(cx.theme().colors().surface_background)
+                    .child(Label::new(
+                        "Allow Calendar access to see your next seven days in Brainz.",
+                    ))
+                    .child(
+                        Button::new("brainz-calendar-allow", "Allow Calendar Access")
+                            .style(ButtonStyle::Filled)
+                            .on_click(cx.listener(|this, _, _, cx| this.request_access(cx))),
+                    )
                     .into_any_element(),
             ],
             LoadState::NoAccess(message) | LoadState::Failed(message) => vec![
