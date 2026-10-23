@@ -1191,6 +1191,11 @@ the note and add it on a line of its own: `![caption](attachments/name.png)`, or
 show as plain Markdown.
 - Link notes with relative Markdown links, for example `[Sam Lee](../people/Sam%20Lee.md)`; \
 Brainz lists those links under the linked note as \"Mentioned in\".
+- When the user asks to open a note or file in Brainz on macOS, run \
+`open -a Brainz '/absolute/path/to/file'` with the real path, then report whether \
+the command succeeded. Plain `open '/path/to/file.md'` uses the macOS default \
+application, which may fail or open the file outside Brainz. \
+Do not ask the user to click a link if you can open the file yourself.
 - A note template is a Markdown file in `.brainz/templates/` with front matter \
 (`name`, `description`, `path: '{{folder}}/{{slug input.title}}.md'`, and an `inputs` \
 entry for `title`); New note lists it.
@@ -2475,6 +2480,7 @@ mod tests {
         brainz_write_house_rules(&path);
         let first = std::fs::read_to_string(&path).unwrap();
         assert!(first.contains("## Brainz house rules"));
+        assert!(first.contains("open -a Brainz"));
         assert_eq!(first.matches(BRAINZ_HOUSE_RULES_START).count(), 1);
 
         std::fs::write(&path, format!("# Mine\n\nkeep me\n\n{first}\nand me\n")).unwrap();

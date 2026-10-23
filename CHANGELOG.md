@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.48 (2026-10-22)
+
+### Fixed
+
+- When asked to open a note or file, Claude and Codex in Brainz use Brainz directly on macOS instead of relying on the system's default app for Markdown files.
+
 ## 0.1.47 (2026-10-22)
 
 ### New

@@ -179,12 +179,15 @@ This file records implementation and validation; an unchecked item is not shippe
   spinning Create button. Signing, notarization and stapling were verified;
   the DMG, stable download and feed were uploaded.
   [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.46)
-- 0.1.47 candidate: Note images, tables, links, and history; agent canvas
+- 0.1.47: published 2026-10-22. Note images, tables, links, and history; agent canvas
   tools; Claude actions in notes; quick capture; and automatic naming for
   untitled notes. Chat turns Claude artifact and Brainz object links into pills;
   canvas titles have more room, and macOS clipboard screenshots paste onto
-  canvases. Connectors offers Miro's hosted MCP server. Publication and
-  signed-artifact verification are pending.
+  canvases. Connectors offers Miro's hosted MCP server. Signing, notarization,
+  stapling, bundled executable checks, and live download verification passed.
+  [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.47)
+- 0.1.48 candidate: Agent requests to open a file use Brainz directly on macOS.
+  Publication and signed-artifact verification are pending.
 
 ## Work in progress
 
