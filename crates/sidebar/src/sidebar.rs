@@ -7391,6 +7391,9 @@ impl Sidebar {
             self.focus_handle(cx),
             KeyBinding::for_action(&workspace::Open::default(), cx),
         )
+        .on_create_brain(|_, window, cx| {
+            window.dispatch_action(workspace::welcome::CreateBrain.boxed_clone(), cx);
+        })
         .on_open_project(|_, window, cx| {
             let side = match AgentSettings::get_global(cx).sidebar_side() {
                 SidebarSide::Left => "left",

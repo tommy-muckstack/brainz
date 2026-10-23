@@ -432,6 +432,22 @@ pub fn init(cx: &mut App) {
                     },
                 )
                 .register_action(
+                    |workspace, _: &workspace::welcome::OpenClaude, window, cx| {
+                        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                            workspace.focus_panel::<AgentPanel>(window, cx);
+                            panel.update(cx, |panel, cx| {
+                                panel.new_external_agent_thread(
+                                    &NewExternalAgentThread {
+                                        agent: AgentId::new("claude-acp"),
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            });
+                        }
+                    },
+                )
+                .register_action(
                     |workspace, _: &terminal_view::terminal_panel::OpenShell, window, cx| {
                         if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
                             workspace.focus_panel::<AgentPanel>(window, cx);
@@ -1954,7 +1970,7 @@ impl AgentPanel {
     }
 
     pub fn new_thread(&mut self, _action: &NewThread, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.has_open_project(cx) {
+        if !self.has_open_project(cx) && self.selected_agent(cx).is_native() {
             return;
         }
 
@@ -1967,7 +1983,9 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.should_create_terminal_for_new_entry(cx) {
+        if !self.has_open_project(cx) {
+            self.activate_new_thread(true, AgentThreadSource::AgentPanel, window, cx);
+        } else if self.should_create_terminal_for_new_entry(cx) {
             self.new_terminal(workspace, AgentThreadSource::AgentPanel, window, cx);
         } else {
             self.activate_new_thread(true, AgentThreadSource::AgentPanel, window, cx);
@@ -1981,7 +1999,7 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.has_open_project(cx) {
+        if !self.has_open_project(cx) && self.selected_agent(cx).is_native() {
             return;
         }
 
@@ -2127,10 +2145,6 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.has_open_project(cx) {
-            return;
-        }
-
         self.selected_agent = action.agent.clone().into();
         self.activate_new_thread(true, AgentThreadSource::AgentPanel, window, cx);
     }
@@ -3181,7 +3195,7 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.has_open_project(cx) {
+        if !self.has_open_project(cx) && self.selected_agent(cx).is_native() {
             return;
         }
 
@@ -3729,11 +3743,10 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if resume_thread_id.is_none() && !self.has_open_project(cx) {
+        let agent = agent_choice.unwrap_or_else(|| self.selected_agent(cx));
+        if resume_thread_id.is_none() && !self.has_open_project(cx) && agent.is_native() {
             return;
         }
-
-        let agent = agent_choice.unwrap_or_else(|| self.selected_agent(cx));
         let thread = self.create_agent_thread_with_server(
             agent,
             None,
@@ -3823,10 +3836,6 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.has_open_project(cx) {
-            return;
-        }
-
         self.new_thread_menu_handle.toggle(window, cx);
     }
 
@@ -4750,9 +4759,6 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.has_open_project(cx) {
-            return;
-        }
         let agent: Agent = AgentId::new("claude-acp").into();
         self.selected_agent = agent.clone();
         self.external_thread(
@@ -6172,6 +6178,12 @@ impl AgentPanel {
             focus_handle.clone(),
             KeyBinding::for_action_in(&workspace::Open::default(), &focus_handle, cx),
         )
+        .on_create_brain(|_, window, cx| {
+            window.dispatch_action(workspace::welcome::CreateBrain.boxed_clone(), cx);
+        })
+        .on_open_claude(|_, window, cx| {
+            window.dispatch_action(terminal_view::terminal_panel::OpenClaude.boxed_clone(), cx);
+        })
         .on_open_project(|_, window, cx| {
             telemetry::event!("Agent Panel Add Project Clicked");
             window.dispatch_action(workspace::Open::default().boxed_clone(), cx);
@@ -6188,7 +6200,7 @@ impl AgentPanel {
 
         let focus_handle = self.focus_handle(cx);
 
-        let can_create_entries = self.has_open_project(cx);
+        let can_create_entries = true;
         let supports_terminal = self.supports_terminal(cx);
         let showing_terminal = matches!(self.visible_surface(), VisibleSurface::Terminal(_));
 
@@ -10250,7 +10262,9 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn test_empty_workspace_does_not_create_agent_entries(cx: &mut TestAppContext) {
+    async fn test_empty_workspace_allows_external_chat_without_native_or_terminal(
+        cx: &mut TestAppContext,
+    ) {
         init_test(cx);
         cx.update(|cx| {
             agent::ThreadStore::init_global(cx);
@@ -10288,9 +10302,15 @@ mod tests {
         panel.update_in(cx, |panel, window, cx| {
             panel.new_thread(&NewThread, window, cx);
             panel.activate_draft(true, AgentThreadSource::AgentPanel, window, cx);
+        });
+        panel.read_with(cx, |panel, _cx| {
+            assert!(panel.active_conversation_view().is_none());
+        });
+
+        panel.update_in(cx, |panel, window, cx| {
             panel.new_external_agent_thread(
                 &NewExternalAgentThread {
-                    agent: AgentId::new("external-agent"),
+                    agent: Agent::Stub.id(),
                 },
                 window,
                 cx,
@@ -10299,14 +10319,11 @@ mod tests {
         cx.run_until_parked();
 
         panel.read_with(cx, |panel, cx| {
-            assert!(
-                panel.active_conversation_view().is_none(),
-                "empty workspaces should not create agent threads"
-            );
-            assert!(
-                panel.draft_thread.is_none(),
-                "empty workspaces should not create draft threads"
-            );
+            let conversation = panel
+                .active_conversation_view()
+                .expect("external chat should open");
+            assert_eq!(conversation.read(cx).agent_key(), &Agent::Stub);
+            assert!(panel.draft_thread.is_some());
             assert!(
                 panel.terminals(cx).is_empty(),
                 "empty workspaces should not create agent panel terminals"

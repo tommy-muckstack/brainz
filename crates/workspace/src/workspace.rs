@@ -999,6 +999,7 @@ pub fn init(app_state: Arc<AppState>, cx: &mut App) {
 
     cx.on_action(|_: &CloseWindow, cx| Workspace::close_global(cx))
         .on_action(|_: &Reload, cx| reload(cx))
+        .on_action(|_: &welcome::CreateBrain, cx| welcome::create_brain(cx))
         .on_action(|action: &Open, cx: &mut App| {
             let app_state = AppState::global(cx);
             prompt_and_open_paths(

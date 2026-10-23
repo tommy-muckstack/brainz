@@ -8090,6 +8090,9 @@ impl Render for ProjectPanel {
                         focus_handle.clone(),
                         KeyBinding::for_action_in(&workspace::Open::default(), &focus_handle, cx),
                     )
+                    .on_create_brain(|_, window, cx| {
+                        window.dispatch_action(workspace::welcome::CreateBrain.boxed_clone(), cx);
+                    })
                     .on_open_project(move |_, window, cx| {
                         telemetry::event!("Project Panel Add Project Clicked");
                         workspace

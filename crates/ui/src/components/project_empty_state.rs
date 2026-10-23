@@ -8,6 +8,8 @@ pub struct ProjectEmptyState {
     label: SharedString,
     focus_handle: FocusHandle,
     open_project_key_binding: KeyBinding,
+    on_create_brain: Option<ClickHandler>,
+    on_open_claude: Option<ClickHandler>,
     on_open_project: Option<ClickHandler>,
     on_clone_repo: Option<ClickHandler>,
 }
@@ -22,9 +24,27 @@ impl ProjectEmptyState {
             label: label.into(),
             focus_handle,
             open_project_key_binding,
+            on_create_brain: None,
+            on_open_claude: None,
             on_open_project: None,
             on_clone_repo: None,
         }
+    }
+
+    pub fn on_create_brain(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_create_brain = Some(Box::new(handler));
+        self
+    }
+
+    pub fn on_open_claude(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_open_claude = Some(Box::new(handler));
+        self
     }
 
     pub fn on_open_project(
@@ -67,6 +87,16 @@ impl RenderOnce for ProjectEmptyState {
                             .mb_2()
                             .child(Label::new(label).size(LabelSize::Small).color(Color::Muted)),
                     )
+                    .children(self.on_create_brain.map(|handler| {
+                        Button::new("create_brain", "New Brain")
+                            .full_width()
+                            .on_click(handler)
+                    }))
+                    .children(self.on_open_claude.map(|handler| {
+                        Button::new("open_claude", "Open Claude")
+                            .full_width()
+                            .on_click(handler)
+                    }))
                     .child(
                         Button::new("open_project", "Open Project")
                             .full_width()

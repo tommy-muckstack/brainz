@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.50 (2026-10-22)
+
+### New
+
+- Create a new local brain from the welcome screen, File menu, or an empty project panel. Brainz creates a folder with an Inbox, a Canvases folder, and a local Git repository on `main`; connecting GitHub is optional.
+- Open Claude from the welcome screen, an empty agent panel, or the launcher without opening or cloning a repository first.
+
 ## 0.1.49 (2026-10-22)
 
 ### Fixed

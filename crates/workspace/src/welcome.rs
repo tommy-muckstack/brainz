@@ -1,14 +1,15 @@
 use crate::{
-    NewFile, Open, OpenMode, PathList, RecentWorkspace, SerializedWorkspaceLocation,
-    ToggleWorkspaceSidebar, Workspace, WorkspaceSettings,
+    AppState, NewFile, Open, OpenMode, OpenOptions, PathList, RecentWorkspace,
+    SerializedWorkspaceLocation, ToggleWorkspaceSidebar, Workspace, WorkspaceSettings,
     item::{Item, ItemEvent},
+    open_paths,
     persistence::WorkspaceDb,
 };
 use agent_settings::AgentSettings;
 use git::Clone as GitClone;
 use gpui::{
-    Action, App, Context, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement,
-    ParentElement, Render, Styled, Task, TaskExt, Window, actions,
+    Action, App, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, ParentElement, Render, Styled, Task, TaskExt, Window, actions,
 };
 use gpui::{WeakEntity, linear_color_stop, linear_gradient};
 use menu::{SelectNext, SelectPrevious};
@@ -16,11 +17,116 @@ use menu::{SelectNext, SelectPrevious};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use settings::{DefaultOpenBehavior, Settings};
+use std::path::Path;
 use ui::{ButtonLike, Divider, DividerColor, KeyBinding, Vector, VectorName, prelude::*};
-use util::ResultExt;
+use util::{ResultExt, command::new_command};
 use zed_actions::{
     Extensions, OpenKeymap, OpenOnboarding, OpenSettings, assistant::ToggleFocus, command_palette,
 };
+
+actions!(
+    brainz,
+    [
+        /// Creates a local brain and Git repository without a remote.
+        CreateBrain,
+        /// Opens a Claude conversation, including when no project is open.
+        OpenClaude
+    ]
+);
+
+async fn create_brain_directory(path: &Path) -> anyhow::Result<()> {
+    if path.exists() {
+        anyhow::ensure!(path.is_dir(), "Choose a folder for your new brain");
+        anyhow::ensure!(
+            std::fs::read_dir(path)?.next().is_none(),
+            "Choose a new or empty folder for your brain"
+        );
+    } else {
+        std::fs::create_dir(path)?;
+    }
+
+    let output = new_command("git")
+        .args(["init", "-b", "main"])
+        .arg(path)
+        .output()
+        .await?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Could not initialize the local repository: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+
+    std::fs::write(path.join("Inbox.md"), "# Inbox\n")?;
+    std::fs::create_dir(path.join("Canvases"))?;
+    Ok(())
+}
+
+fn show_brain_error(cx: &mut AsyncApp, title: &'static str, message: &str) {
+    cx.update(|cx| {
+        if let Some(handle) = cx.active_window() {
+            handle
+                .update(cx, |_, window, cx| {
+                    drop(window.prompt(
+                        gpui::PromptLevel::Critical,
+                        title,
+                        Some(message),
+                        &["OK"],
+                        cx,
+                    ));
+                })
+                .ok();
+        }
+    });
+}
+
+pub fn create_brain(cx: &mut App) {
+    let initial_directory = dirs::document_dir()
+        .filter(|path| path.is_dir())
+        .or_else(dirs::home_dir)
+        .unwrap_or_default();
+    let picker = cx.prompt_for_new_path(&initial_directory, Some("My Brain"));
+
+    cx.spawn(async move |cx| {
+        let path = match picker.await {
+            Ok(Ok(Some(path))) => path,
+            Ok(Ok(None)) | Err(_) => return,
+            Ok(Err(error)) => {
+                show_brain_error(cx, "Could not choose a folder", &error.to_string());
+                return;
+            }
+        };
+
+        let create_path = path.clone();
+        let result = cx
+            .background_spawn(async move { create_brain_directory(&create_path).await })
+            .await;
+        if let Err(error) = result {
+            show_brain_error(cx, "Could not create brain", &error.to_string());
+            return;
+        }
+
+        if let Err(error) = cx
+            .update(|cx| {
+                open_paths(
+                    &[path],
+                    AppState::global(cx),
+                    OpenOptions {
+                        requesting_window: cx
+                            .active_window()
+                            .and_then(|window| window.downcast::<crate::MultiWorkspace>()),
+                        open_mode: OpenMode::Activate,
+                        ..Default::default()
+                    },
+                    cx,
+                )
+            })
+            .await
+        {
+            show_brain_error(cx, "Could not open brain", &error.to_string());
+        }
+    })
+    .detach();
+}
 
 #[derive(PartialEq, Clone, Debug, Deserialize, Serialize, JsonSchema, Action)]
 #[action(namespace = welcome)]
@@ -160,10 +266,22 @@ impl SectionEntry {
     }
 }
 
-const CONTENT: (Section<4>, Section<3>) = (
+const CONTENT: (Section<6>, Section<3>) = (
     Section {
         title: "Get Started",
         entries: [
+            SectionEntry {
+                icon: IconName::Plus,
+                title: "New Brain",
+                action: &CreateBrain,
+                visibility_guard: SectionVisibility::Always,
+            },
+            SectionEntry {
+                icon: IconName::ZedAssistant,
+                title: "Open Claude",
+                action: &OpenClaude,
+                visibility_guard: SectionVisibility::Always,
+            },
             SectionEntry {
                 icon: IconName::Plus,
                 title: "New File",
@@ -448,9 +566,9 @@ impl Render for WelcomePage {
         };
 
         let welcome_label = if self.fallback_to_recent_projects {
-            "Welcome back to Zed"
+            "Welcome back to Brainz"
         } else {
-            "Welcome to Zed"
+            "Welcome to Brainz"
         };
 
         h_flex()
@@ -480,7 +598,7 @@ impl Render for WelcomePage {
                             .child(Vector::square(VectorName::ZedLogo, rems_from_px(45_f32)))
                             .child(
                                 v_flex().child(Headline::new(welcome_label)).child(
-                                    Label::new("The editor for what's next")
+                                    Label::new("Your notes, canvases, and conversations")
                                         .size(LabelSize::Small)
                                         .color(Color::Muted)
                                         .italic(),
@@ -669,6 +787,50 @@ fn project_name(paths: &PathList) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn creates_local_brain_without_a_remote() {
+        futures::executor::block_on(async {
+            let temp = tempfile::tempdir().unwrap();
+            let brain = temp.path().join("First Brain");
+
+            create_brain_directory(&brain).await.unwrap();
+
+            assert_eq!(
+                std::fs::read_to_string(brain.join("Inbox.md")).unwrap(),
+                "# Inbox\n"
+            );
+            assert!(brain.join("Canvases").is_dir());
+            assert!(brain.join(".git").is_dir());
+
+            let remotes = new_command("git")
+                .arg("-C")
+                .arg(&brain)
+                .arg("remote")
+                .output()
+                .await
+                .unwrap();
+            assert!(remotes.status.success());
+            assert!(remotes.stdout.is_empty());
+
+            let head = new_command("git")
+                .arg("-C")
+                .arg(&brain)
+                .args(["symbolic-ref", "HEAD"])
+                .output()
+                .await
+                .unwrap();
+            assert!(head.status.success());
+            assert_eq!(head.stdout, b"refs/heads/main\n");
+
+            let existing = create_brain_directory(&brain).await.unwrap_err();
+            assert!(existing.to_string().contains("new or empty folder"));
+            assert_eq!(
+                std::fs::read_to_string(brain.join("Inbox.md")).unwrap(),
+                "# Inbox\n"
+            );
+        });
+    }
 
     #[test]
     fn test_project_name_empty() {
