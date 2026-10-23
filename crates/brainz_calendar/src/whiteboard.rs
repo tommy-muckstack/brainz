@@ -1059,49 +1059,43 @@ impl WhiteboardView {
         storage.view_state_path = Some(paths::data_dir().join("whiteboards/state.json"));
         let storage = Arc::new(storage);
         let loading_storage = storage.clone();
+        let initial_path = target.path.clone();
         let load = cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move { loading_storage.load(allow_create) })
+                .background_spawn(async move {
+                    let document = loading_storage.load(allow_create)?;
+                    let destination = initial_path
+                        .file_stem()
+                        .and_then(|name| name.to_str())
+                        .filter(|name| name.starts_with("Untitled canvas"))
+                        .and_then(|_| document.get("title").and_then(Value::as_str))
+                        .filter(|title| {
+                            !title.trim().is_empty() && !title.starts_with("Untitled canvas")
+                        })
+                        .and_then(|title| {
+                            initial_path.parent().map(|parent| {
+                                parent.join(format!("{}.brainzboard", canvas_filename(title)))
+                            })
+                        })
+                        .filter(|path| path != &initial_path);
+                    let destination = destination.and_then(|path| {
+                        match loading_storage.relocate(path.clone(), false) {
+                            Ok(()) => Some(path),
+                            Err(error) => {
+                                log::warn!("Could not update canvas filename: {error}");
+                                None
+                            }
+                        }
+                    });
+                    Ok::<_, anyhow::Error>((document, destination))
+                })
                 .await;
             this.update(cx, |this, cx| {
                 match result {
-                    Ok(document) => {
-                        let old_name = this.target.path.file_stem().and_then(|name| name.to_str());
-                        let title = document
-                            .get("title")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned);
-                        let rename = old_name
-                            .is_some_and(|name| name.starts_with("Untitled canvas"))
-                            && title.as_deref().is_some_and(|title| {
-                                !title.trim().is_empty()
-                                    && !title.starts_with("Untitled canvas")
-                                    && canvas_filename(title) != old_name.unwrap_or_default()
-                            });
+                    Ok((document, destination)) => {
                         this.document = Some(document);
-                        if rename {
-                            if let (Some(parent), Some(title)) = (this.target.path.parent(), title)
-                            {
-                                let destination =
-                                    parent.join(format!("{}.brainzboard", canvas_filename(&title)));
-                                let storage = this.storage.clone();
-                                cx.spawn(async move |this, cx| {
-                                    let path = destination.clone();
-                                    let result = cx
-                                        .background_spawn(
-                                            async move { storage.relocate(path, false) },
-                                        )
-                                        .await;
-                                    this.update(cx, |this, cx| match result {
-                                        Ok(()) => this.did_relocate(destination, cx),
-                                        Err(error) => {
-                                            log::warn!("Could not update canvas filename: {error}")
-                                        }
-                                    })
-                                    .log_err();
-                                })
-                                .detach();
-                            }
+                        if let Some(destination) = destination {
+                            this.did_relocate(destination, cx);
                         }
                     }
                     Err(error) => {
@@ -1498,7 +1492,6 @@ impl Render for WhiteboardView {
 #[cfg(target_os = "macos")]
 pub(crate) mod native {
     use super::*;
-    use feature_flags::{BrainzCanvasStorageV2, FeatureFlagAppExt as _};
     use gpui::{ClipboardEntry, ClipboardItem, Image, ImageFormat, PathPromptOptions};
     use std::{borrow::Cow, rc::Rc};
 
@@ -1874,7 +1867,7 @@ pub(crate) mod native {
                         "attach": self.chat_destination.is_some(), "workspace": root,
                         "boardId": brainz_canvas::legacy_board_id(&self.target.path), "baseHash": hash, "viewState": view_state,
                         "agentEnabled": root.is_some(),
-                        "incrementalStorage": cx.has_flag::<BrainzCanvasStorageV2>()}));
+                        "incrementalStorage": true}));
                 }
                 NativeEvent::Message(Message::Loaded) => self.watch_canvas(cx),
                 NativeEvent::Message(Message::OpsResult { batch_id, result }) => {

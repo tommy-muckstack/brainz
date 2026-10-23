@@ -9,10 +9,13 @@
 - Create canvases in any brain folder. Editing a canvas title now renames its file in the sidebar, and an existing untitled canvas with a saved title is corrected when opened.
 - The canvas tool tray starts compact, expands on hover or click, and shows shortcut letters with each tool's name on hover.
 - Shapes briefly settle and glow when their edges align during a drag; dragging farther still moves past the snap point.
+- Canvases now use incremental storage by default. Existing canvases are backed up during migration, and typing saves small updates instead of repeatedly serializing the entire board. View position saves wait until scrolling settles.
 
 ### Fixed
 
 - Copying and pasting selected canvas objects with Command-C and Command-V duplicates them instead of invoking the image paste fallback.
+- Normal external canvas merges no longer show distracting save and merge toasts.
+- GitHub sync checks for a complete AWS access key ID, avoiding false alarms from incidental `AKIA` text in encoded canvas data.
 - The macOS app icon now has a light brain mark on a dark background in dark appearance. The legacy icon remains visible on both light and dark desktops.
 
 ## 0.1.50 (2026-10-22)

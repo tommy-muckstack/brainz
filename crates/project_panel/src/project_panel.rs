@@ -7394,6 +7394,7 @@ fn brainz_is_config_file(path: &RelPath) -> bool {
         name == "brainz.toml"
             || name.ends_with(".brainzboard.lock")
             || name.ends_with(".canvas.json")
+            || (name.contains(".brainzboard") && name.ends_with(".v1.bak"))
     })
 }
 

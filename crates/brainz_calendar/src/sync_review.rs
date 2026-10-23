@@ -13,9 +13,17 @@ const SECRET_MARKERS: &[(&[u8], &str)] = &[
     (b"github_pat_", "a GitHub token"),
     (b"xoxb-", "a Slack bot token"),
     (b"xoxp-", "a Slack user token"),
-    (b"AKIA", "an AWS access key"),
     (b"phx_", "a PostHog personal API key"),
 ];
+
+fn contains_aws_access_key(content: &[u8]) -> bool {
+    content.windows(20).any(|candidate| {
+        (candidate.starts_with(b"AKIA") || candidate.starts_with(b"ASIA"))
+            && candidate[4..]
+                .iter()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+    })
+}
 
 #[allow(clippy::disallowed_methods)]
 fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
@@ -82,6 +90,9 @@ fn review_paths(
         );
         if reviewed_blobs.insert(object.to_owned()) {
             let content = git_bytes(repo, &["cat-file", "blob", object])?;
+            if contains_aws_access_key(&content) {
+                bail!("Review stopped the sync: {path} appears to contain an AWS access key.");
+            }
             for (marker, description) in SECRET_MARKERS {
                 if content
                     .windows(marker.len())
@@ -228,6 +239,15 @@ pub(crate) fn commit(repo: &Path, reviewed: &ReviewedTree, message: &str) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aws_review_requires_a_complete_access_key_id() {
+        assert!(!contains_aws_access_key(b"AKIAa1-not-a-key"));
+        assert!(contains_aws_access_key(
+            b"prefix AKIAIOSFODNN7EXAMPLE suffix"
+        ));
+        assert!(contains_aws_access_key(b"ASIAIOSFODNN7EXAMPLE"));
+    }
 
     struct Repository {
         directory: tempfile::TempDir,
