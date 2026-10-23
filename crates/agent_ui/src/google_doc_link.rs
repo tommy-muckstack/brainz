@@ -163,7 +163,7 @@ pub(crate) fn known_link(url: &str) -> Option<(LinkKind, String)> {
     if let Some(metadata_url) = google_doc_metadata_url(url) {
         return Some((LinkKind::GoogleDoc, metadata_url));
     }
-    let parsed = Url::parse(url).ok()?;
+    let mut parsed = Url::parse(url).ok()?;
     if parsed.scheme() == "brainz" {
         if !parsed.username().is_empty() || parsed.password().is_some() || parsed.port().is_some() {
             return None;
@@ -183,9 +183,8 @@ pub(crate) fn known_link(url: &str) -> Option<(LinkKind, String)> {
             }
             _ => return None,
         };
-        let mut clean = parsed.clone();
-        clean.set_fragment(None);
-        return Some((kind, clean.into()));
+        parsed.set_fragment(None);
+        return Some((kind, parsed.into()));
     }
     if !matches!(parsed.scheme(), "https" | "http") || !parsed.username().is_empty() {
         return None;
