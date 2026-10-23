@@ -1,0 +1,42 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "solid": "extended-srgb:0.969,0.949,0.902,1.000"
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "solid": "extended-srgb:0.102,0.098,0.094,1.000"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "brainz-icon.png",
+          "name": "Brainz",
+          "glass": false,
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "extended-srgb:0.078,0.071,0.063,1.000"
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "extended-srgb:0.957,0.925,0.867,1.000"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "supported-platforms": {
+    "squares": ["macOS"]
+  }
+}

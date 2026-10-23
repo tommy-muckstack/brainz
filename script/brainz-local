@@ -117,10 +117,26 @@ if [[ ! -x "$repository/target/brainz-pdf" || "script/brainz-pdf.swift" -nt "$re
 fi
 cp "$repository/target/brainz-pdf" "$application/Contents/MacOS/brainz-pdf"
 
-swift -module-cache-path "$repository/target/brainz-swift-cache" \
-    script/brainz-icon.swift "$repository" "$repository/target/Brainz.iconset"
-iconutil -c icns "$repository/target/Brainz.iconset" \
-    -o "$application/Contents/Resources/Brainz.icns"
+icon_assets="$repository/target/brainz-icon-assets"
+xcode_actool="/Applications/Xcode.app/Contents/Developer/usr/bin/actool"
+if [[ -x "$xcode_actool" ]]; then
+    mkdir -p "$icon_assets"
+    DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun actool \
+        --compile "$icon_assets" --platform macosx --minimum-deployment-target 13.0 \
+        --app-icon Brainz --output-partial-info-plist "$icon_assets/Info.plist" \
+        "$repository/crates/zed/resources/Brainz.icon" >/dev/null
+    cp "$icon_assets/Assets.car" "$application/Contents/Resources/Assets.car"
+    cp "$icon_assets/Brainz.icns" "$application/Contents/Resources/Brainz.icns"
+    /usr/libexec/PlistBuddy -c 'Add :CFBundleIconName string Brainz' \
+        "$application/Contents/Info.plist"
+else
+    # Local builds with only Command Line Tools retain the legacy icon.
+    rm -f "$application/Contents/Resources/Assets.car"
+    swift -module-cache-path "$repository/target/brainz-swift-cache" \
+        script/brainz-icon.swift "$repository" "$repository/target/Brainz.iconset"
+    iconutil -c icns "$repository/target/Brainz.iconset" \
+        -o "$application/Contents/Resources/Brainz.icns"
+fi
 # Sign with a real identity so macOS keeps permission grants (Calendar, etc.)
 # across rebuilds; an ad-hoc signature looks like a brand-new app every time.
 # Per-machine values (signing identity, workspace) live in the untracked

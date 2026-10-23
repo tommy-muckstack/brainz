@@ -124,6 +124,14 @@ BRAINZ_NO_OPEN=1 BRAINZ_APP_DIR="$APP_DIR" BRAINZ_BINARY="$repository/target/rel
     BRAINZ_VERSION="$VERSION" BRAINZ_BUILD="$BUILD_NUMBER" BRAINZ_SIGNING_IDENTITY="" \
     script/brainz-local --no-build
 
+if [[ ! -s "$APP_DIR/Contents/Resources/Assets.car" ]] || \
+    ! /usr/bin/assetutil --info "$APP_DIR/Contents/Resources/Assets.car" | \
+        grep -F '"Appearance" : "NSAppearanceNameDarkAqua"' >/dev/null
+then
+    echo "ERROR: the packaged app icon has no dark appearance." >&2
+    exit 1
+fi
+
 echo "==> Signing with Developer ID and the hardened runtime..."
 ENTITLEMENTS="$repository/crates/zed/resources/zed.entitlements"
 codesign --force --timestamp --options runtime --sign "$DEV_ID_IDENTITY" \

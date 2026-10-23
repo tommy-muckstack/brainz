@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.51 (2026-10-22)
+
+### Fixed
+
+- The macOS app icon now has a light brain mark on a dark background in dark appearance. The legacy icon remains visible on both light and dark desktops.
+
 ## 0.1.50 (2026-10-22)
 
 ### New
