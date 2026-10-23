@@ -7423,6 +7423,8 @@ impl Render for ProjectPanel {
             self._brainz_mcp_subscription = Some(cx.observe(&state, |_, _, cx| cx.notify()));
         }
         let brainz_mcp_banner = brainz_calendar::mcp::render_banner(&self.workspace, cx);
+        let has_brainz_notice =
+            brainz_banner.is_some() || brainz_prep_banner.is_some() || brainz_mcp_banner.is_some();
         let brainz_create = brainz_calendar::create::render(
             {
                 let panel = cx.entity().downgrade();
@@ -7559,6 +7561,14 @@ impl Render for ProjectPanel {
                 .children(brainz_banner)
                 .children(brainz_prep_banner)
                 .children(brainz_mcp_banner)
+                .when(has_brainz_notice, |this| {
+                    this.child(
+                        div()
+                            .mx_2()
+                            .h(px(1.))
+                            .bg(cx.theme().colors().border),
+                    )
+                })
                 .child(brainz_create)
                 .child(brainz_nav)
                 .child(brainz_tree_heading)

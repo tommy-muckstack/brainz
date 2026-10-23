@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.1.55 (2026-10-23)
+
+### Improved
+
+- Sidebar notices have a quiet divider above Create.
+- The canvas drawing tray fits all tools on shorter windows without internal scrolling.
+- Create menu icons briefly animate as you hover each option.
+- Canvas Undo and Redo are smaller and sit beside Add file in the header.
+
 ## 0.1.54 (2026-10-23)
 
 ### Improved

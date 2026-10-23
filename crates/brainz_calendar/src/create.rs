@@ -12,7 +12,7 @@ use editor::Editor;
 use gpui::{
     Action, Anchor, Animation, AnimationExt, App, ClickEvent, CursorStyle, DismissEvent, Entity,
     EventEmitter, FocusHandle, Focusable, Transformation, WeakEntity, Window, actions,
-    ease_out_quint, percentage, point,
+    ease_out_quint, percentage, point, size,
 };
 use ui::{ButtonLike, PopoverMenu, Transformable as _, prelude::*};
 use workspace::{ModalView, Workspace};
@@ -225,6 +225,8 @@ const ENTRIES: &[Entry] = &[
 pub struct CreateMenu {
     focus_handle: FocusHandle,
     selected: Option<usize>,
+    hovered: Option<usize>,
+    hover_counts: [u64; 5],
     on_new_folder: SidebarCallback,
 }
 
@@ -235,6 +237,8 @@ impl CreateMenu {
         Self {
             focus_handle,
             selected: None,
+            hovered: None,
+            hover_counts: [0; 5],
             on_new_folder,
         }
     }
@@ -312,6 +316,25 @@ impl Render for CreateMenu {
             .elevation_2(cx)
             .children(ENTRIES.iter().enumerate().map(|(ix, entry)| {
                 let selected = self.selected == Some(ix);
+                let icon = Icon::new(entry.icon)
+                    .size(IconSize::Small)
+                    .color(Color::Custom(accent));
+                let icon = if self.hovered == Some(ix) {
+                    icon.with_animation(
+                        gpui::ElementId::Name(
+                            format!("brainz-create-icon-hover-{ix}-{}", self.hover_counts[ix])
+                                .into(),
+                        ),
+                        Animation::new(Duration::from_millis(320)),
+                        |icon, delta| {
+                            let scale = 1. + 0.16 * (std::f32::consts::PI * delta).sin();
+                            icon.transform(Transformation::scale(size(scale, scale)))
+                        },
+                    )
+                    .into_any_element()
+                } else {
+                    icon.into_any_element()
+                };
                 h_flex()
                     .id(("brainz-create-row", ix))
                     .w_full()
@@ -322,6 +345,18 @@ impl Render for CreateMenu {
                     .cursor_pointer()
                     .when(selected, |this| this.bg(colors.element_hover))
                     .hover(|this| this.bg(colors.element_hover))
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        if *hovered {
+                            if this.hovered != Some(ix) {
+                                this.hovered = Some(ix);
+                                this.hover_counts[ix] += 1;
+                                cx.notify();
+                            }
+                        } else if this.hovered == Some(ix) {
+                            this.hovered = None;
+                            cx.notify();
+                        }
+                    }))
                     .on_click(cx.listener(move |this, _, window, cx| this.choose(ix, window, cx)))
                     .child(
                         div()
@@ -332,11 +367,7 @@ impl Render for CreateMenu {
                             .items_center()
                             .justify_center()
                             .bg(accent.opacity(0.14))
-                            .child(
-                                Icon::new(entry.icon)
-                                    .size(IconSize::Small)
-                                    .color(Color::Custom(accent)),
-                            ),
+                            .child(icon),
                     )
                     .child(
                         v_flex().min_w_0().child(Label::new(entry.label)).child(
