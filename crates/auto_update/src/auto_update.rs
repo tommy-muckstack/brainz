@@ -375,6 +375,19 @@ pub fn check(_: &Check, window: &mut Window, cx: &mut App) {
         .map(|channel| channel.poll_for_updates())
         .unwrap_or(false)
     {
+        let prompt = window.prompt(
+            gpui::PromptLevel::Info,
+            "This Brainz build cannot check for updates",
+            Some("Development builds do not receive automatic updates. Install the latest Brainz release to get updates from this menu."),
+            &["Download Brainz", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |cx| {
+            if prompt.await == Ok(0) {
+                cx.update(|cx| cx.open_url("https://muckstack.com/download/brainz"));
+            }
+        })
+        .detach();
         return;
     }
 

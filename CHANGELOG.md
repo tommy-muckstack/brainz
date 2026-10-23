@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.49 (2026-10-22)
+
+### Fixed
+
+- Check for Updates now explains when Brainz is running from a development build and offers the current public installer instead of silently doing nothing.
+
 ## 0.1.48 (2026-10-22)
 
 ### Fixed
