@@ -31,6 +31,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
+    time::Duration,
 };
 use text::OffsetRangeExt;
 use ui::{Disclosure, Toggleable, prelude::*};
@@ -1490,6 +1491,19 @@ fn render_mention_fold_button(
     Arc<dyn Send + Sync + Fn(FoldId, Range<Anchor>, &mut App) -> AnyElement>,
     Entity<LoadingContext>,
 ) {
+    let myman_note = match &mention_uri {
+        Some(MentionUri::File { abs_path })
+            if crate::google_doc_link::is_myman_meeting_note(abs_path) =>
+        {
+            Some(abs_path.clone())
+        }
+        _ => None,
+    };
+    let icon = if myman_note.is_some() {
+        "icons/brainz/logos/myman.png".into()
+    } else {
+        icon
+    };
     let loading = cx.new(|cx| {
         let loading = cx.spawn(async move |this, cx| {
             loading_finished.recv().await;
@@ -1498,6 +1512,27 @@ fn render_mention_fold_button(
                 cx.notify();
             })
             .ok();
+        });
+        let title_task = myman_note.map(|path| {
+            cx.spawn(async move |this: WeakEntity<LoadingContext>, cx| {
+                loop {
+                    let path_to_read = path.clone();
+                    let title = cx
+                        .background_spawn(async move {
+                            crate::google_doc_link::local_file_title(&path_to_read)
+                        })
+                        .await;
+                    if let Some(title) = title {
+                        this.update(cx, |this, cx| {
+                            this.label = title.into();
+                            cx.notify();
+                        })
+                        .ok();
+                        break;
+                    }
+                    cx.background_executor().timer(Duration::from_secs(5)).await;
+                }
+            })
         });
         LoadingContext {
             id: cx.entity_id(),
@@ -1509,6 +1544,7 @@ fn render_mention_fold_button(
             range,
             editor,
             loading: Some(loading),
+            _title_task: title_task,
             image: image_task.clone(),
             thumbnail: None,
         }
@@ -1529,6 +1565,7 @@ pub struct LoadingContext {
     range: Range<Anchor>,
     editor: WeakEntity<Editor>,
     loading: Option<Task<()>>,
+    _title_task: Option<Task<()>>,
     image: Option<Shared<Task<Result<Arc<Image>, String>>>>,
     /// Brainz: a Quick Look rendering of an attached document, once the
     /// composer has one; the inline chip then steps aside for it.

@@ -4,8 +4,8 @@ use acp_thread::MentionUri;
 use agent_client_protocol::schema::v1 as acp;
 use editor::Editor;
 use gpui::{
-    Animation, AnimationExt, AnyView, Context, IntoElement, TaskExt, WeakEntity, Window,
-    pulsating_between,
+    Animation, AnimationExt, AnyElement, AnyView, Context, IntoElement, TaskExt, WeakEntity,
+    Window, pulsating_between,
 };
 use language::Buffer;
 use rope::Point;
@@ -103,6 +103,19 @@ impl RenderOnce for MentionCrease {
         let is_loading = self.is_loading;
         let tooltip = self.tooltip;
         let image_preview = self.image_preview;
+        let myman_note = self.icon.as_ref() == "icons/brainz/logos/myman.png";
+        let glyph: AnyElement = if myman_note {
+            gpui::img("icons/brainz/logos/myman.png".to_owned())
+                .size_3()
+                .flex_none()
+                .object_fit(gpui::ObjectFit::Contain)
+                .into_any_element()
+        } else {
+            Icon::from_path(self.icon.clone())
+                .size(IconSize::XSmall)
+                .color(Color::Muted)
+                .into_any_element()
+        };
 
         let button_height = DefiniteLength::Absolute(AbsoluteLength::Pixels(
             px(window.line_height().into()) - px(1.),
@@ -128,11 +141,7 @@ impl RenderOnce for MentionCrease {
                     .gap_1()
                     .font(buffer_font)
                     .text_size(font_size)
-                    .child(
-                        Icon::from_path(self.icon.clone())
-                            .size(IconSize::XSmall)
-                            .color(Color::Muted),
-                    )
+                    .child(glyph)
                     .child(self.label.clone())
                     .map(|this| {
                         if is_loading {

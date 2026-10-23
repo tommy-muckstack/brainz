@@ -43,8 +43,8 @@ impl LinkKind {
     pub(crate) fn logo(self) -> Option<&'static str> {
         match self {
             LinkKind::Granola => Some("icons/brainz/logos/granola.png"),
+            LinkKind::WisprFlow => Some("icons/brainz/logos/wisprflow.png"),
             LinkKind::GoogleDoc
-            | LinkKind::WisprFlow
             | LinkKind::GitHub
             | LinkKind::ClaudeArtifact
             | LinkKind::BrainzCanvas
@@ -252,10 +252,28 @@ pub(crate) fn pasted_local_files(text: &str) -> Vec<(Range<usize>, std::path::Pa
 /// the Granola one, otherwise the file name.
 pub(crate) fn local_file_label(path: &std::path::Path) -> String {
     markdown_title(path).unwrap_or_else(|| {
+        if is_myman_meeting_note(path) {
+            return "MyMan meeting".to_owned();
+        }
         path.file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.to_string_lossy().into_owned())
     })
+}
+
+pub(crate) fn is_myman_meeting_note(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| extension == "md")
+        && path
+            .parent()
+            .is_some_and(|parent| parent.file_name().is_some_and(|name| name == "meetings"))
+        && path
+            .parent()
+            .and_then(Path::parent)
+            .is_some_and(|root| root.join("catalog.json").is_file())
+}
+
+pub(crate) fn local_file_title(path: &Path) -> Option<String> {
+    markdown_title(path)
 }
 
 /// The first `# heading` of a Markdown file, skipping YAML front matter.
@@ -719,9 +737,23 @@ mod tests {
         let plain = dir.join("plain.md");
         std::fs::write(&plain, "no heading here\n").unwrap();
         assert_eq!(local_file_label(&plain), "plain.md");
+        assert!(!is_myman_meeting_note(&plain));
         let pdf = dir.join("deck.pdf");
         std::fs::write(&pdf, "# not markdown").unwrap();
         assert_eq!(local_file_label(&pdf), "deck.pdf");
+        let myman = dir.join("MyManBrain");
+        std::fs::create_dir_all(myman.join("meetings")).unwrap();
+        std::fs::write(myman.join("catalog.json"), "{}").unwrap();
+        let meeting = myman.join("meetings/2026-10-23-4F4DFF58.md");
+        std::fs::write(&meeting, "---\nid: 4F4DFF58\n---\n").unwrap();
+        assert!(is_myman_meeting_note(&meeting));
+        assert_eq!(local_file_label(&meeting), "MyMan meeting");
+        std::fs::write(&meeting, "---\nid: 4F4DFF58\n---\n# Tommy & Hilmar\n").unwrap();
+        assert_eq!(
+            local_file_title(&meeting).as_deref(),
+            Some("Tommy & Hilmar")
+        );
+        assert_eq!(local_file_label(&meeting), "Tommy & Hilmar");
         std::fs::remove_dir_all(&dir).ok();
     }
 

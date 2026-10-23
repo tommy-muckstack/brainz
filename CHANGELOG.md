@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.54 (2026-10-23)
+
+### Improved
+
+- MyMan meeting notes show the MyMan logo and update their pill title when the Markdown heading becomes available. Wispr Flow note pills now show the Wispr Flow logo.
+
 ## 0.1.53 (2026-10-23)
 
 ### Fixed
