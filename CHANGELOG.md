@@ -2,10 +2,17 @@
 
 ## Unreleased
 
-## 0.1.51 (2026-10-22)
+## 0.1.52 (2026-10-23)
+
+### Improved
+
+- Create canvases in any brain folder. Editing a canvas title now renames its file in the sidebar, and an existing untitled canvas with a saved title is corrected when opened.
+- The canvas tool tray starts compact, expands on hover or click, and shows shortcut letters with each tool's name on hover.
+- Shapes briefly settle and glow when their edges align during a drag; dragging farther still moves past the snap point.
 
 ### Fixed
 
+- Copying and pasting selected canvas objects with Command-C and Command-V duplicates them instead of invoking the image paste fallback.
 - The macOS app icon now has a light brain mark on a dark background in dark appearance. The legacy icon remains visible on both light and dark desktops.
 
 ## 0.1.50 (2026-10-22)

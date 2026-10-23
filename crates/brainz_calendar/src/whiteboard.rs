@@ -27,7 +27,7 @@ actions!(
     brainz_whiteboard,
     [
         OpenWhiteboard,
-        /// Start a blank canvas in the brain's Canvases folder.
+        /// Start a blank canvas in a chosen brain folder.
         NewCanvas,
     ]
 );
@@ -45,6 +45,27 @@ pub struct AttachCanvasToChat {
 #[action(namespace = brainz_whiteboard)]
 pub struct ReferenceCanvas {
     pub path: PathBuf,
+}
+
+fn canvas_filename(title: &str) -> String {
+    let mut filename = String::new();
+    for character in title.trim().chars().take(120) {
+        let character = match character {
+            '/' | ':' | '\\' => '-',
+            character if character.is_control() => continue,
+            character => character,
+        };
+        if filename.len() + character.len_utf8() > 200 {
+            break;
+        }
+        filename.push(character);
+    }
+    let filename = filename.trim_matches([' ', '.']);
+    if filename.is_empty() {
+        "Untitled canvas".into()
+    } else {
+        filename.into()
+    }
 }
 
 pub fn canvas_title(path: &Path) -> Result<String> {
@@ -801,38 +822,76 @@ pub fn init(cx: &mut App) {
             );
         });
         workspace.register_action(|workspace, _: &NewCanvas, window, cx| {
-            let directory = workspace
-                .root_paths(cx)
-                .first()
-                .map(|root| root.join("Canvases"))
-                .unwrap_or_else(|| paths::data_dir().join("whiteboards"));
-            // An open tab may not have reached disk yet, so it holds its name too.
-            let open = workspace
-                .items_of_type::<WhiteboardView>(cx)
-                .map(|view| view.read(cx).target.path.clone())
-                .collect::<Vec<_>>();
-            let path = (1..)
-                .map(|n| {
-                    directory.join(if n == 1 {
-                        "Untitled canvas.brainzboard".to_owned()
-                    } else {
-                        format!("Untitled canvas {n}.brainzboard")
-                    })
-                })
-                .find(|path| !path.exists() && !open.contains(path))
-                .unwrap_or_else(|| directory.join("Untitled canvas.brainzboard"));
-            WhiteboardView::open(
-                workspace,
-                BoardTarget {
-                    path,
-                    object: None,
-                    viewport: None,
-                },
-                true,
-                None,
-                window,
-                cx,
-            );
+            let Some(root) = workspace.root_paths(cx).first().cloned() else {
+                let path = paths::data_dir().join("whiteboards/Untitled canvas.brainzboard");
+                WhiteboardView::open(
+                    workspace,
+                    BoardTarget {
+                        path,
+                        object: None,
+                        viewport: None,
+                    },
+                    true,
+                    None,
+                    window,
+                    cx,
+                );
+                return;
+            };
+            let preferred = root.join("Canvases");
+            let current = if preferred.is_dir() {
+                preferred
+            } else {
+                root.to_path_buf()
+            };
+            let project = workspace.project().clone();
+            let (sender, receiver) = smol::channel::bounded(1);
+            workspace.toggle_modal(window, cx, |window, cx| {
+                crate::canvas_folder_picker::CanvasFolderPicker::new(
+                    project,
+                    current,
+                    "Untitled canvas.brainzboard".into(),
+                    sender,
+                    window,
+                    cx,
+                )
+                .with_title("Create canvas in", IconName::BrainzWhiteboard)
+            });
+            cx.spawn_in(window, async move |workspace, cx| {
+                if let Ok(directory) = receiver.recv().await {
+                    workspace
+                        .update_in(cx, |workspace, window, cx| {
+                            let open = workspace
+                                .items_of_type::<WhiteboardView>(cx)
+                                .map(|view| view.read(cx).target.path.clone())
+                                .collect::<Vec<_>>();
+                            let path = (1..)
+                                .map(|n| {
+                                    directory.join(if n == 1 {
+                                        "Untitled canvas.brainzboard".to_owned()
+                                    } else {
+                                        format!("Untitled canvas {n}.brainzboard")
+                                    })
+                                })
+                                .find(|path| !path.exists() && !open.contains(path))
+                                .unwrap_or_else(|| directory.join("Untitled canvas.brainzboard"));
+                            WhiteboardView::open(
+                                workspace,
+                                BoardTarget {
+                                    path,
+                                    object: None,
+                                    viewport: None,
+                                },
+                                true,
+                                None,
+                                window,
+                                cx,
+                            );
+                        })
+                        .log_err();
+                }
+            })
+            .detach();
         });
         workspace.register_action(|workspace, action: &ReferenceCanvas, window, cx| {
             if !action.path.is_absolute()
@@ -1006,7 +1065,45 @@ impl WhiteboardView {
                 .await;
             this.update(cx, |this, cx| {
                 match result {
-                    Ok(document) => this.document = Some(document),
+                    Ok(document) => {
+                        let old_name = this.target.path.file_stem().and_then(|name| name.to_str());
+                        let title = document
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                        let rename = old_name
+                            .is_some_and(|name| name.starts_with("Untitled canvas"))
+                            && title.as_deref().is_some_and(|title| {
+                                !title.trim().is_empty()
+                                    && !title.starts_with("Untitled canvas")
+                                    && canvas_filename(title) != old_name.unwrap_or_default()
+                            });
+                        this.document = Some(document);
+                        if rename {
+                            if let (Some(parent), Some(title)) = (this.target.path.parent(), title)
+                            {
+                                let destination =
+                                    parent.join(format!("{}.brainzboard", canvas_filename(&title)));
+                                let storage = this.storage.clone();
+                                cx.spawn(async move |this, cx| {
+                                    let path = destination.clone();
+                                    let result = cx
+                                        .background_spawn(
+                                            async move { storage.relocate(path, false) },
+                                        )
+                                        .await;
+                                    this.update(cx, |this, cx| match result {
+                                        Ok(()) => this.did_relocate(destination, cx),
+                                        Err(error) => {
+                                            log::warn!("Could not update canvas filename: {error}")
+                                        }
+                                    })
+                                    .log_err();
+                                })
+                                .detach();
+                            }
+                        }
+                    }
                     Err(error) => {
                         this.error = Some(format!("Unable to open this whiteboard: {error}").into())
                     }
@@ -1095,6 +1192,11 @@ impl WhiteboardView {
     }
 
     fn did_relocate(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let reason = if self.target.path.parent() == path.parent() {
+            "renamed"
+        } else {
+            "moved"
+        };
         self.target.path = path.clone();
         if let Some(project_path) = self.project.read(cx).find_project_path(&path, cx) {
             let entry_id = self
@@ -1114,7 +1216,7 @@ impl WhiteboardView {
         } else {
             self.file = None;
         }
-        self.send(json!({"type":"relocated", "target":self.target}));
+        self.send(json!({"type":"relocated", "target":self.target, "reason":reason}));
         cx.emit(());
         cx.notify();
     }
@@ -1489,6 +1591,9 @@ pub(crate) mod native {
         MoveCanvas,
         NewCanvas,
         TitleChanged {
+            title: String,
+        },
+        TitleCommitted {
             title: String,
         },
         Error {
@@ -2008,6 +2113,25 @@ pub(crate) mod native {
                         cx.notify();
                     }
                 }
+                NativeEvent::Message(Message::TitleCommitted { title }) => {
+                    let filename = canvas_filename(&title);
+                    let Some(parent) = self.target.path.parent() else {
+                        return;
+                    };
+                    let destination = parent.join(format!("{filename}.brainzboard"));
+                    if destination == self.target.path {
+                        return;
+                    }
+                    let storage = self.storage.clone();
+                    cx.spawn(async move |this, cx| {
+                        let path = destination.clone();
+                        let result = cx.background_spawn(async move { storage.relocate(path, false) }).await;
+                        this.update(cx, |this, cx| match result {
+                            Ok(()) => this.did_relocate(destination, cx),
+                            Err(error) => this.send(json!({"type":"notice", "message":format!("Could not rename canvas: {error}")})),
+                        }).log_err();
+                    }).detach();
+                }
                 NativeEvent::Message(Message::Error { message }) => {
                     self.error = Some(
                         format!(
@@ -2146,7 +2270,7 @@ pub(crate) mod native {
             let filename = if new_canvas {
                 "Untitled canvas".to_owned()
             } else {
-                title.replace(['/', ':', '\\'], "-")
+                canvas_filename(title)
             };
             self.hide();
             let destination: Task<Result<Option<PathBuf>>> = if new_canvas {
@@ -2219,7 +2343,6 @@ pub(crate) mod native {
                         }
                         Ok(Some(path)) => {
                             this.did_relocate(path, cx);
-                            this.send(json!({"type":"notice", "message":"Canvas moved"}));
                         }
                         Ok(None) => {},
                         Err(error) => this.send(json!({"type":"notice", "message":format!("Could not file canvas: {error}")})),
@@ -2262,6 +2385,16 @@ pub(crate) mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canvas_titles_make_safe_filenames() {
+        assert_eq!(
+            canvas_filename("  Optise / Onboarding: 2026  "),
+            "Optise - Onboarding- 2026"
+        );
+        assert_eq!(canvas_filename("..."), "Untitled canvas");
+        assert!(canvas_filename(&"🧠".repeat(120)).len() <= 200);
+    }
 
     #[test]
     fn external_changes_require_a_merge_before_autosave_can_replace_the_file() {

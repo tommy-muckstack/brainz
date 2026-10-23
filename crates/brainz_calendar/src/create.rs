@@ -192,7 +192,7 @@ struct Entry {
 const ENTRIES: &[Entry] = &[
     Entry {
         label: "Canvas",
-        hint: "A blank whiteboard",
+        hint: "A blank whiteboard in any folder",
         icon: IconName::BrainzWhiteboard,
         choice: Choice::Action(|| Box::new(crate::whiteboard::NewCanvas)),
     },
