@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.53 (2026-10-23)
+
+### Fixed
+
+- GitHub sync no longer mistakes AWS-shaped text inside encoded canvas assets for a standalone access key ID.
+
 ## 0.1.52 (2026-10-23)
 
 ### Improved

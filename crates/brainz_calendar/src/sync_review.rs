@@ -17,11 +17,13 @@ const SECRET_MARKERS: &[(&[u8], &str)] = &[
 ];
 
 fn contains_aws_access_key(content: &[u8]) -> bool {
-    content.windows(20).any(|candidate| {
+    content.windows(20).enumerate().any(|(offset, candidate)| {
         (candidate.starts_with(b"AKIA") || candidate.starts_with(b"ASIA"))
             && candidate[4..]
                 .iter()
                 .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit())
+            && (offset == 0 || !content[offset - 1].is_ascii_alphanumeric())
+            && (offset + 20 == content.len() || !content[offset + 20].is_ascii_alphanumeric())
     })
 }
 
@@ -243,6 +245,7 @@ mod tests {
     #[test]
     fn aws_review_requires_a_complete_access_key_id() {
         assert!(!contains_aws_access_key(b"AKIAa1-not-a-key"));
+        assert!(!contains_aws_access_key(b"xASIAIOSFODNN7EXAMPLEy"));
         assert!(contains_aws_access_key(
             b"prefix AKIAIOSFODNN7EXAMPLE suffix"
         ));
