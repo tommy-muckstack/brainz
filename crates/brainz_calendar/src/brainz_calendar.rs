@@ -173,11 +173,11 @@ fn parse_hex(hex: &str) -> Option<Hsla> {
 }
 
 /// Blocking on purpose: the helper only ever runs on the background executor.
-#[allow(clippy::disallowed_methods)]
 pub fn load_events() -> Result<(LoadState, Vec<CalendarEvent>)> {
     load_events_with_request(false)
 }
 
+#[allow(clippy::disallowed_methods)]
 fn load_events_with_request(request_access: bool) -> Result<(LoadState, Vec<CalendarEvent>)> {
     let helper = helper_path()?;
     let mut command = std::process::Command::new(&helper);

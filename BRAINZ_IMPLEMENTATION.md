@@ -186,9 +186,11 @@ This file records implementation and validation; an unchecked item is not shippe
   canvases. Connectors offers Miro's hosted MCP server. Signing, notarization,
   stapling, bundled executable checks, and live download verification passed.
   [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.47)
-- 0.1.48 candidate: Agent requests to open a file use Brainz directly on macOS.
+- 0.1.48: published 2026-10-22. Agent requests to open a file use Brainz directly on macOS.
   Calendar access is requested from an explicit button rather than from
-  background refreshes. Publication and signed-artifact verification are pending.
+  background refreshes. Signing, notarization, stapling, bundled executable
+  checks, and live download verification passed.
+  [Installer](https://github.com/tommy-muckstack/brainz/releases/tag/v0.1.48)
 
 ## Work in progress
 
