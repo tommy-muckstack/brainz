@@ -7,7 +7,11 @@
 //! notes, each with Add to To-Do (copies it onto the board and ticks the
 //! note) or Dismiss (ticks the note).
 
-use std::{path::PathBuf, sync::Mutex, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+    time::Duration,
+};
 
 use anyhow::{Context as _, Result};
 use chrono::Local;
@@ -210,10 +214,28 @@ pub(crate) fn parse_board(text: &str) -> TodoBoard {
     board
 }
 
-fn load_board(path: &PathBuf) -> Result<TodoBoard> {
-    let text =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    Ok(parse_board(&text))
+/// What a brain without a to-do file starts from. The tab shows it as an
+/// empty board and the file is written on the first edit.
+const STARTER_BOARD: &str = "# To-Do\n\n## Today\n\n## Waiting\n\n## Done\n";
+
+pub(crate) fn read_board_text(path: &Path) -> Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(STARTER_BOARD.to_owned()),
+        Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+pub(crate) fn write_board_text(path: &Path, text: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
+}
+
+fn load_board(path: &Path) -> Result<TodoBoard> {
+    Ok(parse_board(&read_board_text(path)?))
 }
 
 /// The open loops of the last signals pass, oldest first; none when the
@@ -416,6 +438,8 @@ pub struct TodoView {
     myman_tasks: Vec<myman::MyManTask>,
     error: Option<String>,
     show_done: bool,
+    /// No board file yet: the tab shows the starter board until the first add.
+    file_missing: bool,
     input: Option<InlineInput>,
     _load: Option<Task<()>>,
     _refresh_loop: Task<()>,
@@ -474,6 +498,7 @@ impl TodoView {
             myman_tasks: Vec::new(),
             error: None,
             show_done: false,
+            file_missing: false,
             input: None,
             _load: None,
             _refresh_loop: refresh_loop,
@@ -486,15 +511,22 @@ impl TodoView {
         let path = self.path.clone();
         let repo = self.repo.clone();
         self._load = Some(cx.spawn(async move |this, cx| {
-            let (result, loops, myman_tasks) = cx
+            let (result, loops, myman_tasks, file_missing) = cx
                 .background_spawn(async move {
                     let myman_tasks = myman::MyMan::detect(&BrainConfig::load(&repo))
                         .map(|myman| myman::pending_tasks(&myman))
                         .unwrap_or_default();
-                    (load_board(&path), load_loops(&repo), myman_tasks)
+                    let file_missing = !path.exists();
+                    (
+                        load_board(&path),
+                        load_loops(&repo),
+                        myman_tasks,
+                        file_missing,
+                    )
                 })
                 .await;
             this.update(cx, |this, cx| {
+                this.file_missing = file_missing;
                 match result {
                     Ok(board) => {
                         this.board = board;
@@ -535,11 +567,9 @@ impl TodoView {
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     if add {
-                        let text = std::fs::read_to_string(&board)
-                            .with_context(|| format!("reading {}", board.display()))?;
+                        let text = read_board_text(&board)?;
                         let output = open_loops::insert_board_line(&text, &task.board_line(), true);
-                        std::fs::write(&board, output)
-                            .with_context(|| format!("writing {}", board.display()))?;
+                        write_board_text(&board, &output)?;
                     }
                     myman::mark_task_handled(&task)
                 })
@@ -845,11 +875,8 @@ impl TodoView {
                     let _serialised = BOARD_LOCK
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    let text = std::fs::read_to_string(&path)
-                        .with_context(|| format!("reading {}", path.display()))?;
-                    let output = edit(&text)?;
-                    std::fs::write(&path, output)
-                        .with_context(|| format!("writing {}", path.display()))?;
+                    let text = read_board_text(&path)?;
+                    write_board_text(&path, &edit(&text)?)?;
                     load_board(&path)
                 })
                 .await;
@@ -858,6 +885,7 @@ impl TodoView {
                     Ok(board) => {
                         this.board = board;
                         this.error = None;
+                        this.file_missing = false;
                     }
                     Err(error) => {
                         log::error!("brainz to-do: {error:#}");
@@ -1345,6 +1373,22 @@ impl Render for TodoView {
 
         let mut body: Vec<gpui::AnyElement> = Vec::new();
         body.push(self.insight.clone().into_any_element());
+        if self.file_missing && self.error.is_none() {
+            body.push(
+                div()
+                    .px_2()
+                    .pt_2()
+                    .child(
+                        Label::new(format!(
+                            "Add your first to-do below. Brainz keeps the list in {} in your brain.",
+                            self.relative
+                        ))
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                    )
+                    .into_any_element(),
+            );
+        }
         if let Some(error) = &self.error {
             body.push(
                 v_flex()
@@ -1416,7 +1460,7 @@ impl Render for TodoView {
                 body.push(block.into_any_element());
                 continue;
             }
-            if visible.is_empty() && hidden == 0 {
+            if visible.is_empty() && hidden == 0 && (is_done || section.empty_note.is_some()) {
                 block = block.child(
                     div().px_2().py_1().child(
                         Label::new(
@@ -1593,6 +1637,33 @@ mod tests {
         let bare = "## Today\n## Done\n";
         let output = insert_into_section(bare, 0, "- [ ] First").unwrap();
         assert_eq!(output, "## Today\n\n- [ ] First\n## Done\n");
+    }
+
+    #[test]
+    fn a_missing_board_starts_from_the_starter_sections() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ops/desk/TODO.md");
+        let board = load_board(&path).unwrap();
+        let names: Vec<_> = board
+            .sections
+            .iter()
+            .map(|section| section.name.as_str())
+            .collect();
+        assert_eq!(names, ["Today", "Waiting", "Done"]);
+
+        let text = read_board_text(&path).unwrap();
+        let output =
+            insert_into_section(&text, board.sections[0].line, "- [ ] First thing").unwrap();
+        write_board_text(&path, &output).unwrap();
+        let board = load_board(&path).unwrap();
+        assert_eq!(board.sections[0].items[0].title, "First thing");
+        assert!(board.sections[1].items.is_empty());
+
+        let waiting = open_loops::insert_board_line(STARTER_BOARD, "- [ ] Hear back", false);
+        assert_eq!(
+            parse_board(&waiting).sections[1].items[0].title,
+            "Hear back"
+        );
     }
 
     #[test]
