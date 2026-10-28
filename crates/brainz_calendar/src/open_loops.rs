@@ -73,16 +73,13 @@ pub fn board_line(open_loop: &OpenLoop, owner: &str) -> String {
 /// "Delayed" or "Waiting". A missing section is added above "## Done" (or
 /// at the end).
 pub fn add_to_board(todo_path: &Path, open_loop: &OpenLoop, owner: &str) -> anyhow::Result<()> {
-    let text = std::fs::read_to_string(todo_path)
-        .with_context(|| format!("reading {}", todo_path.display()))?;
+    let text = crate::todo::read_board_text(todo_path)?;
     let output = insert_board_line(
         &text,
         &board_line(open_loop, owner),
         open_loop.owed_by_owner(),
     );
-    std::fs::write(todo_path, output)
-        .with_context(|| format!("writing {}", todo_path.display()))?;
-    Ok(())
+    crate::todo::write_board_text(todo_path, &output)
 }
 
 pub(crate) fn insert_board_line(text: &str, line: &str, owed_by_owner: bool) -> String {
@@ -127,6 +124,13 @@ pub(crate) fn insert_board_line(text: &str, line: &str, owed_by_owner: bool) -> 
                 }
             }
             out.insert(insert_at, line.to_owned());
+            // An empty section's blanks were skipped; keep one before the next heading.
+            if out
+                .get(insert_at + 1)
+                .is_some_and(|next| next.starts_with("## "))
+            {
+                out.insert(insert_at + 1, String::new());
+            }
         }
         None => {
             let heading = if owed_by_owner {

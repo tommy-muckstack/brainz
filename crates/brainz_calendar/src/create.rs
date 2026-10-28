@@ -512,11 +512,9 @@ impl QuickForm {
             .clone()
             .context("Open your brain folder to add to-dos.")?;
         let path = root.join(BrainConfig::load(&root).todo);
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("Could not read {}", path.display()))?;
+        let text = crate::todo::read_board_text(&path)?;
         let output = open_loops::insert_board_line(&text, &todo_line(&title), true);
-        std::fs::write(&path, output)
-            .with_context(|| format!("Could not write {}", path.display()))?;
+        crate::todo::write_board_text(&path, &output)?;
         if let Some(workspace) = self.workspace.upgrade() {
             window.defer(cx, move |window, cx| {
                 workspace.update(cx, |workspace, cx| {
