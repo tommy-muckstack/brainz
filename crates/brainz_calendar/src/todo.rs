@@ -989,6 +989,8 @@ impl TodoView {
         if self.input.take().is_some() {
             window.focus(&self.focus_handle, cx);
             cx.notify();
+        } else {
+            cx.propagate();
         }
     }
 
@@ -1454,6 +1456,13 @@ impl Render for TodoView {
             .on_action(cx.listener(|this, _: &menu::Cancel, window, cx| {
                 this.cancel_input(window, cx);
             }))
+            // A single-line editor binds Escape to its own Cancel and
+            // propagates it when it has nothing to dismiss.
+            .on_action(
+                cx.listener(|this, _: &editor::actions::Cancel, window, cx| {
+                    this.cancel_input(window, cx);
+                }),
+            )
             .size_full()
             .overflow_y_scroll()
             .bg(cx.theme().colors().editor_background)
