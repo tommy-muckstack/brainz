@@ -12,6 +12,10 @@
 - To-Do: click an item's title to edit it in place (Enter or click away saves, Esc cancels).
 - To-Do: New to-do in the header and an Add a to-do row under each section add items without leaving the tab.
 
+### Fixed
+
+- A new brain with no to-do file now opens the To-Do tab on an empty Today / Waiting / Done list instead of an error; the file is created when you add the first item.
+
 ## 0.1.55 (2026-10-23)
 
 ### Improved
