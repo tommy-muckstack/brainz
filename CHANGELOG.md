@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.1.56 (2026-10-28)
+
+### Added
+
+- To-Do: drag items to reorder them or move them between sections.
+- To-Do: Show done / Hide done in the header hides checked items everywhere (hidden by default).
+- To-Do: set a High, Medium or Low priority on any item; it is saved as `[P1]`/`[P2]`/`[P3]` in the board file.
+- To-Do: click an item's title to edit it in place (Enter or click away saves, Esc cancels).
+- To-Do: New to-do in the header and an Add a to-do row under each section add items without leaving the tab.
+
 ## 0.1.55 (2026-10-23)
 
 ### Improved

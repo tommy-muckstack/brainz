@@ -1,16 +1,22 @@
 //! Brainz: a To-Do tab over the brain's check-off board (`todo` in
-//! `brainz.toml`, `TODO.md` by default). Brainz only flips checkboxes; a bot
-//! or the person keeps the wording and sections in order. Below the board,
+//! `brainz.toml`, `TODO.md` by default). The tab checks items off, adds new
+//! ones, edits their wording and priority, and drags them between positions
+//! and sections; every change is a line edit to the Markdown file, so a bot
+//! keeping the board reads the same file it always did. Below the board,
 //! "Flagged in notes" lists the ⏳ and ⏰ lines the signals pass found in
 //! notes, each with Add to To-Do (copies it onto the board and ticks the
 //! note) or Dismiss (ticks the note).
 
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Mutex, time::Duration};
 
 use anyhow::{Context as _, Result};
 use chrono::Local;
-use gpui::{App, Entity, EventEmitter, FocusHandle, Focusable, Task, WeakEntity, Window, actions};
-use ui::{Tooltip, prelude::*};
+use editor::{Editor, EditorEvent};
+use gpui::{
+    App, Entity, EventEmitter, FocusHandle, Focusable, Subscription, Task, WeakEntity, Window,
+    actions,
+};
+use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
 use workspace::{Item, OpenOptions, OpenVisible, Workspace};
 
 use crate::{
@@ -31,6 +37,12 @@ actions!(
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Board writes run on background threads; each is a read-modify-write of
+/// the whole file, so two quick edits must not interleave.
+static BOARD_LOCK: Mutex<()> = Mutex::new(());
+
+const STALE_BOARD: &str = "the to-do list changed underneath; refresh and try again";
+
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _| {
         workspace.register_action(|workspace, _: &OpenTodo, window, cx| {
@@ -40,18 +52,82 @@ pub fn init(cx: &mut App) {
     .detach();
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Priority {
+    High,
+    Medium,
+    Low,
+}
+
+impl Priority {
+    const ALL: [Priority; 3] = [Priority::High, Priority::Medium, Priority::Low];
+
+    /// Written at the start of the title, where it stays readable in the
+    /// raw file and in Notion.
+    fn marker(self) -> &'static str {
+        match self {
+            Priority::High => "[P1]",
+            Priority::Medium => "[P2]",
+            Priority::Low => "[P3]",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Priority::High => "High",
+            Priority::Medium => "Medium",
+            Priority::Low => "Low",
+        }
+    }
+
+    fn color(self) -> Color {
+        match self {
+            Priority::High => Color::Error,
+            Priority::Medium => Color::Warning,
+            Priority::Low => Color::Muted,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct TodoItem {
-    /// Line index in the file, so toggles edit the right line.
+    /// Line index in the file, so edits land on the right line.
     pub(crate) line: usize,
+    /// The line as read, so an edit can tell when the file moved on.
+    pub(crate) raw: String,
     pub(crate) done: bool,
+    pub(crate) priority: Option<Priority>,
     pub(crate) title: String,
     pub(crate) tag: Option<String>,
     pub(crate) note: Option<String>,
 }
 
+impl TodoItem {
+    /// The item's line with a new priority and title, keeping its
+    /// indentation, checkbox, tag and note.
+    fn line_with(&self, priority: Option<Priority>, title: &str) -> String {
+        let indent = &self.raw[..self.raw.len() - self.raw.trim_start().len()];
+        let check = if self.done { "x" } else { " " };
+        let mut line = format!("{indent}- [{check}] ");
+        if let Some(priority) = priority {
+            line.push_str(priority.marker());
+            line.push(' ');
+        }
+        line.push_str(&title.split_whitespace().collect::<Vec<_>>().join(" "));
+        if let Some(tag) = &self.tag {
+            line.push_str(&format!(" `{tag}`"));
+        }
+        if let Some(note) = &self.note {
+            line.push_str(&format!(" ({note})"));
+        }
+        line
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct TodoSection {
+    /// Line index of the `## ` heading.
+    pub(crate) line: usize,
     pub(crate) name: String,
     pub(crate) items: Vec<TodoItem>,
     pub(crate) empty_note: Option<String>,
@@ -87,10 +163,21 @@ fn parse_item(line: &str, index: usize) -> Option<TodoItem> {
         tag = Some(body[open + 1..body.len() - 1].to_owned());
         body.truncate(open);
     }
+    let mut title = body.trim();
+    let mut priority = None;
+    for candidate in Priority::ALL {
+        if let Some(rest) = title.strip_prefix(candidate.marker()) {
+            priority = Some(candidate);
+            title = rest.trim_start();
+            break;
+        }
+    }
     Some(TodoItem {
         line: index,
+        raw: line.to_owned(),
         done,
-        title: body.trim().to_owned(),
+        priority,
+        title: title.to_owned(),
         tag,
         note,
     })
@@ -103,6 +190,7 @@ pub(crate) fn parse_board(text: &str) -> TodoBoard {
             board.updated = Some(updated.trim().to_owned());
         } else if let Some(name) = line.strip_prefix("## ") {
             board.sections.push(TodoSection {
+                line: index,
                 name: name.trim().to_owned(),
                 items: Vec::new(),
                 empty_note: None,
@@ -139,16 +227,41 @@ fn load_loops(repo: &PathBuf) -> Vec<OpenLoop> {
     loops
 }
 
+/// Where a dragged item lands: just above another item, or at the end of
+/// a section (dropped on its heading or its add row).
+#[derive(Debug, Clone)]
+pub(crate) enum DropTarget {
+    Before { line: usize, raw: String },
+    EndOfSection { line: usize },
+}
+
+fn lines_of(text: &str) -> Vec<String> {
+    text.lines().map(str::to_owned).collect()
+}
+
+fn join_lines(lines: Vec<String>, original: &str) -> String {
+    let mut output = lines.join("\n");
+    if original.ends_with('\n') {
+        output.push('\n');
+    }
+    output
+}
+
+fn ensure_line(lines: &[String], line_index: usize, expected: &str) -> Result<()> {
+    anyhow::ensure!(
+        lines.get(line_index).is_some_and(|line| line == expected),
+        STALE_BOARD
+    );
+    Ok(())
+}
+
 /// Flips one checkbox in place. Checking appends today's date; the item
 /// stays in its section so it reads as done rather than vanishing; whoever
 /// maintains the board tidies it into "## Done" later.
-fn toggle_item(path: &PathBuf, line_index: usize) -> Result<()> {
-    let text =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
-    let Some(line) = lines.get(line_index).cloned() else {
-        anyhow::bail!("the to-do list changed underneath; refresh and try again");
-    };
+fn toggle_line(text: &str, line_index: usize, expected: &str) -> Result<String> {
+    let mut lines = lines_of(text);
+    ensure_line(&lines, line_index, expected)?;
+    let line = lines[line_index].clone();
     let trimmed = line.trim_start();
     let indent = &line[..line.len() - trimmed.len()];
     if let Some(rest) = trimmed.strip_prefix("- [ ] ") {
@@ -162,12 +275,128 @@ fn toggle_item(path: &PathBuf, line_index: usize) -> Result<()> {
     } else {
         anyhow::bail!("that line is not a to-do item any more; refresh and try again");
     }
-    let mut output = lines.join("\n");
-    if text.ends_with('\n') {
-        output.push('\n');
+    Ok(join_lines(lines, text))
+}
+
+fn replace_line(text: &str, line_index: usize, expected: &str, new_line: &str) -> Result<String> {
+    let mut lines = lines_of(text);
+    ensure_line(&lines, line_index, expected)?;
+    lines[line_index] = new_line.to_owned();
+    Ok(join_lines(lines, text))
+}
+
+/// The index a new last item of the section headed at `heading` goes to.
+/// An italic "nothing here" note in an empty section is removed, since the
+/// section is about to have an item.
+fn end_of_section(lines: &mut Vec<String>, heading: usize) -> usize {
+    let end = (heading + 1..lines.len())
+        .find(|&ix| lines[ix].starts_with("## "))
+        .unwrap_or(lines.len());
+    if let Some(last_item) =
+        (heading + 1..end).rfind(|&ix| lines[ix].trim_start().starts_with("- ["))
+    {
+        return last_item + 1;
     }
-    std::fs::write(path, output).with_context(|| format!("writing {}", path.display()))?;
-    Ok(())
+    let mut ix = heading + 1;
+    while ix < end && lines[ix].trim().is_empty() {
+        ix += 1;
+    }
+    if ix < end && lines[ix].trim().starts_with('_') {
+        lines.remove(ix);
+        return ix;
+    }
+    if ix == heading + 1 {
+        // Keep the blank line between a heading and its list.
+        lines.insert(ix, String::new());
+        return ix + 1;
+    }
+    ix
+}
+
+fn insert_into_section(text: &str, heading: usize, new_line: &str) -> Result<String> {
+    let mut lines = lines_of(text);
+    anyhow::ensure!(
+        lines
+            .get(heading)
+            .is_some_and(|line| line.starts_with("## ")),
+        STALE_BOARD
+    );
+    let at = end_of_section(&mut lines, heading);
+    lines.insert(at, new_line.to_owned());
+    Ok(join_lines(lines, text))
+}
+
+fn move_line(text: &str, from: usize, expected: &str, target: &DropTarget) -> Result<String> {
+    let mut lines = lines_of(text);
+    ensure_line(&lines, from, expected)?;
+    match target {
+        DropTarget::Before { line, raw } => ensure_line(&lines, *line, raw)?,
+        DropTarget::EndOfSection { line } => anyhow::ensure!(
+            lines
+                .get(*line)
+                .is_some_and(|heading| heading.starts_with("## ")),
+            STALE_BOARD
+        ),
+    }
+    let moved = lines.remove(from);
+    let shifted = |ix: usize| if ix > from { ix - 1 } else { ix };
+    let at = match target {
+        DropTarget::Before { line, .. } => shifted(*line),
+        DropTarget::EndOfSection { line } => end_of_section(&mut lines, shifted(*line)),
+    };
+    lines.insert(at, moved);
+    Ok(join_lines(lines, text))
+}
+
+#[derive(Clone)]
+struct DraggedTodo {
+    line: usize,
+    raw: String,
+    title: String,
+}
+
+impl Render for DraggedTodo {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .px_2()
+            .py_1()
+            .gap_2()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().colors().border)
+            .bg(cx.theme().colors().elevated_surface_background)
+            .shadow_md()
+            .max_w(px(420.))
+            .child(
+                Icon::new(IconName::BrainzCheckboxEmpty)
+                    .size(IconSize::Small)
+                    .color(Color::Muted),
+            )
+            .child(Label::new(self.title.clone()).truncate())
+    }
+}
+
+/// The title being edited in place, or a new item being typed into a
+/// section.
+enum InlineInput {
+    Edit {
+        item: TodoItem,
+        editor: Entity<Editor>,
+        _subscription: Subscription,
+    },
+    Add {
+        heading: usize,
+        editor: Entity<Editor>,
+        _subscription: Subscription,
+    },
+}
+
+impl InlineInput {
+    fn editor(&self) -> &Entity<Editor> {
+        match self {
+            InlineInput::Edit { editor, .. } | InlineInput::Add { editor, .. } => editor,
+        }
+    }
 }
 
 pub struct TodoView {
@@ -187,6 +416,7 @@ pub struct TodoView {
     myman_tasks: Vec<myman::MyManTask>,
     error: Option<String>,
     show_done: bool,
+    input: Option<InlineInput>,
     _load: Option<Task<()>>,
     _refresh_loop: Task<()>,
 }
@@ -244,6 +474,7 @@ impl TodoView {
             myman_tasks: Vec::new(),
             error: None,
             show_done: false,
+            input: None,
             _load: None,
             _refresh_loop: refresh_loop,
         };
@@ -600,12 +831,25 @@ impl TodoView {
         block.into_any_element()
     }
 
-    fn toggle(&mut self, line: usize, cx: &mut Context<Self>) {
+    /// Applies one edit to the board file on a background thread, then
+    /// reloads it.
+    fn edit_board(
+        &mut self,
+        edit: impl FnOnce(&str) -> Result<String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
         let path = self.path.clone();
-        self._load = Some(cx.spawn(async move |this, cx| {
+        cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    toggle_item(&path, line)?;
+                    let _serialised = BOARD_LOCK
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let text = std::fs::read_to_string(&path)
+                        .with_context(|| format!("reading {}", path.display()))?;
+                    let output = edit(&text)?;
+                    std::fs::write(&path, output)
+                        .with_context(|| format!("writing {}", path.display()))?;
                     load_board(&path)
                 })
                 .await;
@@ -615,31 +859,275 @@ impl TodoView {
                         this.board = board;
                         this.error = None;
                     }
-                    Err(error) => this.error = Some(format!("{error:#}")),
+                    Err(error) => {
+                        log::error!("brainz to-do: {error:#}");
+                        this.error = Some(format!("{error:#}"));
+                        this.refresh(cx);
+                    }
                 }
                 cx.notify();
             })
             .ok();
-        }));
+        })
+        .detach();
+    }
+
+    fn toggle(&mut self, item: &TodoItem, cx: &mut Context<Self>) {
+        let line = item.line;
+        let raw = item.raw.clone();
+        self.edit_board(move |text| toggle_line(text, line, &raw), cx);
+    }
+
+    fn set_priority(
+        &mut self,
+        item: &TodoItem,
+        priority: Option<Priority>,
+        cx: &mut Context<Self>,
+    ) {
+        let line = item.line;
+        let raw = item.raw.clone();
+        let new_line = item.line_with(priority, &item.title);
+        self.edit_board(move |text| replace_line(text, line, &raw, &new_line), cx);
+    }
+
+    fn move_item(&mut self, dragged: &DraggedTodo, target: DropTarget, cx: &mut Context<Self>) {
+        if matches!(&target, DropTarget::Before { line, .. } if *line == dragged.line) {
+            return;
+        }
+        let from = dragged.line;
+        let raw = dragged.raw.clone();
+        self.edit_board(move |text| move_line(text, from, &raw, &target), cx);
+    }
+
+    fn input_editor(
+        text: &str,
+        placeholder: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Entity<Editor>, Subscription) {
+        let editor = cx.new(|cx| {
+            let mut editor = Editor::single_line(window, cx);
+            editor.set_placeholder_text(placeholder, window, cx);
+            editor.set_text(text, window, cx);
+            editor.select_all(&editor::actions::SelectAll, window, cx);
+            editor
+        });
+        window.focus(&editor.focus_handle(cx), cx);
+        let subscription = cx.subscribe_in(&editor, window, |this, editor, event, window, cx| {
+            if matches!(event, EditorEvent::Blurred)
+                && this
+                    .input
+                    .as_ref()
+                    .is_some_and(|input| input.editor() == editor)
+            {
+                this.commit_input(false, window, cx);
+            }
+        });
+        (editor, subscription)
+    }
+
+    fn start_edit(&mut self, item: &TodoItem, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_input(false, window, cx);
+        let (editor, subscription) = Self::input_editor(&item.title, "To-do", window, cx);
+        self.input = Some(InlineInput::Edit {
+            item: item.clone(),
+            editor,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    fn start_add(&mut self, heading: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_input(false, window, cx);
+        let (editor, subscription) =
+            Self::input_editor("", "What needs doing, and by when?", window, cx);
+        self.input = Some(InlineInput::Add {
+            heading,
+            editor,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    /// Saves the inline input. Enter keeps an add row open for the next
+    /// item; clicking away closes it.
+    fn commit_input(&mut self, keep_adding: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.input.take() else {
+            return;
+        };
+        let text = input.editor().read(cx).text(cx).trim().to_owned();
+        match input {
+            InlineInput::Edit { item, .. } => {
+                if !text.is_empty() && text != item.title {
+                    let new_line = item.line_with(item.priority, &text);
+                    let line = item.line;
+                    let raw = item.raw;
+                    self.edit_board(move |board| replace_line(board, line, &raw, &new_line), cx);
+                }
+            }
+            InlineInput::Add { heading, .. } => {
+                if !text.is_empty() {
+                    let new_line = format!(
+                        "- [ ] {}",
+                        text.split_whitespace().collect::<Vec<_>>().join(" ")
+                    );
+                    self.edit_board(
+                        move |board| insert_into_section(board, heading, &new_line),
+                        cx,
+                    );
+                }
+                if keep_adding && !text.is_empty() {
+                    // The heading line stays put: the new item lands below it.
+                    self.start_add(heading, window, cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn cancel_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.input.take().is_some() {
+            window.focus(&self.focus_handle, cx);
+            cx.notify();
+        }
+    }
+
+    fn render_input(&self, editor: &Entity<Editor>, cx: &mut Context<Self>) -> gpui::AnyElement {
+        div()
+            .flex_1()
+            .min_w_0()
+            .px_1p5()
+            .py_0p5()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().colors().border_focused)
+            .bg(cx.theme().colors().editor_background)
+            .child(editor.clone())
+            .into_any_element()
+    }
+
+    fn render_priority(&self, ix: usize, item: &TodoItem, cx: &mut Context<Self>) -> AnyElement {
+        let view = cx.entity().downgrade();
+        let current = item.priority;
+        let menu = PopoverMenu::new(("brainz-todo-priority-menu", ix))
+            .anchor(gpui::Anchor::TopRight)
+            .menu({
+                let item = item.clone();
+                move |window, cx| {
+                    let view = view.clone();
+                    let item = item.clone();
+                    Some(ContextMenu::build(window, cx, move |mut menu, _, _| {
+                        menu = menu.header("Priority");
+                        for choice in Priority::ALL.map(Some).into_iter().chain([None]) {
+                            let view = view.clone();
+                            let item = item.clone();
+                            menu = menu.toggleable_entry(
+                                choice.map_or("None", Priority::label),
+                                current == choice,
+                                IconPosition::Start,
+                                None,
+                                move |_, cx| {
+                                    view.update(cx, |view, cx| {
+                                        view.set_priority(&item, choice, cx)
+                                    })
+                                    .ok();
+                                },
+                            );
+                        }
+                        menu
+                    }))
+                }
+            });
+        match current {
+            Some(priority) => menu
+                .trigger_with_tooltip(
+                    Button::new(("brainz-todo-priority", ix), priority.label())
+                        .label_size(LabelSize::Small)
+                        .color(priority.color()),
+                    Tooltip::text("Change priority"),
+                )
+                .into_any_element(),
+            None => div()
+                .visible_on_hover("brainz-todo-row")
+                .child(
+                    menu.trigger_with_tooltip(
+                        IconButton::new(("brainz-todo-priority", ix), IconName::SignalHigh)
+                            .icon_size(IconSize::Small)
+                            .icon_color(Color::Placeholder),
+                        Tooltip::text("Set priority"),
+                    ),
+                )
+                .into_any_element(),
+        }
     }
 
     fn render_item(&self, ix: usize, item: &TodoItem, cx: &mut Context<Self>) -> impl IntoElement {
-        let line = item.line;
         let icon = if item.done {
             IconName::BrainzCheckboxChecked
         } else {
             IconName::BrainzCheckboxEmpty
         };
+        let editing = match &self.input {
+            Some(InlineInput::Edit {
+                item: edited,
+                editor,
+                ..
+            }) if edited.line == item.line => Some(editor.clone()),
+            _ => None,
+        };
+        let dragged = DraggedTodo {
+            line: item.line,
+            raw: item.raw.clone(),
+            title: item.title.clone(),
+        };
+        let target = DropTarget::Before {
+            line: item.line,
+            raw: item.raw.clone(),
+        };
+        let drop_color = cx.theme().colors().drop_target_border;
+        let title = {
+            let item = item.clone();
+            div()
+                .id(("brainz-todo-title", ix))
+                .min_w_0()
+                .flex_1()
+                .cursor_text()
+                .child(
+                    Label::new(item.title.clone())
+                        .color(if item.done {
+                            Color::Accent
+                        } else {
+                            Color::Default
+                        })
+                        .when(item.done, |label| label.strikethrough()),
+                )
+                .tooltip(Tooltip::text("Click to edit · drag to reorder"))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.start_edit(&item, window, cx);
+                }))
+        };
         h_flex()
             .id(("brainz-todo-item", ix))
+            .group("brainz-todo-row")
             .w_full()
             .items_start()
             .gap_2p5()
             .px_2()
             .py_1p5()
             .rounded_md()
+            .border_t_2()
+            .border_color(gpui::transparent_black())
             .hover(|this| this.bg(cx.theme().colors().element_hover))
-            .child(
+            .when(editing.is_none(), |this| {
+                this.cursor_grab()
+                    .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+            })
+            .drag_over::<DraggedTodo>(move |style, _, _, _| style.border_color(drop_color))
+            .on_drop(cx.listener(move |this, dragged: &DraggedTodo, _, cx| {
+                this.move_item(dragged, target.clone(), cx);
+            }))
+            .child({
+                let item = item.clone();
                 IconButton::new(("brainz-todo-check", ix), icon)
                     .icon_size(IconSize::Small)
                     .icon_color(if item.done {
@@ -652,21 +1140,16 @@ impl TodoView {
                     } else {
                         "Mark done"
                     }))
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle(line, cx))),
-            )
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle(&item, cx)))
+            })
             .child(
                 v_flex()
                     .min_w_0()
                     .flex_1()
-                    .child(
-                        Label::new(item.title.clone())
-                            .color(if item.done {
-                                Color::Accent
-                            } else {
-                                Color::Default
-                            })
-                            .when(item.done, |label| label.strikethrough()),
-                    )
+                    .child(match editing {
+                        Some(editor) => self.render_input(&editor, cx),
+                        None => title.into_any_element(),
+                    })
                     .when(item.tag.is_some() || item.note.is_some(), |this| {
                         this.child(
                             h_flex()
@@ -686,6 +1169,73 @@ impl TodoView {
                         )
                     }),
             )
+            .child(self.render_priority(ix, item, cx))
+    }
+
+    fn render_add_row(&self, section: &TodoSection, cx: &mut Context<Self>) -> AnyElement {
+        let heading = section.line;
+        let adding = match &self.input {
+            Some(InlineInput::Add {
+                heading: open,
+                editor,
+                ..
+            }) if *open == heading => Some(editor.clone()),
+            _ => None,
+        };
+        let drop_color = cx.theme().colors().drop_target_border;
+        let row = h_flex()
+            .id(("brainz-todo-add", heading))
+            .w_full()
+            .items_center()
+            .gap_2p5()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .border_t_2()
+            .border_color(gpui::transparent_black())
+            .drag_over::<DraggedTodo>(move |style, _, _, _| style.border_color(drop_color))
+            .on_drop(cx.listener(move |this, dragged: &DraggedTodo, _, cx| {
+                this.move_item(dragged, DropTarget::EndOfSection { line: heading }, cx);
+            }));
+        match adding {
+            Some(editor) => row
+                .child(
+                    Icon::new(IconName::BrainzCheckboxEmpty)
+                        .size(IconSize::Small)
+                        .color(Color::Placeholder),
+                )
+                .child(self.render_input(&editor, cx))
+                .into_any_element(),
+            None => row
+                .cursor_pointer()
+                .hover(|this| this.bg(cx.theme().colors().element_hover))
+                .child(
+                    Icon::new(IconName::Plus)
+                        .size(IconSize::Small)
+                        .color(Color::Placeholder),
+                )
+                .child(
+                    Label::new("Add a to-do")
+                        .size(LabelSize::Small)
+                        .color(Color::Placeholder),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.start_add(heading, window, cx);
+                }))
+                .into_any_element(),
+        }
+    }
+
+    /// The section a header "New to-do" adds to: Today when there is one,
+    /// else the first section that is not Done.
+    fn default_section(&self) -> Option<usize> {
+        let open = |section: &&TodoSection| !section.name.eq_ignore_ascii_case("done");
+        self.board
+            .sections
+            .iter()
+            .find(|section| section.name.to_ascii_lowercase().starts_with("today"))
+            .or_else(|| self.board.sections.iter().find(open))
+            .map(|section| section.line)
     }
 }
 
@@ -724,6 +1274,14 @@ impl Render for TodoView {
             .flat_map(|section| section.items.iter())
             .filter(|item| !item.done)
             .count();
+        let done_count: usize = self
+            .board
+            .sections
+            .iter()
+            .flat_map(|section| section.items.iter())
+            .filter(|item| item.done)
+            .count();
+        let default_section = self.default_section();
         let header = h_flex()
             .w_full()
             .items_center()
@@ -747,6 +1305,32 @@ impl Render for TodoView {
                             Label::new(format!("Updated {updated}"))
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
+                        )
+                    })
+                    .child(
+                        Button::new(
+                            "brainz-todo-show-done",
+                            if self.show_done {
+                                "Hide done".to_owned()
+                            } else {
+                                format!("Show done ({done_count})")
+                            },
+                        )
+                        .label_size(LabelSize::Small)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_done = !this.show_done;
+                            cx.notify();
+                        })),
+                    )
+                    .when_some(default_section, |this, heading| {
+                        this.child(
+                            Button::new("brainz-todo-new", "New to-do")
+                                .label_size(LabelSize::Small)
+                                .style(ButtonStyle::Filled)
+                                .start_icon(Icon::new(IconName::Plus).size(IconSize::Small))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.start_add(heading, window, cx);
+                                })),
                         )
                     })
                     .child(
@@ -781,14 +1365,28 @@ impl Render for TodoView {
             );
         }
         let mut item_ix = 0usize;
+        let drop_color = cx.theme().colors().drop_target_background;
         for section in &self.board.sections {
             let is_done = section.name.eq_ignore_ascii_case("done");
+            let heading = section.line;
+            let visible: Vec<&TodoItem> = section
+                .items
+                .iter()
+                .filter(|item| self.show_done || !item.done)
+                .collect();
+            let hidden = section.items.len() - visible.len();
             let mut block = v_flex().w_full().gap_0p5().child(
                 h_flex()
+                    .id(("brainz-todo-section", heading))
                     .px_2()
                     .pt_3()
                     .pb_1()
                     .gap_2()
+                    .rounded_md()
+                    .drag_over::<DraggedTodo>(move |style, _, _, _| style.bg(drop_color))
+                    .on_drop(cx.listener(move |this, dragged: &DraggedTodo, _, cx| {
+                        this.move_item(dragged, DropTarget::EndOfSection { line: heading }, cx);
+                    }))
                     .child(
                         Label::new(section.name.clone())
                             .size(LabelSize::Small)
@@ -800,21 +1398,15 @@ impl Render for TodoView {
                             }),
                     )
                     .child(
-                        Label::new(section.items.len().to_string())
+                        Label::new(visible.len().to_string())
                             .size(LabelSize::Small)
                             .color(Color::Placeholder),
                     )
-                    .when(is_done, |this| {
+                    .when(hidden > 0 && !is_done, |this| {
                         this.child(
-                            Button::new(
-                                "brainz-todo-toggle-done",
-                                if self.show_done { "Hide" } else { "Show" },
-                            )
-                            .label_size(LabelSize::Small)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_done = !this.show_done;
-                                cx.notify();
-                            })),
+                            Label::new(format!("{hidden} done hidden"))
+                                .size(LabelSize::Small)
+                                .color(Color::Placeholder),
                         )
                     }),
             );
@@ -822,7 +1414,7 @@ impl Render for TodoView {
                 body.push(block.into_any_element());
                 continue;
             }
-            if section.items.is_empty() {
+            if visible.is_empty() && hidden == 0 {
                 block = block.child(
                     div().px_2().py_1().child(
                         Label::new(
@@ -836,13 +1428,16 @@ impl Render for TodoView {
                     ),
                 );
             }
-            for item in &section.items {
+            for item in visible {
                 block = block.child(ui::reveal(
                     ("brainz-todo-item-reveal", item_ix),
                     item_ix,
                     self.render_item(item_ix, item, cx),
                 ));
                 item_ix += 1;
+            }
+            if !is_done {
+                block = block.child(self.render_add_row(section, cx));
             }
             body.push(block.into_any_element());
         }
@@ -853,6 +1448,12 @@ impl Render for TodoView {
             .id("brainz-todo")
             .key_context("BrainzTodo")
             .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|this, _: &menu::Confirm, window, cx| {
+                this.commit_input(true, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &menu::Cancel, window, cx| {
+                this.cancel_input(window, cx);
+            }))
             .size_full()
             .overflow_y_scroll()
             .bg(cx.theme().colors().editor_background)
@@ -868,5 +1469,130 @@ impl Render for TodoView {
                     .child(header)
                     .children(body),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BOARD: &str = "# TODO\n\n## Today\n\n- [ ] Call the dentist `dentist`\n- [ ] [P1] Send the deck (due Fri)\n\n## Delayed / Waiting\n\n_(nothing waiting)_\n\n## Done\n\n- [x] Book the room (2026-10-01)\n";
+
+    fn item(text: &str, title: &str) -> TodoItem {
+        parse_board(text)
+            .sections
+            .into_iter()
+            .flat_map(|section| section.items)
+            .find(|item| item.title == title)
+            .expect("item on the board")
+    }
+
+    #[test]
+    fn parses_priority_tag_and_note() {
+        let deck = item(BOARD, "Send the deck");
+        assert_eq!(deck.priority, Some(Priority::High));
+        assert_eq!(deck.note.as_deref(), Some("due Fri"));
+        let dentist = item(BOARD, "Call the dentist");
+        assert_eq!(dentist.priority, None);
+        assert_eq!(dentist.tag.as_deref(), Some("dentist"));
+    }
+
+    #[test]
+    fn line_with_keeps_tag_note_and_checkbox() {
+        let deck = item(BOARD, "Send the deck");
+        assert_eq!(
+            deck.line_with(Some(Priority::Low), "Send  the final deck"),
+            "- [ ] [P3] Send the final deck (due Fri)"
+        );
+        let room = item(BOARD, "Book the room");
+        assert_eq!(
+            room.line_with(None, "Book the big room"),
+            "- [x] Book the big room (2026-10-01)"
+        );
+        let dentist = item(BOARD, "Call the dentist");
+        assert_eq!(
+            dentist.line_with(Some(Priority::Medium), &dentist.title),
+            "- [ ] [P2] Call the dentist `dentist`"
+        );
+    }
+
+    #[test]
+    fn replace_line_refuses_a_stale_board() {
+        let deck = item(BOARD, "Send the deck");
+        assert!(replace_line(BOARD, deck.line, "- [ ] something else", "x").is_err());
+        let output = replace_line(BOARD, deck.line, &deck.raw, "- [ ] Send it").unwrap();
+        assert!(output.contains("- [ ] Send it\n"));
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn moves_an_item_above_another_and_into_an_empty_section() {
+        let dentist = item(BOARD, "Call the dentist");
+        let deck = item(BOARD, "Send the deck");
+        let reordered = move_line(
+            BOARD,
+            deck.line,
+            &deck.raw,
+            &DropTarget::Before {
+                line: dentist.line,
+                raw: dentist.raw.clone(),
+            },
+        )
+        .unwrap();
+        let today = &parse_board(&reordered).sections[0];
+        assert_eq!(today.items[0].title, "Send the deck");
+        assert_eq!(today.items[1].title, "Call the dentist");
+
+        let waiting = parse_board(BOARD).sections[1].line;
+        let moved = move_line(
+            BOARD,
+            dentist.line,
+            &dentist.raw,
+            &DropTarget::EndOfSection { line: waiting },
+        )
+        .unwrap();
+        let board = parse_board(&moved);
+        assert_eq!(board.sections[0].items.len(), 1);
+        assert_eq!(board.sections[1].items[0].title, "Call the dentist");
+        assert!(!moved.contains("nothing waiting"));
+    }
+
+    #[test]
+    fn moves_an_item_down_to_the_end_of_its_own_section() {
+        let dentist = item(BOARD, "Call the dentist");
+        let today = parse_board(BOARD).sections[0].line;
+        let moved = move_line(
+            BOARD,
+            dentist.line,
+            &dentist.raw,
+            &DropTarget::EndOfSection { line: today },
+        )
+        .unwrap();
+        let today = &parse_board(&moved).sections[0];
+        assert_eq!(today.items[0].title, "Send the deck");
+        assert_eq!(today.items[1].title, "Call the dentist");
+    }
+
+    #[test]
+    fn inserts_new_items_at_the_end_of_a_section() {
+        let board = parse_board(BOARD);
+        let output =
+            insert_into_section(BOARD, board.sections[0].line, "- [ ] Water the plants").unwrap();
+        let today = &parse_board(&output).sections[0];
+        assert_eq!(today.items.last().unwrap().title, "Water the plants");
+
+        let bare = "## Today\n## Done\n";
+        let output = insert_into_section(bare, 0, "- [ ] First").unwrap();
+        assert_eq!(output, "## Today\n\n- [ ] First\n## Done\n");
+    }
+
+    #[test]
+    fn toggle_checks_and_unchecks_in_place() {
+        let dentist = item(BOARD, "Call the dentist");
+        let checked = toggle_line(BOARD, dentist.line, &dentist.raw).unwrap();
+        let dentist = item(&checked, "Call the dentist");
+        assert!(dentist.done);
+        let unchecked = toggle_line(&checked, dentist.line, &dentist.raw).unwrap();
+        assert!(!item(&unchecked, "Call the dentist").done);
     }
 }
