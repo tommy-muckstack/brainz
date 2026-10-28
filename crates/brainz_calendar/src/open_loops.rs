@@ -124,6 +124,13 @@ pub(crate) fn insert_board_line(text: &str, line: &str, owed_by_owner: bool) -> 
                 }
             }
             out.insert(insert_at, line.to_owned());
+            // An empty section's blanks were skipped; keep one before the next heading.
+            if out
+                .get(insert_at + 1)
+                .is_some_and(|next| next.starts_with("## "))
+            {
+                out.insert(insert_at + 1, String::new());
+            }
         }
         None => {
             let heading = if owed_by_owner {

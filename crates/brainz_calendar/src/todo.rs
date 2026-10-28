@@ -307,32 +307,37 @@ fn replace_line(text: &str, line_index: usize, expected: &str, new_line: &str) -
     Ok(join_lines(lines, text))
 }
 
-/// The index a new last item of the section headed at `heading` goes to.
-/// An italic "nothing here" note in an empty section is removed, since the
-/// section is about to have an item.
-fn end_of_section(lines: &mut Vec<String>, heading: usize) -> usize {
+/// Puts `new_line` after the last item of the section headed at
+/// `heading`. An italic "nothing here" note in an empty section is replaced,
+/// and a blank line is kept on both sides of the list so the headings stay
+/// readable in the raw file.
+fn insert_at_section_end(lines: &mut Vec<String>, heading: usize, new_line: String) {
     let end = (heading + 1..lines.len())
         .find(|&ix| lines[ix].starts_with("## "))
         .unwrap_or(lines.len());
-    if let Some(last_item) =
+    let at = if let Some(last_item) =
         (heading + 1..end).rfind(|&ix| lines[ix].trim_start().starts_with("- ["))
     {
-        return last_item + 1;
+        last_item + 1
+    } else if let Some(note) = (heading + 1..end).find(|&ix| lines[ix].trim().starts_with('_')) {
+        lines.remove(note);
+        note
+    } else {
+        if !lines
+            .get(heading + 1)
+            .is_some_and(|line| line.trim().is_empty())
+        {
+            lines.insert(heading + 1, String::new());
+        }
+        heading + 2
+    };
+    lines.insert(at, new_line);
+    if lines
+        .get(at + 1)
+        .is_some_and(|line| line.starts_with("## "))
+    {
+        lines.insert(at + 1, String::new());
     }
-    let mut ix = heading + 1;
-    while ix < end && lines[ix].trim().is_empty() {
-        ix += 1;
-    }
-    if ix < end && lines[ix].trim().starts_with('_') {
-        lines.remove(ix);
-        return ix;
-    }
-    if ix == heading + 1 {
-        // Keep the blank line between a heading and its list.
-        lines.insert(ix, String::new());
-        return ix + 1;
-    }
-    ix
 }
 
 fn insert_into_section(text: &str, heading: usize, new_line: &str) -> Result<String> {
@@ -343,8 +348,7 @@ fn insert_into_section(text: &str, heading: usize, new_line: &str) -> Result<Str
             .is_some_and(|line| line.starts_with("## ")),
         STALE_BOARD
     );
-    let at = end_of_section(&mut lines, heading);
-    lines.insert(at, new_line.to_owned());
+    insert_at_section_end(&mut lines, heading, new_line.to_owned());
     Ok(join_lines(lines, text))
 }
 
@@ -362,11 +366,12 @@ fn move_line(text: &str, from: usize, expected: &str, target: &DropTarget) -> Re
     }
     let moved = lines.remove(from);
     let shifted = |ix: usize| if ix > from { ix - 1 } else { ix };
-    let at = match target {
-        DropTarget::Before { line, .. } => shifted(*line),
-        DropTarget::EndOfSection { line } => end_of_section(&mut lines, shifted(*line)),
-    };
-    lines.insert(at, moved);
+    match target {
+        DropTarget::Before { line, .. } => lines.insert(shifted(*line), moved),
+        DropTarget::EndOfSection { line } => {
+            insert_at_section_end(&mut lines, shifted(*line), moved)
+        }
+    }
     Ok(join_lines(lines, text))
 }
 
@@ -1636,7 +1641,18 @@ mod tests {
 
         let bare = "## Today\n## Done\n";
         let output = insert_into_section(bare, 0, "- [ ] First").unwrap();
-        assert_eq!(output, "## Today\n\n- [ ] First\n## Done\n");
+        assert_eq!(output, "## Today\n\n- [ ] First\n\n## Done\n");
+
+        let output = insert_into_section(STARTER_BOARD, 2, "- [ ] First").unwrap();
+        assert_eq!(
+            output,
+            "# To-Do\n\n## Today\n\n- [ ] First\n\n## Waiting\n\n## Done\n"
+        );
+        let output = insert_into_section(&output, 2, "- [ ] Second").unwrap();
+        assert_eq!(
+            output,
+            "# To-Do\n\n## Today\n\n- [ ] First\n- [ ] Second\n\n## Waiting\n\n## Done\n"
+        );
     }
 
     #[test]
