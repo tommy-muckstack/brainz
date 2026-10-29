@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.57 (2026-10-29)
+
 ### Improved
 
 - The app icon leaves more room around the brain, so it no longer runs into the edges.
