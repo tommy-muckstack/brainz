@@ -166,23 +166,47 @@ fn open_blank(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
                 }
             })
             .await?;
+        let path = root.join(&note.path);
         // Opened like any note, so it lands in the rich editor rather than
         // the Markdown source the template flow places its caret in.
-        weak_workspace
+        let item = weak_workspace
             .update_in(cx, |workspace, window, cx| {
                 workspace.open_abs_path(
-                    root.join(&note.path),
+                    path.clone(),
                     workspace::OpenOptions::default(),
                     window,
                     cx,
                 )
             })?
             .await?;
+        // The file exists so the note can open, but closing it untouched
+        // shouldn't leave an empty "Untitled" behind in the brain.
+        cx.update(|_, cx| {
+            item.on_release(
+                cx,
+                Box::new(move |_| {
+                    remove_if_still_blank(&path).log_err();
+                }),
+            )
+            .detach();
+        })?;
         anyhow::Ok(())
     })
     .detach_and_prompt_err("Could not create the note", window, cx, |error, _, _| {
         Some(error.to_string())
     });
+}
+
+fn remove_if_still_blank(path: &Path) -> std::io::Result<bool> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) if contents.trim().is_empty() => {
+            std::fs::remove_file(path)?;
+            Ok(true)
+        }
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 /// Copies the open note into the brain's template folder, where New Note
@@ -2024,6 +2048,21 @@ mod tests {
                 assert_eq!(editor.text(cx), command);
             });
         }
+    }
+
+    #[test]
+    fn closing_a_blank_note_removes_it_but_keeps_written_ones() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let blank = root.path().join("Untitled.md");
+        std::fs::write(&blank, "\n").expect("write blank");
+        assert!(remove_if_still_blank(&blank).expect("remove blank"));
+        assert!(!blank.exists());
+        assert!(!remove_if_still_blank(&blank).expect("missing is fine"));
+
+        let written = root.path().join("Untitled 2.md");
+        std::fs::write(&written, "Groceries\n").expect("write note");
+        assert!(!remove_if_still_blank(&written).expect("keep written"));
+        assert!(written.exists());
     }
 
     #[test]

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Improved
+
+- The app icon leaves more room around the brain, so it no longer runs into the edges.
+
+### Fixed
+
+- A new note from Create → Note that you close without writing anything is no longer left behind as an empty "Untitled" file.
+
 ## 0.1.56 (2026-10-28)
 
 ### Added
