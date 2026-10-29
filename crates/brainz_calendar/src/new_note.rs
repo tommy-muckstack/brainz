@@ -171,12 +171,7 @@ fn open_blank(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
         // the Markdown source the template flow places its caret in.
         let item = weak_workspace
             .update_in(cx, |workspace, window, cx| {
-                workspace.open_abs_path(
-                    path.clone(),
-                    workspace::OpenOptions::default(),
-                    window,
-                    cx,
-                )
+                workspace.open_abs_path(path.clone(), workspace::OpenOptions::default(), window, cx)
             })?
             .await?;
         // The file exists so the note can open, but closing it untouched
