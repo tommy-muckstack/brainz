@@ -108,6 +108,10 @@ at higher resolution so receipt text stays clearer when enlarged.
 **Canvas**, directly below To-Do, is an infinite BlockSuite whiteboard. Draw
 rounded boxes, sticky notes, text, freehand strokes and attached connectors.
 Click once to select and drag; double-click a note or box to edit its text.
+Copy selected objects with Cmd+C and paste them with Cmd+V, including between
+canvas tabs. The collapsed drawing toolbar keeps your last drawing tool as a
+one-click action; use its chevron to choose another. New text objects accept
+typing immediately without triggering drawing shortcuts.
 Canvas text uses Gellix when installed on the Mac, with bundled DM Sans as
 the fallback. The view controls share Brainz's expand/collapse icons.
 Selecting Connector shows attachment dots on every visible connectable object.

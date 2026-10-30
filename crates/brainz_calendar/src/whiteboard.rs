@@ -1572,6 +1572,11 @@ pub(crate) mod native {
         CopyImage {
             png: String,
         },
+        CopyObjects {
+            #[serde(rename = "requestId")]
+            request_id: String,
+            html: String,
+        },
         PasteClipboard {
             position: [f64; 2],
         },
@@ -1975,8 +1980,33 @@ pub(crate) mod native {
                         ),
                     }
                 }
+                NativeEvent::Message(Message::CopyObjects { request_id, html }) => {
+                    if html.len() > MAX_DOCUMENT_BYTES || !html.contains("data-blocksuite-snapshot")
+                    {
+                        self.send(json!({"type":"objectsCopied","requestId":request_id,"error":"The selected objects are too large to copy."}));
+                        return;
+                    }
+                    cx.write_to_clipboard(ClipboardItem::new_string_with_json_metadata(
+                        "Brainz canvas objects".into(),
+                        json!({"brainzCanvas":html}),
+                    ));
+                    self.send(json!({"type":"objectsCopied","requestId":request_id}));
+                }
                 NativeEvent::Message(Message::PasteClipboard { position }) => {
-                    let image = cx.read_from_clipboard().and_then(|item| {
+                    let clipboard = cx.read_from_clipboard();
+                    let objects = clipboard.as_ref().and_then(|item| {
+                        let metadata: Value = serde_json::from_str(item.metadata()?).ok()?;
+                        metadata.get("brainzCanvas")?.as_str().map(str::to_owned)
+                    });
+                    if let Some(html) = objects.filter(|html| {
+                        html.len() <= MAX_DOCUMENT_BYTES
+                            && html.contains("data-blocksuite-snapshot")
+                    }) {
+                        self.send(json!({"type":"pasteObjects","html":html}));
+                        return;
+                    }
+                    let text = clipboard.as_ref().and_then(|item| item.text());
+                    let image = clipboard.and_then(|item| {
                         item.into_entries().find_map(|entry| match entry {
                             ClipboardEntry::Image(image) => Some(image),
                             _ => None,
@@ -2014,6 +2044,8 @@ pub(crate) mod native {
                             Ok((mime, bytes)) => self.send(json!({"type":"pasteImage","position":position,"mime":mime,"data":base64::engine::general_purpose::STANDARD.encode(bytes)})),
                             Err(error) => self.send(json!({"type":"notice","message":format!("Could not paste the image: {error}")})),
                         }
+                    } else if let Some(text) = text {
+                        self.send(json!({"type":"pasteText","text":text}));
                     }
                 }
                 NativeEvent::Message(Message::AttachToChat {
