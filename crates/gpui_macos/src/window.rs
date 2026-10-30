@@ -2554,28 +2554,115 @@ extern "C" fn reset_cursor_rects(this: &Object, _: Sel) {
         };
 
         let bounds = NSView::bounds(this as *const Object as id);
-        let _: () = msg_send![this, addCursorRect: bounds cursor: cursor];
+        let mut regions = vec![bounds];
+        let children: id = msg_send![this, subviews];
+        for child in children.iter() {
+            let hidden: BOOL = msg_send![child, isHidden];
+            if hidden == YES {
+                continue;
+            }
+            let visible: NSRect = msg_send![child, visibleRect];
+            let covered: NSRect = msg_send![this, convertRect: visible fromView: child];
+            // A whole-window arrow cursor rect can override WebKit's I-beam
+            // during selection. Native children must own their cursor regions.
+            regions = regions
+                .into_iter()
+                .flat_map(|region| subtract_cursor_rect(region, covered))
+                .collect();
+        }
+        for region in regions {
+            let _: () = msg_send![this, addCursorRect: region cursor: cursor];
+        }
     }
 }
 
+fn subtract_cursor_rect(region: NSRect, covered: NSRect) -> Vec<NSRect> {
+    let left = region.origin.x.max(covered.origin.x);
+    let bottom = region.origin.y.max(covered.origin.y);
+    let right = (region.origin.x + region.size.width).min(covered.origin.x + covered.size.width);
+    let top = (region.origin.y + region.size.height).min(covered.origin.y + covered.size.height);
+    if left >= right || bottom >= top {
+        return vec![region];
+    }
+    [
+        NSRect::new(
+            region.origin,
+            NSSize::new(region.size.width, bottom - region.origin.y),
+        ),
+        NSRect::new(
+            NSPoint::new(region.origin.x, top),
+            NSSize::new(
+                region.size.width,
+                region.origin.y + region.size.height - top,
+            ),
+        ),
+        NSRect::new(
+            NSPoint::new(region.origin.x, bottom),
+            NSSize::new(left - region.origin.x, top - bottom),
+        ),
+        NSRect::new(
+            NSPoint::new(right, bottom),
+            NSSize::new(region.origin.x + region.size.width - right, top - bottom),
+        ),
+    ]
+    .into_iter()
+    .filter(|rect| rect.size.width > 0.0 && rect.size.height > 0.0)
+    .collect()
+}
+
 extern "C" fn handle_key_equivalent(this: &Object, _: Sel, native_event: id) -> BOOL {
-    // Brainz: AppKit offers arrow, Home and End keys to every view as key
-    // equivalents. When a native child view such as a web view holds the
-    // keyboard, those keys are its own; handling them here would send them to
-    // that view's input context as text instead of moving its caret.
-    // Shortcuts with Cmd or Ctrl still come to GPUI.
     unsafe {
         let window: id = msg_send![this, window];
         let first_responder: id = msg_send![window, firstResponder];
         let modifiers: NSEventModifierFlags = msg_send![native_event, modifierFlags];
-        if first_responder != this as *const Object as id
-            && !modifiers.contains(NSEventModifierFlags::NSCommandKeyMask)
-            && !modifiers.contains(NSEventModifierFlags::NSControlKeyMask)
-        {
-            return NO;
+        if first_responder != this as *const Object as id {
+            // Navigation belongs to the native editor. Passing it to GPUI's
+            // input context can insert AppKit function-key codes as note text.
+            if !modifiers.contains(NSEventModifierFlags::NSCommandKeyMask)
+                && !modifiers.contains(NSEventModifierFlags::NSControlKeyMask)
+            {
+                return NO;
+            }
+            let is_view: BOOL = msg_send![first_responder, isKindOfClass: class!(NSView)];
+            if is_view == YES {
+                let is_child: BOOL = msg_send![first_responder, isDescendantOf: this];
+                if is_child == YES
+                    && let Some(PlatformInput::KeyDown(event)) =
+                        platform_input_from_native(native_event, None)
+                    && native_editor_owns_shortcut(&event.keystroke)
+                {
+                    // Wry child webviews decline performKeyEquivalent, so merely
+                    // returning NO loses Command keys before JavaScript sees them.
+                    // Deliver once to the focused editor, before GPUI or menus
+                    // interpret formatting keys as workspace actions.
+                    let _: () = msg_send![first_responder, keyDown: native_event];
+                    return YES;
+                }
+            }
         }
     }
     handle_key_event(this, native_event, true)
+}
+
+fn native_editor_owns_shortcut(keystroke: &Keystroke) -> bool {
+    let modifiers = keystroke.modifiers;
+    if !modifiers.platform && !modifiers.control {
+        return false;
+    }
+    // Keep application/window commands available while editing. Everything
+    // else, including formatting, selection, undo and caret movement, is local.
+    if modifiers.platform && !modifiers.control {
+        if matches!(
+            keystroke.key.as_str(),
+            "q" | "w" | "h" | "o" | "n" | "," | "`"
+        ) {
+            return false;
+        }
+        if keystroke.key == "m" && !modifiers.shift {
+            return false;
+        }
+    }
+    !(modifiers.platform && modifiers.control && keystroke.key == "v")
 }
 
 extern "C" fn handle_key_down(this: &Object, _: Sel, native_event: id) {
@@ -3923,5 +4010,87 @@ mod tests {
     #[test]
     fn display_id_for_screen_returns_none_for_null_screen() {
         assert_eq!(display_id_for_screen(nil), None);
+    }
+
+    #[test]
+    fn native_child_cursor_region_leaves_the_surrounding_app_uncovered() {
+        let window = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(800.0, 600.0));
+        let note = NSRect::new(NSPoint::new(200.0, 0.0), NSSize::new(600.0, 550.0));
+        let regions = subtract_cursor_rect(window, note);
+        assert_eq!(regions.len(), 2);
+        assert_eq!(
+            regions
+                .iter()
+                .map(|rect| rect.size.width * rect.size.height)
+                .sum::<f64>(),
+            150_000.0
+        );
+        for region in regions {
+            assert!(region.origin.x + region.size.width <= 200.0 || region.origin.y >= 550.0);
+        }
+        assert!(subtract_cursor_rect(window, window).is_empty());
+        let outside = NSRect::new(NSPoint::new(900.0, 700.0), NSSize::new(20.0, 20.0));
+        let unchanged = subtract_cursor_rect(window, outside);
+        assert_eq!(unchanged.len(), 1);
+        let region = unchanged.first().expect("one unchanged region");
+        assert_eq!(
+            (
+                region.origin.x,
+                region.origin.y,
+                region.size.width,
+                region.size.height
+            ),
+            (0.0, 0.0, 800.0, 600.0)
+        );
+    }
+
+    #[test]
+    fn native_editors_own_text_shortcuts_but_keep_window_commands() {
+        for shortcut in [
+            "cmd-b",
+            "cmd-i",
+            "cmd-u",
+            "cmd-k",
+            "cmd-e",
+            "cmd-a",
+            "cmd-c",
+            "cmd-x",
+            "cmd-v",
+            "cmd-z",
+            "cmd-shift-z",
+            "cmd-s",
+            "cmd-shift-s",
+            "cmd-shift-m",
+            "cmd-alt-1",
+            "cmd-left",
+            "cmd-shift-right",
+            "ctrl-a",
+            "ctrl-e",
+            "ctrl-k",
+        ] {
+            assert!(
+                native_editor_owns_shortcut(&Keystroke::parse(shortcut).expect("valid shortcut")),
+                "{shortcut}"
+            );
+        }
+        for shortcut in [
+            "cmd-q",
+            "cmd-w",
+            "cmd-shift-w",
+            "cmd-h",
+            "cmd-m",
+            "cmd-o",
+            "cmd-n",
+            "cmd-,",
+            "cmd-`",
+            "ctrl-cmd-v",
+            "b",
+            "left",
+        ] {
+            assert!(
+                !native_editor_owns_shortcut(&Keystroke::parse(shortcut).expect("valid shortcut")),
+                "{shortcut}"
+            );
+        }
     }
 }

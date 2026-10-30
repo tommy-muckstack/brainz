@@ -86,6 +86,12 @@ your messages, the current place in the sidebar, the prep banner, the pills.
 Headings are plain text, body and meta copy share one scale, and every tab
 reads in the same centred column as the chat.
 
+The rich note editor owns formatting and navigation shortcuts while focused:
+Cmd+B for bold, Cmd+I for italic, Cmd+K for links, and Cmd+Z / Shift+Cmd+Z for
+undo and redo. Dock toggles use their visible buttons. Text uses the I-beam
+cursor while selecting. **Copy path**, beside History and Markdown, copies the
+note's full file path.
+
 **Notes and templates (next installer).** Cmd+N opens the native note picker;
 Cmd+Shift+D opens today's daily note without overwriting earlier edits. Cmd+K
 opens the Brainz launcher for templates and tools. Enter opens a result, Escape

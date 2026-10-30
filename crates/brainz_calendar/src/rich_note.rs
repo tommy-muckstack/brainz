@@ -619,6 +619,7 @@ mod native {
             heading: String,
         },
         History,
+        CopyPath,
     }
 
     pub struct RichNoteView {
@@ -1112,6 +1113,12 @@ mod native {
                 Message::Source => self.show_source(window, cx),
                 Message::Claude { action, text } => self.ask_claude(&action, &text, window, cx),
                 Message::Rename { heading } => self.rename_to_heading(&heading, cx),
+                Message::CopyPath => {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                        self.path.to_string_lossy().into_owned(),
+                    ));
+                    self.send(json!({"type": "pathCopied"}));
+                }
                 Message::History => {
                     // Adding a tab reads every item in the pane, this one
                     // included, so it waits until this update has finished.
