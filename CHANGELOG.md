@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Improved
+
+- Canvas: the collapsed drawing menu keeps the last drawing tool available as a one-click action beside its expand button.
+
+### Fixed
+
+- Canvas: Command-C and Command-V copy selected objects through the native clipboard, including connected objects pasted into another canvas.
+- Canvas: typing into a new text object keeps the first character and no longer triggers drawing shortcuts.
+- Canvas: closing the command menu restores keyboard focus, and leaving a shape label no longer overwrites a subsequent selection.
+
 ## 0.1.57 (2026-10-29)
 
 ### Improved
