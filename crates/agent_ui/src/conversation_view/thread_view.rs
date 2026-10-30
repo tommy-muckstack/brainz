@@ -10163,9 +10163,30 @@ impl ThreadView {
     ) -> Div {
         let selection = self.permission_selections.get(&tool_call_id);
 
-        let selected_index = selection
-            .and_then(|s| s.choice_index())
-            .unwrap_or_else(|| choices.len().saturating_sub(1));
+        let selected_index = selection.and_then(|s| s.choice_index()).unwrap_or_else(|| {
+            if selection.is_none() {
+                super::default_permission_choice(choices)
+            } else {
+                choices.len().saturating_sub(1)
+            }
+        });
+
+        let remember_allow = match selection {
+            Some(PermissionSelection::SelectedPatterns(checked)) => !checked.is_empty(),
+            _ => choices.get(selected_index).is_some_and(|choice| {
+                choice.allow.kind == acp_v1::PermissionOptionKind::AllowAlways
+            }),
+        };
+        let allow_label = if remember_allow {
+            "Allow & remember"
+        } else {
+            "Allow once"
+        };
+        let deny_label = if selection.is_none() {
+            "Deny once"
+        } else {
+            "Deny"
+        };
 
         let dropdown_label: SharedString =
             if matches!(selection, Some(PermissionSelection::SelectedPatterns(_))) {
@@ -10212,7 +10233,7 @@ impl ThreadView {
                 h_flex()
                     .gap_0p5()
                     .child(
-                        Button::new(("allow-btn", entry_ix), "Allow")
+                        Button::new(("allow-btn", entry_ix), allow_label)
                             .disabled(allow_disabled)
                             .start_icon(
                                 Icon::new(IconName::Check)
@@ -10245,7 +10266,7 @@ impl ThreadView {
                             })),
                     )
                     .child(
-                        Button::new(("deny-btn", entry_ix), "Deny")
+                        Button::new(("deny-btn", entry_ix), deny_label)
                             .start_icon(
                                 Icon::new(IconName::Close)
                                     .size(IconSize::XSmall)
@@ -10550,6 +10571,10 @@ impl ThreadView {
         cx: &Context<Self>,
     ) -> Div {
         let mut seen_kinds: ArrayVec<acp_v1::PermissionOptionKind, 3, u8> = ArrayVec::new();
+        let persistent_id =
+            super::persistent_permission_option(options).map(|option| &option.option_id);
+        let mut ordered: Vec<_> = options.iter().collect();
+        ordered.sort_by_key(|option| Some(&option.option_id) != persistent_id);
 
         div()
             .p_1()
@@ -10558,9 +10583,12 @@ impl ThreadView {
             .w_full()
             .v_flex()
             .gap_0p5()
-            .children(options.iter().map(move |option| {
+            .children(ordered.into_iter().map(move |option| {
                 let option_id = SharedString::from(option.option_id.0.clone());
-                Button::new((option_id, entry_ix), option.name.clone())
+                let persistent = Some(&option.option_id) == persistent_id;
+                let label = super::permission_button_label(option, persistent);
+                Button::new((option_id, entry_ix), label)
+                    .when(persistent, |this| this.style(ButtonStyle::Filled))
                     .map(|this| {
                         // The sandbox-fallback prompt offers a "Retry" option
                         // that re-attempts creating the sandbox; it isn't an

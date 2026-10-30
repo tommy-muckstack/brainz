@@ -545,6 +545,12 @@ fn permission_option_for_action(
 ) -> Option<&acp_v1::PermissionOption> {
     if kind == acp_v1::PermissionOptionKind::AllowAlways
         && let PermissionOptions::Flat(options) = options
+        && let Some(option) = persistent_permission_option(options)
+    {
+        return Some(option);
+    }
+    if kind == acp_v1::PermissionOptionKind::AllowAlways
+        && let PermissionOptions::Flat(options) = options
         && let Some(option) = options.iter().find(|option| {
             option.option_id.0.as_ref() == acp_thread::SandboxPermission::AllowAlways.as_id()
         })
@@ -553,6 +559,64 @@ fn permission_option_for_action(
     }
 
     options.first_option_of_kind(kind)
+}
+
+fn persistent_permission_option(
+    options: &[acp_v1::PermissionOption],
+) -> Option<&acp_v1::PermissionOption> {
+    // ACP's AllowAlways also covers session grants and mode changes. Only
+    // promote adapter choices that actually save a scoped permission rule.
+    let sandbox_prompt = options
+        .iter()
+        .any(|option| option.option_id.0.as_ref() == "allow_thread");
+    options.iter().find(|option| {
+        let id = option.option_id.0.as_ref();
+        option.kind == acp_v1::PermissionOptionKind::AllowAlways
+            && (matches!(
+                id,
+                "allow-with-updates" | "allow-skill-exact" | "accept_execpolicy_amendment"
+            ) || id.starts_with("apply_network_policy_amendment:")
+                || (id == "allow_always" && !sandbox_prompt))
+    })
+}
+
+fn default_permission_choice(choices: &[PermissionOptionChoice]) -> usize {
+    // Prefer the narrowest built-in rule. A command without a proposed
+    // pattern must not default to allowing every terminal command.
+    choices
+        .iter()
+        .rposition(|choice| {
+            choice.allow.kind == acp_v1::PermissionOptionKind::AllowAlways
+                && (!choice.sub_patterns.is_empty()
+                    || choice.allow.option_id.0.starts_with("always_allow_mcp:"))
+        })
+        .unwrap_or_else(|| choices.len().saturating_sub(1))
+}
+
+fn permission_button_label(option: &acp_v1::PermissionOption, persistent: bool) -> String {
+    if persistent {
+        let scope = option
+            .name
+            .strip_prefix("Yes, and don't ask again for ")
+            .or_else(|| option.name.strip_prefix("Yes, and allow "));
+        return match scope {
+            Some(scope) => format!("Allow & remember: {scope}"),
+            None => format!("Allow & remember — {}", option.name),
+        };
+    }
+    match option.option_id.0.as_ref() {
+        "allow_for_session" | "allow_session" | "allow_permissions_session"
+            if !option.name.contains("session") && !option.name.contains("conversation") =>
+        {
+            format!("{} (this session only)", option.name)
+        }
+        "allow-once" | "allow_once"
+            if matches!(option.name.as_str(), "Yes" | "Allow" | "Yes, proceed") =>
+        {
+            "Allow once".into()
+        }
+        _ => option.name.clone(),
+    }
 }
 
 pub struct StateChange;
@@ -589,9 +653,13 @@ fn resolve_outcome_from_selection(
     }
 
     // Use the selected granularity choice ("Always for terminal" or "Only this time").
-    let selected_index = selection
-        .and_then(|s| s.choice_index())
-        .unwrap_or_else(|| choices.len().saturating_sub(1));
+    let selected_index = selection.and_then(|s| s.choice_index()).unwrap_or_else(|| {
+        if is_allow && selection.is_none() {
+            default_permission_choice(choices)
+        } else {
+            choices.len().saturating_sub(1)
+        }
+    });
     let selected_choice = choices.get(selected_index).or(choices.last())?;
     Some(selected_choice.build_outcome(is_allow))
 }
@@ -12680,16 +12748,131 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn resolve_outcome_from_selection_dropdown_defaults_to_last_choice_when_no_selection() {
+    fn resolve_outcome_from_selection_dropdown_defaults_to_scoped_saved_rule() {
         let options =
             ToolPermissionContext::new(TerminalTool::NAME, vec!["cargo build".to_string()])
                 .build_permission_options();
 
         let outcome = super::resolve_outcome_from_selection(&options, None, true).unwrap();
 
-        // Last choice is "Only this time" → option_id "allow".
-        assert_eq!(outcome.option_id.0.as_ref(), "allow");
-        assert_eq!(outcome.option_kind, acp_v1::PermissionOptionKind::AllowOnce);
+        assert_eq!(outcome.option_id.0.as_ref(), "always_allow:terminal");
+        assert_eq!(
+            outcome.option_kind,
+            acp_v1::PermissionOptionKind::AllowAlways
+        );
+        assert!(
+            matches!(outcome.params, Some(acp_thread::SelectedPermissionParams::Terminal { patterns }) if !patterns.is_empty())
+        );
+    }
+
+    #[test]
+    fn remembered_permission_prefers_codex_rule_over_session_and_keeps_once_explicit() {
+        let option = |id, name, kind| {
+            acp_v1::PermissionOption::new(acp_v1::PermissionOptionId::new(id), name, kind)
+        };
+        let options = PermissionOptions::Flat(vec![
+            option(
+                "allow_once",
+                "Yes, proceed",
+                acp_v1::PermissionOptionKind::AllowOnce,
+            ),
+            option(
+                "allow_for_session",
+                "Yes, and don't ask again for these files",
+                acp_v1::PermissionOptionKind::AllowAlways,
+            ),
+            option(
+                "accept_execpolicy_amendment",
+                "Yes, and don't ask again for commands that start with `git status`",
+                acp_v1::PermissionOptionKind::AllowAlways,
+            ),
+        ]);
+        let once_outcome =
+            super::resolve_outcome_from_selection(&options, None, true).expect("once approval");
+        assert_eq!(once_outcome.option_id.0.as_ref(), "allow_once");
+        let always = super::permission_option_for_action(
+            &options,
+            acp_v1::PermissionOptionKind::AllowAlways,
+        )
+        .expect("always shortcut");
+        assert_eq!(always.option_id.0.as_ref(), "accept_execpolicy_amendment");
+        let once =
+            super::permission_option_for_action(&options, acp_v1::PermissionOptionKind::AllowOnce)
+                .expect("once shortcut");
+        assert_eq!(once.option_id.0.as_ref(), "allow_once");
+        assert_eq!(super::permission_button_label(once, false), "Allow once");
+        assert_eq!(
+            super::permission_button_label(always, true),
+            "Allow & remember: commands that start with `git status`"
+        );
+        let PermissionOptions::Flat(options) = options else {
+            unreachable!()
+        };
+        assert!(
+            super::permission_button_label(&options[1], false).ends_with("(this session only)")
+        );
+    }
+
+    #[test]
+    fn remembered_permission_uses_claude_updates_but_never_promotes_session_or_mode_changes() {
+        let option = |id| {
+            acp_v1::PermissionOption::new(
+                acp_v1::PermissionOptionId::new(id),
+                "Provider choice",
+                acp_v1::PermissionOptionKind::AllowAlways,
+            )
+        };
+        for id in [
+            "allow_for_session",
+            "allow_session",
+            "allow_permissions_session",
+            "exit-plan-bypass",
+            "exit-plan-auto",
+            "unknown-option",
+        ] {
+            assert!(
+                super::persistent_permission_option(&[option(id)]).is_none(),
+                "{id}"
+            );
+        }
+        for id in [
+            "allow-with-updates",
+            "allow-skill-exact",
+            "accept_execpolicy_amendment",
+            "apply_network_policy_amendment:0",
+            "allow_always",
+        ] {
+            let options = vec![option(id)];
+            assert_eq!(
+                super::persistent_permission_option(&options)
+                    .expect("durable option")
+                    .option_id
+                    .0
+                    .as_ref(),
+                id
+            );
+        }
+        let PermissionOptions::Flat(sandbox) = sandbox_permission_options() else {
+            unreachable!()
+        };
+        assert!(super::persistent_permission_option(&sandbox).is_none());
+    }
+
+    #[test]
+    fn remembered_permission_does_not_default_to_unrestricted_shell_or_permanent_denial() {
+        let scoped =
+            ToolPermissionContext::new(TerminalTool::NAME, vec!["cargo build".to_string()])
+                .build_permission_options();
+        let deny = super::resolve_outcome_from_selection(&scoped, None, false).expect("deny once");
+        assert_eq!(deny.option_kind, acp_v1::PermissionOptionKind::RejectOnce);
+        let PermissionOptions::Dropdown(mut choices) = scoped else {
+            unreachable!()
+        };
+        choices.retain(|choice| choice.sub_patterns.is_empty());
+        let unscoped = PermissionOptions::Dropdown(choices);
+        let allow =
+            super::resolve_outcome_from_selection(&unscoped, None, true).expect("allow once");
+        assert_eq!(allow.option_kind, acp_v1::PermissionOptionKind::AllowOnce);
     }
 
     #[test]

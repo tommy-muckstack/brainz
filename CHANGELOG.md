@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.1.59 (2026-10-30)
+
+### Improved
+
+- Permissions: scoped saved approvals are the primary Allow & remember action. Claude and Codex keep using their own permission stores across sessions.
+- Permissions: built-in tools default to a saved command/path pattern or individual MCP tool when available. Allow once remains an explicit choice.
+
+### Fixed
+
+- Permissions: the Always Allow shortcut prefers Codex's persistent rule over its session grant, and session-only choices are labeled accurately.
+- Permissions: setting up standing Claude permissions preserves saved allow, deny, ask, and directory rules, and writes settings atomically.
+
 ## 0.1.58 (2026-10-30)
 
 ### Improved

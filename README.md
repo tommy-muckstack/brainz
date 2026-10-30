@@ -178,6 +178,14 @@ Claude tab pre-filled to rewrite the callout. The first Claude conversation offe
 brain accepted; read, search, git, and connectors never ask; destructive shapes
 still prompt) so routine work stops asking.
 
+Permission prompts put **Allow & remember** first when the agent offers a saved
+rule for that tool, command pattern, or host. These rules remain in the agent's
+permission store across conversations and app restarts. **Allow once** stays
+available; session-only grants are labeled as such. Built-in tool prompts select
+the available command/path pattern or individual MCP tool by default. Commands
+without a proposed pattern keep the one-time default. Standing permission setup
+merges existing rules and settings instead of replacing them.
+
 **Calendar** in the sidebar opens a tab
 with the next seven days, read from every account macOS Calendar knows about.
 It uses a small bundled helper built from `script/brainz-calendar.swift`, the
