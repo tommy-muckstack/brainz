@@ -20,12 +20,14 @@ use ui::{ContextMenu, ListItem, ListItemSpacing, PopoverMenu, prelude::*};
 use util::ResultExt;
 use workspace::{ModalView, Workspace, notifications::DetachAndPromptErr as _};
 
+const DEFAULT_NOTE_FOLDER: &str = "Notes";
+
 actions!(
     brainz_calendar,
     [
         /// Create a note from a local Markdown template.
         NewNote,
-        /// Create an empty note in the current folder and open it.
+        /// Create an empty note in Notes and open it.
         NewBlankNote,
         /// Save the open note as a template for New Note.
         SaveAsTemplate,
@@ -104,31 +106,13 @@ pub(super) fn open_with_template(
         return;
     };
     let project = workspace.project().clone();
-    let folder = current_folder(workspace, &root, cx);
+    let folder = DEFAULT_NOTE_FOLDER.to_owned();
     let weak_workspace = cx.weak_entity();
     workspace.toggle_modal(window, cx, |window, cx| {
         let mut picker = NotePicker::new(root, folder, project, weak_workspace, daily, window, cx);
         picker.initial_template = template;
         picker
     });
-}
-
-/// The folder of the active note relative to the brain, or "." at the top.
-fn current_folder(workspace: &Workspace, root: &Path, cx: &App) -> String {
-    let project = workspace.project().read(cx);
-    workspace
-        .active_item(cx)
-        .and_then(|item| item.project_path(cx))
-        .and_then(|path| {
-            let worktree = project.worktree_for_id(path.worktree_id, cx)?.read(cx);
-            let path = worktree.absolutize(&path.path);
-            path.parent()?
-                .strip_prefix(root)
-                .ok()
-                .map(|path| path.to_string_lossy().into_owned())
-        })
-        .filter(|path| !path.is_empty())
-        .unwrap_or_else(|| ".".into())
 }
 
 fn blank_template() -> anyhow::Result<Template> {
@@ -139,7 +123,7 @@ fn blank_template() -> anyhow::Result<Template> {
     )
 }
 
-/// Creates "Untitled" in the current folder and opens it, skipping the picker.
+/// Creates "Untitled" in Notes and opens it, skipping the picker.
 fn open_blank(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let root = workspace
         .root_paths(cx)
@@ -149,7 +133,7 @@ fn open_blank(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
         Editor::new_file(workspace, &workspace::NewFile, window, cx);
         return;
     };
-    let folder = current_folder(workspace, &root, cx);
+    let folder = DEFAULT_NOTE_FOLDER.to_owned();
     let weak_workspace = cx.weak_entity();
     cx.spawn_in(window, async move |_, cx| {
         let note = cx
@@ -564,7 +548,7 @@ impl NotePicker {
                             if this.insertion.is_some() {
                                 "Clear the slash command"
                             } else {
-                                "Start writing in your current folder"
+                                "Start writing in the selected folder"
                             }
                             .to_owned(),
                         )];
@@ -1143,7 +1127,7 @@ impl NotePicker {
             if self.insertion.is_some() {
                 "Clear the slash command"
             } else {
-                "Start writing in your current folder"
+                "Start writing in the selected folder"
             }
             .into(),
         )];
@@ -2058,6 +2042,30 @@ mod tests {
         std::fs::write(&written, "Groceries\n").expect("write note");
         assert!(!remove_if_still_blank(&written).expect("keep written"));
         assert!(written.exists());
+    }
+
+    #[test]
+    fn new_notes_create_the_notes_folder_and_keep_existing_notes() {
+        let root = tempfile::tempdir().expect("temporary brain");
+        let request = RenderRequest {
+            title: "Untitled".into(),
+            folder: DEFAULT_NOTE_FOLDER.to_owned(),
+            ..Default::default()
+        };
+        let rendered = brainz_templates::render(&blank_template().expect("template"), &request)
+            .expect("render");
+        let first = brainz_templates::create_note(root.path(), &rendered, CreatePolicy::Unique)
+            .expect("first note");
+        assert_eq!(first.path, Path::new("Notes/untitled.md"));
+        std::fs::write(root.path().join(&first.path), "Keep this note").expect("write note");
+        let second = brainz_templates::create_note(root.path(), &rendered, CreatePolicy::Unique)
+            .expect("second note");
+        assert_eq!(second.path.parent(), Some(Path::new("Notes")));
+        assert_ne!(first.path, second.path);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(first.path)).expect("existing note"),
+            "Keep this note"
+        );
     }
 
     #[test]

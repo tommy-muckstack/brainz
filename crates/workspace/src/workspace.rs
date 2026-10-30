@@ -8670,6 +8670,7 @@ impl Workspace {
 
         let mut container = div()
             .id(dock_element_id)
+            .debug_selector(|| dock_element_id.to_owned())
             .when(dock_is_open, |this| {
                 this.role(gpui::Role::Complementary)
                     .aria_label(dock_label)
@@ -14617,6 +14618,46 @@ mod tests {
             assert_eq!(*top.flexes.lock(), vec![1.0; top.members.len()]);
             assert_eq!(*nested.flexes.lock(), vec![1.0; nested.members.len()]);
         });
+    }
+
+    #[gpui::test]
+    async fn test_bottom_dock_can_be_resized_from_inside_its_grab_area(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::test_new(project, window, cx));
+        workspace.update_in(cx, |workspace, window, cx| {
+            let panel = cx.new(|cx| TestPanel::new(DockPosition::Bottom, 100, cx));
+            workspace.add_panel(panel, window, cx);
+            workspace.bottom_dock().update(cx, |dock, cx| {
+                dock.activate_panel(0, window, cx);
+                dock.set_open(true, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        let dock = cx.debug_bounds("bottom-dock").expect("bottom dock");
+        let handle = cx.debug_bounds("resize-handle").expect("resize handle");
+        assert!(handle.size.height >= px(14.));
+        assert!(handle.top() >= dock.top());
+        assert!(handle.bottom() <= dock.bottom());
+        // Ten pixels below the divider used to miss the six-pixel handle.
+        let start = gpui::point(handle.center().x, handle.top() + px(10.));
+        let end = gpui::point(start.x, start.y + px(70.));
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, Default::default());
+        cx.simulate_mouse_move(end, gpui::MouseButton::Left, Default::default());
+        cx.run_until_parked();
+        cx.simulate_mouse_move(
+            gpui::point(end.x, end.y + px(10.)),
+            gpui::MouseButton::Left,
+            Default::default(),
+        );
+        cx.simulate_mouse_up(end, gpui::MouseButton::Left, Default::default());
+        cx.run_until_parked();
+        let resized = cx.debug_bounds("bottom-dock").expect("resized dock");
+        assert!(resized.size.height < dock.size.height - px(40.));
     }
 
     #[gpui::test]

@@ -198,7 +198,7 @@ const ENTRIES: &[Entry] = &[
     },
     Entry {
         label: "Note",
-        hint: "A blank note in this folder",
+        hint: "A blank note in Notes",
         icon: IconName::FileTextOutlined,
         choice: Choice::Action(|| Box::new(crate::new_note::NewBlankNote)),
     },

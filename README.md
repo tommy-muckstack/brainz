@@ -90,7 +90,11 @@ The rich note editor owns formatting and navigation shortcuts while focused:
 Cmd+B for bold, Cmd+I for italic, Cmd+K for links, and Cmd+Z / Shift+Cmd+Z for
 undo and redo. Dock toggles use their visible buttons. Text uses the I-beam
 cursor while selecting. **Copy path**, beside History and Markdown, copies the
-note's full file path.
+note's full file path. Hover a paragraph to reveal its dotted grip on the left;
+drag it to reorder blocks, with undo and redo. Long notes and backlinks share
+one scrolling viewport. New notes start in `Notes/` unless a template or its
+destination chooses another folder. The bottom chat divider has a visible grip
+and a fourteen-pixel grab area inside the chat dock.
 
 **Notes and templates (next installer).** Cmd+N opens the native note picker;
 Cmd+Shift+D opens today's daily note without overwriting earlier edits. Cmd+K

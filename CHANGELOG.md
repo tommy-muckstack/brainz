@@ -9,6 +9,9 @@
 - Canvas: the collapsed drawing menu keeps the last drawing tool available as a one-click action beside its expand button.
 - Notes: Copy path beside History and Markdown copies the note's full file path.
 - Notes: standard editing shortcuts take priority while the rich editor is focused. Default shortcuts for toggling docks have been removed; the visible buttons remain available.
+- Notes: new notes start in the Notes folder; template destinations can still be changed.
+- Notes: dotted handles beside paragraphs let you drag blocks into a new order, with undo and redo.
+- Chat: the bottom divider has a larger grab area and a visible grip for resizing.
 
 ### Fixed
 
@@ -16,6 +19,7 @@
 - Canvas: typing into a new text object keeps the first character and no longer triggers drawing shortcuts.
 - Canvas: closing the command menu restores keyboard focus, and leaving a shape label no longer overwrites a subsequent selection.
 - Notes: text selection keeps its I-beam cursor instead of being overridden by the app's arrow cursor.
+- Notes: long notes remain clickable and selectable through the final paragraph, including when backlinks are shown.
 
 ## 0.1.57 (2026-10-29)
 

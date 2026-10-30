@@ -23,6 +23,7 @@ use ui::{
 use util::ResultExt as _;
 
 pub(crate) const RESIZE_HANDLE_SIZE: Pixels = px(6.);
+const BOTTOM_RESIZE_HANDLE_SIZE: Pixels = px(14.);
 
 pub enum PanelEvent {
     ZoomIn,
@@ -1275,6 +1276,7 @@ impl Render for Dock {
             let create_resize_handle = || {
                 let handle = div()
                     .id("resize-handle")
+                    .debug_selector(|| "resize-handle".to_owned())
                     .on_drag(DraggedDock(position), |dock, _, _, cx| {
                         cx.stop_propagation();
                         cx.new(|_| dock.clone())
@@ -1313,11 +1315,22 @@ impl Render for Dock {
                     DockPosition::Bottom => deferred(
                         handle
                             .absolute()
-                            .top(-RESIZE_HANDLE_SIZE / 2.)
+                            .top(px(0.))
                             .left(px(0.))
                             .w_full()
-                            .h(RESIZE_HANDLE_SIZE)
-                            .cursor_row_resize(),
+                            .h(BOTTOM_RESIZE_HANDLE_SIZE)
+                            .cursor_row_resize()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .hover(|style| style.bg(cx.theme().colors().element_hover))
+                            .child(
+                                div()
+                                    .w(px(36.))
+                                    .h(px(3.))
+                                    .rounded_full()
+                                    .bg(cx.theme().colors().border_variant),
+                            ),
                     ),
                     DockPosition::Right => deferred(
                         handle
@@ -1337,9 +1350,16 @@ impl Render for Dock {
                 .track_focus(&self.focus_handle(cx))
                 .focus_follows_mouse(self.focus_follows_mouse, cx)
                 .flex()
+                .relative()
                 .bg(cx.theme().colors().panel_background)
                 .border_color(cx.theme().colors().border)
                 .overflow_hidden()
+                // Native note/canvas views sit above GPUI. Reserve the grab
+                // area inside the dock so neither adjacent view can cover it.
+                .when(
+                    position == DockPosition::Bottom && self.resizable(cx),
+                    |this| this.pt(BOTTOM_RESIZE_HANDLE_SIZE),
+                )
                 .map(|this| match self.position().axis() {
                     // Width and height are always set on the workspace wrapper in
                     // render_dock, so fill whatever space the wrapper provides.
