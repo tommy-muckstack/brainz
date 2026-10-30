@@ -31,12 +31,21 @@
                 "solid": "extended-srgb:0.957,0.925,0.867,1.000"
               }
             }
-          ]
+          ],
+          "position": {
+            "scale": 0.78,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
         }
       ]
     }
   ],
   "supported-platforms": {
-    "squares": ["macOS"]
+    "squares": [
+      "macOS"
+    ]
   }
 }
