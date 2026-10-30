@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.58 (2026-10-30)
+
 ### Improved
 
 - Canvas: the collapsed drawing menu keeps the last drawing tool available as a one-click action beside its expand button.
