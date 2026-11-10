@@ -5417,13 +5417,6 @@ impl AcpThread {
             .map(|client_user_message_ids| client_user_message_ids.new_id());
 
         self.run_turn(cx, async move |this, cx| {
-            if let Some(selection) = mcp_selection {
-                this.update(cx, |this, cx| {
-                    this.connection
-                        .set_mcp_selection(&this.session_id, selection, cx)
-                })?
-                .await?;
-            }
             if push_user_message {
                 this.update(cx, |this, cx| {
                     this.push_entry(
@@ -5455,6 +5448,16 @@ impl AcpThread {
                     }
                 })
                 .ok();
+            }
+
+            // Keep the attempted message visible if applying the filter fails,
+            // but never send the prompt until the requested filter is active.
+            if let Some(selection) = mcp_selection {
+                this.update(cx, |this, cx| {
+                    this.connection
+                        .set_mcp_selection(&this.session_id, selection, cx)
+                })?
+                .await?;
             }
 
             this.update(cx, |this, cx| {
@@ -10102,6 +10105,58 @@ mod tests {
 
             "#}
         );
+    }
+
+    #[gpui::test]
+    async fn test_rejected_mcp_selection_preserves_message_without_sending(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        init_test(cx);
+        let fs = FakeFs::new(cx.executor());
+        let project = Project::test(fs, [], cx).await;
+        let sent = Rc::new(std::cell::Cell::new(false));
+        let connection = Rc::new(FakeAgentConnection::new().on_user_message({
+            let sent = sent.clone();
+            move |_, _, _| {
+                sent.set(true);
+                async { Ok(acp_v1::PromptResponse::new(acp_v1::StopReason::EndTurn)) }.boxed_local()
+            }
+        }));
+        let thread = cx
+            .update(|cx| {
+                connection.new_session(project, PathList::new(&[Path::new(path!("/test"))]), cx)
+            })
+            .await
+            .unwrap();
+        let result = cx
+            .update(|cx| {
+                thread.update(cx, |thread, cx| {
+                    thread.send_with_mcp_selection(
+                        vec!["Keep this message if the filter fails".into()],
+                        McpServerSelection {
+                            selected: Some(HashSet::default()),
+                            available: Vec::new(),
+                        },
+                        cx,
+                    )
+                })
+            })
+            .await;
+        assert!(result.is_err());
+        assert!(
+            !sent.get(),
+            "a failed filter must prevent the model request"
+        );
+        thread.read_with(cx, |thread, _| {
+            assert_eq!(
+                thread
+                    .entries
+                    .iter()
+                    .filter(|entry| matches!(entry, AgentThreadEntry::UserMessage(_)))
+                    .count(),
+                1
+            );
+        });
     }
 
     /// `send_command` runs the turn (the connection receives the typed command)
