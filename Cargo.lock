@@ -2501,6 +2501,7 @@ dependencies = [
  "settings",
  "smol",
  "task",
+ "telemetry",
  "tempfile",
  "terminal_view",
  "text",

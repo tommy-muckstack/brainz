@@ -67,6 +67,7 @@ impl BrainzAnalytics {
         Ok(())
     }
 
+    #[cfg_attr(feature = "test-support", allow(dead_code))]
     pub(crate) fn shutdown(&self) {
         self.client.shutdown();
     }
@@ -201,7 +202,7 @@ mod tests {
     fn verify_configured_posthog_delivery() {
         let analytics = BrainzAnalytics::from_environment(
             "brainz-setup-validation",
-            &uuid::Uuid::new_v4().to_string(),
+            "00000000-0000-4000-8000-000000000061",
             "0.1.61",
             Arc::new(AtomicBool::new(true)),
         )

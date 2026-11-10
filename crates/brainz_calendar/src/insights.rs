@@ -281,12 +281,18 @@ mod tests {
                     name: "Visible topic".into(),
                     ..Default::default()
                 },
+                crate::themes_signals::Theme {
+                    name: "Ada Lovelace".into(),
+                    category: crate::themes_signals::ThemeCategory::People,
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };
         let context = themes_context(&signals);
         assert!(context.contains("Visible topic"));
         assert!(!context.contains("Hidden topic"));
+        assert!(!context.contains("Ada Lovelace"));
         let mut brief = crate::brief::Brief::default();
         for _ in 0..500 {
             brief.owes.push(crate::brief::Owe {
