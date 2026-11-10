@@ -4565,10 +4565,12 @@ impl ThreadView {
                                 .child(h_flex().gap_2()
                                     .child(Button::new("mcp-all", "All").on_click(cx.listener(|this, _, _, cx| {
                                         this.selected_mcp_servers = None;
+                                        telemetry::event!("Brainz MCP Selection Changed", selection = "all", available_count = this.mcp_selection(cx).available.len());
                                         cx.notify();
                                     })))
                                     .child(Button::new("mcp-none", "None").on_click(cx.listener(|this, _, _, cx| {
                                         this.selected_mcp_servers = Some(HashSet::default());
+                                        telemetry::event!("Brainz MCP Selection Changed", selection = "none", selected_count = 0u64, available_count = this.mcp_selection(cx).available.len());
                                         cx.notify();
                                     }))))
                                 .child(v_flex().id("mcp-picker-servers").max_h(px(280.)).overflow_y_scroll()
@@ -4583,6 +4585,7 @@ impl ThreadView {
                                                 let all = this.mcp_selection(cx).available;
                                                 let selected = this.selected_mcp_servers.get_or_insert_with(|| all.into_iter().collect());
                                                 if !selected.remove(&server) { selected.insert(server.clone()); }
+                                                telemetry::event!("Brainz MCP Selection Changed", selection = "custom", selected_count = selected.len());
                                                 cx.notify();
                                             }))
                                     })))
@@ -7679,6 +7682,7 @@ impl ThreadView {
                     if let Some(text) = Self::get_agent_message_content(entries, response_index, cx)
                     {
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        telemetry::event!("Brainz Chat Copied", scope = "message");
                     }
                 }))
         });
@@ -8531,6 +8535,7 @@ impl ThreadView {
                                         Self::get_agent_message_content(entries, entry_ix, cx)
                                     {
                                         cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                        telemetry::event!("Brainz Chat Copied", scope = "message");
                                     }
                                 });
                             }
@@ -8583,6 +8588,7 @@ impl ThreadView {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                     selected_text.to_string(),
                                 ));
+                                telemetry::event!("Brainz Chat Copied", scope = "selection");
                             })
                         })
                         .when_some(selected_markdown, |menu, selected_markdown| {
@@ -8593,6 +8599,7 @@ impl ThreadView {
                                     cx.write_to_clipboard(ClipboardItem::new_string(
                                         selected_markdown.to_string(),
                                     ));
+                                    telemetry::event!("Brainz Chat Copied", scope = "selection");
                                 },
                             )
                         })

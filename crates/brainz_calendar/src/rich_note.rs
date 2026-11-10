@@ -579,6 +579,7 @@ mod native {
         let Some(view) = RichNoteView::for_editor(workspace, editor, true, window, cx) else {
             return;
         };
+        telemetry::event!("Brainz View Opened", view = "note");
         // Both items show one file, and a pane only keeps one item per
         // file, so the editor leaves before the note is added.
         pane.update(cx, |pane, cx| {

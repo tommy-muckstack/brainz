@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.1.61 (2026-11-09)
+
+### Added
+
+- Optional Brainz usage analytics through PostHog, controlled by Settings → Privacy → Brainz Usage Analytics. Events contain workflow counts and error categories, excluding note contents, chat text, file paths, and raw errors.
+
+### Fixed
+
+- Themes: meeting participants from My Man exports are classified as people, including names listed in YAML front matter. Placeholder labels such as Speaker 2 and Speaker Unclear no longer appear as topics, including in cached results.
+- Themes: the default filter is labeled Topics, and generated insight context excludes people and places.
+
 ## 0.1.60 (2026-11-09)
 
 ### Added

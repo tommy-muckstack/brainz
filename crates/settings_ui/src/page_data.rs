@@ -473,8 +473,8 @@ fn general_page(cx: &App) -> SettingsPage {
                 files: USER,
             }),
             SettingsPageItem::SettingItem(SettingItem {
-                title: "Telemetry Metrics",
-                description: "Send anonymized usage data like what languages you're using Zed with.",
+                title: "Brainz Usage Analytics",
+                description: "Share workflow counts and error categories with Brainz through PostHog. Note contents, chat text, file paths, and raw errors are excluded.",
                 field: Box::new(SettingField {
                     organization_override: None,
                     json_path: Some("telemetry.metrics"),

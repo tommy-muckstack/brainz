@@ -87,7 +87,9 @@ pub(crate) fn themes_context(signals: &crate::themes_signals::Signals) -> String
     let mut themes = signals
         .themes
         .iter()
-        .filter(|theme| !theme.hidden)
+        .filter(|theme| {
+            !theme.hidden && crate::themes_signals::ThemeFilters::default().includes(theme.category)
+        })
         .collect::<Vec<_>>();
     themes.sort_by_key(|theme| {
         (
@@ -107,7 +109,7 @@ pub(crate) fn themes_context(signals: &crate::themes_signals::Signals) -> String
             "source_files": theme.files.iter().take(2).map(|file| bounded(&file.name, 200)).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "open_loops": loop_context(&signals.open_loops),
-        "scope": "Up to 24 visible themes ranked by pins and recent activity. Recent and prior are weighted note mentions, not measures of success. Hidden themes are excluded."
+        "scope": "Up to 24 topics ranked by pins and recent activity. Recent and prior are weighted note mentions, not measures of success. Hidden themes, people, and places are excluded."
     }))
 }
 

@@ -544,7 +544,7 @@ fn front_matter(note: &str) -> HashMap<String, String> {
 }
 
 /// The `- item` lines under a front-matter list key.
-fn list_values(note: &str, key: &str) -> Vec<String> {
+pub(crate) fn list_values(note: &str, key: &str) -> Vec<String> {
     let mut values = Vec::new();
     let mut inside = false;
     let mut in_front = false;

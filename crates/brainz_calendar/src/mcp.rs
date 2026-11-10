@@ -1817,6 +1817,7 @@ impl McpView {
     }
 
     pub fn open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+        telemetry::event!("Brainz View Opened", view = "connectors");
         let existing = workspace.items_of_type::<McpView>(cx).next();
         if let Some(existing) = existing {
             workspace.activate_item(&existing, true, true, window, cx);

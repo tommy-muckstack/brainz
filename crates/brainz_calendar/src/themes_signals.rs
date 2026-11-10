@@ -503,6 +503,9 @@ fn make_term(display: &str, stop_words: &[String]) -> Option<Term> {
         .trim()
         .trim_matches(|c: char| !c.is_alphanumeric() && c != '&');
     let key = normalize_key(display);
+    if is_speaker_placeholder(&key) {
+        return None;
+    }
     if key.chars().count() < MIN_TERM_CHARS || key.chars().count() > MAX_TERM_CHARS {
         return None;
     }
@@ -529,6 +532,22 @@ fn make_term(display: &str, stop_words: &[String]) -> Option<Term> {
         key,
         display: display.to_owned(),
     })
+}
+
+fn is_speaker_placeholder(key: &str) -> bool {
+    let words: Vec<_> = key.split_whitespace().collect();
+    match words.as_slice() {
+        ["speaker"] => true,
+        ["speaker", label] => {
+            label.chars().all(|ch| ch.is_ascii_digit())
+                || matches!(
+                    *label,
+                    "unclear" | "unknown" | "unidentified" | "one" | "two" | "three" | "four"
+                )
+        }
+        ["unknown" | "unclear" | "unidentified", "speaker"] => true,
+        _ => false,
+    }
 }
 
 /// The proper-noun vocabulary built from the repo plus the acronym allowlist.
@@ -630,7 +649,12 @@ impl Vocabulary {
         let Some(term) = make_term(name, &self.stop_words) else {
             return;
         };
-        if !self.entries.iter().any(|(key, _, _)| *key == term.key) {
+        if let Some((_, _, existing)) = self.entries.iter_mut().find(|(key, _, _)| *key == term.key)
+        {
+            if category == ThemeCategory::People {
+                *existing = category;
+            }
+        } else {
             self.entries.push((term.key, term.display, category));
         }
     }
@@ -651,6 +675,14 @@ impl Vocabulary {
     }
 
     fn entities_from_markdown(&mut self, path: &str, text: &str) {
+        // Meeting exports store participants in YAML lists, not the inline
+        // prose labels handled below. Explicit participant lists also identify
+        // people who are only named by their given name.
+        for key in ["participants", "attendees", "speakers"] {
+            for name in crate::myman::list_values(text, key) {
+                self.add_entity(&name, ThemeCategory::People);
+            }
+        }
         let stem = Path::new(path)
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -1976,6 +2008,10 @@ pub fn load_signals(repo: &Path, config: &BrainConfig) -> Result<Signals> {
         .collect();
     let mut vocabulary = Vocabulary::from_tree(&tree, &[], config);
     vocabulary.read_entities(repo, &tree, config)?;
+    signals.themes.retain(|theme| {
+        !is_speaker_placeholder(&normalize_key(&theme.id))
+            && !is_speaker_placeholder(&normalize_key(&theme.name))
+    });
     for theme in &mut signals.themes {
         let category = vocabulary.category(&theme.id);
         if category != ThemeCategory::Things {
@@ -2061,6 +2097,36 @@ pub fn file_label(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn meeting_participants_are_people_and_speaker_labels_are_not_topics() {
+        let mut vocabulary = Vocabulary::default();
+        vocabulary.entities_from_markdown("meetings/session.md", "---\nparticipants:\n  - Ada Lovelace\n  - Grace\n  - Speaker 2\n  - Speaker Unclear\n---\n# Product Strategy\n");
+        assert_eq!(vocabulary.category("ada lovelace"), ThemeCategory::People);
+        assert_eq!(vocabulary.category("grace"), ThemeCategory::People);
+        assert_eq!(
+            vocabulary.category("product strategy"),
+            ThemeCategory::Things
+        );
+        for label in [
+            "Speaker 2",
+            "Speaker Unclear",
+            "Unknown Speaker",
+            "Speaker 123",
+        ] {
+            assert!(
+                extract_terms(&format!("**{label}**"), &vocabulary).is_empty(),
+                "{label}"
+            );
+        }
+        let terms = extract_terms(
+            "**Speaker 2:** Discuss **Product Strategy** and **Speaker Recognition**.",
+            &vocabulary,
+        );
+        assert!(terms.iter().any(|term| term.key == "product strategy"));
+        assert!(terms.iter().any(|term| term.key == "speaker recognition"));
+        assert!(!terms.iter().any(|term| is_speaker_placeholder(&term.key)));
+    }
 
     #[test]
     fn index_headings_drop_qualifiers_and_dictation_filter_keeps_names() {

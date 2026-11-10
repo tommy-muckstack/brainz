@@ -151,6 +151,7 @@ fn open_blank(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
             })
             .await?;
         let path = root.join(&note.path);
+        telemetry::event!("Brainz Note Created", source = "blank");
         // Opened like any note, so it lands in the rich editor rather than
         // the Markdown source the template flow places its caret in.
         let item = weak_workspace
@@ -976,6 +977,9 @@ impl NotePicker {
                     return Ok::<_, anyhow::Error>(());
                 }
             };
+            if note.created {
+                telemetry::event!("Brainz Note Created", source = "template");
+            }
             this.update(cx, |this, cx| {
                 this.record_recent(cx);
                 cx.emit(DismissEvent);

@@ -452,6 +452,7 @@ pub struct TodoView {
 
 impl TodoView {
     pub fn open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+        telemetry::event!("Brainz View Opened", view = "todo");
         let existing = workspace.items_of_type::<TodoView>(cx).next();
         if let Some(existing) = existing {
             workspace.activate_item(&existing, true, true, window, cx);

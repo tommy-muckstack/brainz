@@ -48,7 +48,9 @@ impl Feature {
             Self::Themes => {
                 "Explain the most meaningful themes and shifts in attention. Group related \
                 topics where the evidence supports it, connect them to open loops, and suggest one \
-                useful next step. Mention counts measure note activity, not progress or importance."
+                useful next step. Focus on subjects, projects, recurring problems, and priorities; \
+                people's names and transcript speaker labels are not themes. Mention counts measure \
+                note activity, not progress or importance."
             }
             Self::Todo => {
                 "Suggest up to three next actions from the open tasks. Respect explicit due \

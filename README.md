@@ -223,10 +223,12 @@ run while Brainz is open) walks every commit, takes the added lines of `.md`
 files, and turns bold spans, wiki links, the names of people and companies
 in the repo, and capitalized phrases into weighted themes with a 12-week
 line chart and momentum. The tab shows Rising, Fading, and Pinned themes.
-The sliders button to the left of Sync filters People, Places, and Things;
-only Things (topics, projects, and organizations) are shown by default.
+The sliders button to the left of Sync filters People, Places, and Topics;
+only Topics (topics, projects, and organizations) are shown by default.
 People and places are identified from their configured folders and labeled
-note context, including interview headings, attendees, and locations.
+note context, including interview headings, attendees, and locations. Meeting
+participant lists from My Man are recognized, and placeholder speaker labels
+are excluded from topics. AI theme insights focus on topics rather than people.
 Filters are remembered on this computer. The generated files also retain
 new themes, cross-folder threads, open loops, and the bot-written narrative.
 Expand a theme for its top files and co-mentioned people; click either to
@@ -312,6 +314,17 @@ stay in place. This reduces tool context; actual token savings depend on the
 provider's caching and tool discovery. Supported by Brainz's built-in agent and
 the managed Claude Code agent. Other adapters, including Codex, currently show
 that per-message selection is unavailable.
+
+**Usage analytics** is optional under Settings → Privacy → Brainz Usage Analytics
+(`telemetry.metrics`, off by default). It sends a fixed list of workflow events
+to PostHog: sessions, views, note creation, chat copying, MCP selection counts,
+response duration, and error categories. It excludes note and chat contents,
+file paths, search queries, connector names, and raw error messages. Events use
+an installation ID and `app = brainz`; person profiles and GeoIP enrichment are
+disabled. Turning the setting off stops capture and discards queued events.
+Release builds read `BRAINZ_POSTHOG_TOKEN` and `BRAINZ_POSTHOG_HOST` from the build
+environment (locally, the untracked `script/brainz-local.env`). Both are required;
+there is no fallback analytics destination. Inherited Zed telemetry stays disabled.
 
 **Connectors** in the sidebar opens a tab listing the servers
 Brainz's Claude and Codex know about, with logos for the ones you use most.

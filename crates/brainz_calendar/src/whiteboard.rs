@@ -958,6 +958,7 @@ impl WhiteboardView {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) {
+        telemetry::event!("Brainz View Opened", view = "canvas");
         if let Ok(path) = target.path.canonicalize() {
             target.path = path;
         }

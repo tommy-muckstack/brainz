@@ -48,6 +48,7 @@ uuid.workspace = true
 url.workspace = true
 terminal_view.workspace = true
 task.workspace = true
+telemetry.workspace = true
 collections.workspace = true
 project.workspace = true
 ui.workspace = true

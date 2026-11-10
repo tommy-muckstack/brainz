@@ -16,7 +16,10 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
-use std::sync::LazyLock;
+use std::sync::{
+    LazyLock, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Instant;
 use std::{env, mem, path::PathBuf, sync::Arc, time::Duration};
 use telemetry_events::{AssistantEventData, AssistantPhase, Event, EventRequestBody, EventWrapper};
@@ -41,6 +44,8 @@ pub struct Telemetry {
     http_client: Arc<HttpClientWithUrl>,
     executor: BackgroundExecutor,
     state: Arc<Mutex<TelemetryState>>,
+    brainz_analytics: OnceLock<Option<Arc<crate::brainz_analytics::BrainzAnalytics>>>,
+    analytics_enabled: Arc<AtomicBool>,
 }
 
 struct TelemetryState {
@@ -227,12 +232,16 @@ impl Telemetry {
         })
         .detach();
 
+        let analytics_enabled =
+            Arc::new(AtomicBool::new(TelemetrySettings::get_global(cx).metrics));
         cx.observe_global::<SettingsStore>({
             let state = state.clone();
+            let analytics_enabled = analytics_enabled.clone();
 
             move |cx| {
                 let mut state = state.lock();
                 state.settings = *TelemetrySettings::get_global(cx);
+                analytics_enabled.store(state.settings.metrics, Ordering::Relaxed);
             }
         })
         .detach();
@@ -242,6 +251,8 @@ impl Telemetry {
             http_client: client,
             executor: cx.background_executor().clone(),
             state,
+            brainz_analytics: OnceLock::new(),
+            analytics_enabled,
         });
 
         let (tx, mut rx) = mpsc::unbounded();
@@ -280,9 +291,16 @@ impl Telemetry {
     // TestAppContext ends up calling this function on shutdown and it panics when trying to find the TelemetrySettings
     #[cfg(not(any(test, feature = "test-support")))]
     fn shutdown_telemetry(self: &Arc<Self>) -> impl Future<Output = ()> + use<> {
-        telemetry::event!("App Closed");
-        // TODO: close final edit period and make sure it's sent
-        Task::ready(())
+        self.report_event(Event::Flexible(telemetry::Event {
+            event_type: "App Closed".into(),
+            event_properties: Default::default(),
+        }));
+        let analytics = self.brainz_analytics.get().cloned().flatten();
+        self.executor.spawn(async move {
+            if let Some(analytics) = analytics {
+                analytics.shutdown();
+            }
+        })
     }
 
     pub fn log_file_path() -> PathBuf {
@@ -370,6 +388,13 @@ impl Telemetry {
         state.session_id = Some(session_id);
         state.app_version = release_channel::AppVersion::global(cx).to_string();
         state.os_name = os_name();
+        drop(state);
+        if !cfg!(any(test, feature = "test-support")) {
+            self.report_event(Event::Flexible(telemetry::Event {
+                event_type: "Brainz Session Started".into(),
+                event_properties: Default::default(),
+            }));
+        }
     }
 
     pub fn metrics_enabled(self: &Arc<Self>) -> bool {
@@ -570,6 +595,25 @@ impl Telemetry {
 
     fn report_event(self: &Arc<Self>, mut event: Event) {
         let mut state = self.state.lock();
+        if state.settings.metrics && !cfg!(any(test, feature = "test-support")) {
+            let Event::Flexible(ref event) = event;
+            if let Some((name, properties)) = crate::brainz_analytics::sanitized_event(event)
+                && let (Some(installation_id), Some(session_id)) =
+                    (&state.installation_id, &state.session_id)
+                && let Some(analytics) = self.brainz_analytics.get_or_init(|| {
+                    crate::brainz_analytics::BrainzAnalytics::from_environment(
+                        installation_id,
+                        session_id,
+                        &state.app_version,
+                        self.analytics_enabled.clone(),
+                    )
+                    .log_err()
+                    .flatten()
+                })
+            {
+                analytics.capture(name, properties).log_err();
+            }
+        }
         if !state.settings.metrics || state.endpoint.is_none() {
             return;
         }

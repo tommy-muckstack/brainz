@@ -38,6 +38,7 @@ log.workspace = true
 parking_lot.workspace = true
 paths.workspace = true
 postage.workspace = true
+posthog-rs = { version = "0.14", default-features = false }
 proxy_handshake = { workspace = true, features = ["tokio"] }
 rand.workspace = true
 regex.workspace = true

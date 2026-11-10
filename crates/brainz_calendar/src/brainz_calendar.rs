@@ -267,6 +267,7 @@ pub struct CalendarView {
 
 impl CalendarView {
     pub fn open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+        telemetry::event!("Brainz View Opened", view = "calendar");
         let existing = workspace.items_of_type::<CalendarView>(cx).next();
         if let Some(existing) = existing {
             workspace.activate_item(&existing, true, true, window, cx);
