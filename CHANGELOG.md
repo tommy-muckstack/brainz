@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.60 (2026-11-09)
+
+### Added
+
+- Chat: choose All, None, or individual MCPs beside the composer for each message. Unselected tools are excluded from the agent's tool context while connections, sign-ins, and saved permissions stay intact.
+- Chat: queued messages keep their own MCP selection. Supported by the built-in agent and managed Claude Code agent; other adapters clearly show when selection is unavailable.
+
 ## 0.1.59 (2026-10-30)
 
 ### Improved

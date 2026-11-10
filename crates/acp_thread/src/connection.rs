@@ -88,6 +88,21 @@ pub fn build_terminal_auth_task(
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct McpServerSelection {
+    /// None keeps all configured servers available; an empty set selects none.
+    pub selected: Option<HashSet<String>>,
+    pub available: Vec<String>,
+}
+
+impl McpServerSelection {
+    pub fn includes(&self, server: &str) -> bool {
+        self.selected
+            .as_ref()
+            .is_none_or(|selected| selected.contains(server))
+    }
+}
+
 pub trait AgentConnection {
     fn agent_id(&self) -> AgentId;
 
@@ -95,6 +110,33 @@ pub trait AgentConnection {
 
     fn agent_version(&self) -> Option<SharedString> {
         None
+    }
+
+    fn supports_mcp_selection(&self) -> bool {
+        false
+    }
+
+    fn mcp_servers(
+        &self,
+        _session_id: &acp_v1::SessionId,
+        _cx: &mut App,
+    ) -> Task<Result<Option<Vec<String>>>> {
+        Task::ready(Ok(None))
+    }
+
+    fn set_mcp_selection(
+        &self,
+        _session_id: &acp_v1::SessionId,
+        selection: McpServerSelection,
+        _cx: &mut App,
+    ) -> Task<Result<()>> {
+        Task::ready(if selection.selected.is_none() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "This agent does not support choosing MCPs for a message"
+            ))
+        })
     }
 
     fn new_session(

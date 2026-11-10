@@ -2772,6 +2772,23 @@ pub fn available_native_agent(cx: &App) -> AvailableAgent {
 }
 
 impl acp_thread::AgentConnection for NativeAgentConnection {
+    fn supports_mcp_selection(&self) -> bool {
+        true
+    }
+
+    fn set_mcp_selection(
+        &self,
+        session_id: &acp_v1::SessionId,
+        selection: acp_thread::McpServerSelection,
+        cx: &mut App,
+    ) -> Task<Result<()>> {
+        let Some(thread) = self.thread(session_id, cx) else {
+            return Task::ready(Err(anyhow::anyhow!("Session not found")));
+        };
+        thread.update(cx, |thread, _| thread.mcp_selection = selection);
+        Task::ready(Ok(()))
+    }
+
     fn agent_id(&self) -> AgentId {
         ZED_AGENT_ID.clone()
     }

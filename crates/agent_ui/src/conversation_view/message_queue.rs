@@ -9,6 +9,7 @@ pub struct QueueEntry {
     pub id: QueueEntryId,
     pub content: Vec<acp_v1::ContentBlock>,
     pub tracked_buffers: Vec<Entity<Buffer>>,
+    pub mcp_selection: acp_thread::McpServerSelection,
     /// When true, this message interrupts the agent at the next turn boundary
     /// instead of waiting for generation to fully complete. Only the front
     /// entry's value matters, since messages are delivered in FIFO order.

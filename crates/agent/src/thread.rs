@@ -1311,6 +1311,7 @@ pub struct Thread {
     #[allow(unused)]
     initial_project_snapshot: Shared<Task<Option<Arc<ProjectSnapshot>>>>,
     pub(crate) context_server_registry: Entity<ContextServerRegistry>,
+    pub(crate) mcp_selection: acp_thread::McpServerSelection,
     profile_id: AgentProfileId,
     /// Whether `profile_id` was downgraded to `minimal` at thread start because
     /// the workspace is restricted. Used purely to surface a warning in the UI.
@@ -1377,6 +1378,7 @@ impl Thread {
             depth: parent_thread.read(cx).depth() + 1,
         });
         thread.inherit_parent_settings(parent_thread, cx);
+        thread.mcp_selection = parent_thread.read(cx).mcp_selection.clone();
         let model_selection = model_selection
             .cloned()
             .or_else(|| AgentSettings::get_global(cx).subagent_model.clone());
@@ -1463,6 +1465,7 @@ impl Thread {
                     .shared()
             },
             context_server_registry,
+            mcp_selection: Default::default(),
             profile_id,
             profile_downgraded_for_restricted_workspace,
             project_context,
@@ -1837,6 +1840,7 @@ impl Thread {
             pending_compaction_telemetry: None,
             initial_project_snapshot: Task::ready(db_thread.initial_project_snapshot).shared(),
             context_server_registry,
+            mcp_selection: Default::default(),
             profile_id,
             profile_downgraded_for_restricted_workspace: false,
             project_context,
@@ -4277,6 +4281,9 @@ impl Thread {
         let mut seen_tools = tools.keys().cloned().collect::<HashSet<_>>();
         let mut duplicate_tool_names = HashSet::default();
         for (server_id, server_tools) in self.context_server_registry.read(cx).servers() {
+            if !self.mcp_selection.includes(&server_id.0) {
+                continue;
+            }
             for (tool_name, tool) in server_tools {
                 if profile.is_context_server_tool_enabled(&server_id.0, &tool_name) {
                     let tool_name: SharedString =

@@ -1770,6 +1770,91 @@ async fn test_profiles(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+async fn test_mcp_selection_filters_request_tools_without_disconnect(cx: &mut TestAppContext) {
+    let ThreadTest {
+        model,
+        fake,
+        thread,
+        context_server_store,
+        fs,
+        ..
+    } = setup(cx, TestModel::Fake).await;
+    fs.insert_file(
+        paths::settings_file(),
+        json!({"agent":{"profiles":{"mcp_picker":{
+            "name":"MCP picker", "enable_all_context_servers":true, "tools":{}
+        }}}})
+        .to_string()
+        .into_bytes(),
+    )
+    .await;
+    cx.run_until_parked();
+    thread.update(cx, |thread, cx| {
+        thread.set_profile(AgentProfileId("mcp_picker".into()), cx)
+    });
+    let tool = |name: &str| context_server::types::Tool {
+        name: name.into(),
+        title: None,
+        description: None,
+        input_schema: EchoTool::input_schema().to_value(),
+        output_schema: None,
+        annotations: None,
+    };
+    let _notes_calls = setup_context_server(
+        "notes",
+        vec![tool("meeting_notes")],
+        &context_server_store,
+        cx,
+    );
+    let _calendar_calls = setup_context_server(
+        "calendar",
+        vec![tool("calendar_events")],
+        &context_server_store,
+        cx,
+    );
+
+    for (selected, expected) in [
+        (
+            Some(HashSet::from_iter(["notes".to_owned()])),
+            vec!["meeting_notes"],
+        ),
+        (Some(HashSet::default()), vec![]),
+        (None, vec!["calendar_events", "meeting_notes"]),
+    ] {
+        thread.update(cx, |thread, cx| {
+            thread.mcp_selection = acp_thread::McpServerSelection {
+                selected,
+                available: vec!["notes".into(), "calendar".into()],
+            };
+            thread
+                .send(ClientUserMessageId::new(), ["Compare my meetings"], cx)
+                .unwrap()
+        });
+        cx.run_until_parked();
+        let request = fake
+            .pending_completions_for(&model)
+            .pop()
+            .expect("request should reach the model");
+        assert_eq!(tool_names_for_completion(&request), expected);
+        context_server_store.read_with(cx, |store, _| {
+            assert!(
+                store
+                    .get_running_server(&ContextServerId("notes".into()))
+                    .is_some()
+            );
+            assert!(
+                store
+                    .get_running_server(&ContextServerId("calendar".into()))
+                    .is_some()
+            );
+        });
+        fake.send_last_text(&model, "Done");
+        fake.end_last(&model);
+        cx.run_until_parked();
+    }
+}
+
+#[gpui::test]
 async fn test_mcp_tools(cx: &mut TestAppContext) {
     let ThreadTest {
         model,

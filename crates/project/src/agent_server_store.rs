@@ -1659,7 +1659,21 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
             env.extend(brainz_agent_isolation_env(&registry_id));
             env.extend(settings_env);
 
-            let mut command_args = vec![executable.to_string_lossy().into_owned()];
+            let mut command_args = Vec::new();
+            if registry_id.as_ref() == "claude-acp" {
+                let preload = install_dir.join("brainz-mcp-selection.mjs");
+                fs.atomic_write(
+                    preload.clone(),
+                    include_str!("claude_mcp_selection.mjs").to_owned(),
+                )
+                .await?;
+                command_args.extend([
+                    "--import".to_owned(),
+                    preload.to_string_lossy().into_owned(),
+                ]);
+                env.insert("BRAINZ_CLAUDE_MCP_PICKER".into(), "1".into());
+            }
+            command_args.push(executable.to_string_lossy().into_owned());
             command_args.extend(args);
             command_args.extend(extra_args);
 

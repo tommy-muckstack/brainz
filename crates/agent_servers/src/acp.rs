@@ -1535,6 +1535,83 @@ fn meta_terminal_auth_task(
 }
 
 impl AgentConnection for AcpConnection {
+    fn supports_mcp_selection(&self) -> bool {
+        self.agent_capabilities
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("brainzMcpSelection"))
+            .and_then(serde_json::Value::as_u64)
+            == Some(1)
+    }
+
+    fn mcp_servers(
+        &self,
+        session_id: &acp::SessionId,
+        cx: &mut App,
+    ) -> Task<Result<Option<Vec<String>>>> {
+        if !self.supports_mcp_selection() {
+            return Task::ready(Ok(None));
+        }
+        let connection = self.connection.clone();
+        let session_id = session_id.clone();
+        cx.foreground_executor().spawn(async move {
+            let response = connection
+                .send_request(acp::SetSessionConfigOptionRequest::new(
+                    session_id,
+                    acp::SessionConfigId::new("brainz/mcp-servers"),
+                    acp::SessionConfigOptionValue::value_id("list"),
+                ))
+                .block_task()
+                .await
+                .map_err(map_acp_error)?;
+            let names = response
+                .meta
+                .and_then(|mut meta| meta.remove("brainzMcpServers"))
+                .context("Agent did not return its MCP server list")?;
+            Ok(Some(serde_json::from_value(names)?))
+        })
+    }
+
+    fn set_mcp_selection(
+        &self,
+        session_id: &acp::SessionId,
+        selection: acp_thread::McpServerSelection,
+        cx: &mut App,
+    ) -> Task<Result<()>> {
+        if !self.supports_mcp_selection() {
+            return Task::ready(if selection.selected.is_none() {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "This agent does not support choosing MCPs for a message"
+                ))
+            });
+        }
+        let selected = selection.selected.map(|selected| {
+            let mut names = selected.into_iter().collect::<Vec<_>>();
+            names.sort();
+            names
+        });
+        let value = match serde_json::to_string(&selected) {
+            Ok(value) => value,
+            Err(error) => return Task::ready(Err(error.into())),
+        };
+        let connection = self.connection.clone();
+        let session_id = session_id.clone();
+        cx.foreground_executor().spawn(async move {
+            connection
+                .send_request(acp::SetSessionConfigOptionRequest::new(
+                    session_id,
+                    acp::SessionConfigId::new("brainz/mcp-selection"),
+                    acp::SessionConfigOptionValue::value_id(value),
+                ))
+                .block_task()
+                .await
+                .map_err(map_acp_error)?;
+            Ok(())
+        })
+    }
+
     fn agent_id(&self) -> AgentId {
         self.id.clone()
     }

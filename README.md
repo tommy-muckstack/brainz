@@ -304,6 +304,15 @@ become symlinks to it, so a memory written in Brainz is there in a terminal
 `claude` session and vice versa. Credentials never move. If the layout is not
 one of the expected shapes, nothing changes and a notification says why.
 
+**MCPs** beside the chat composer lets you choose All, None, or individual
+connectors for the next message. The choice stays selected until you change it;
+queued messages keep the selection they were created with. Unselected MCP tools
+are omitted from the request while connections, sign-ins, and saved permissions
+stay in place. This reduces tool context; actual token savings depend on the
+provider's caching and tool discovery. Supported by Brainz's built-in agent and
+the managed Claude Code agent. Other adapters, including Codex, currently show
+that per-message selection is unavailable.
+
 **Connectors** in the sidebar opens a tab listing the servers
 Brainz's Claude and Codex know about, with logos for the ones you use most.
 The first time Claude runs in Brainz, your terminal Claude's MCP servers are

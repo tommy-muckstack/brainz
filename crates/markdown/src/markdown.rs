@@ -6874,6 +6874,51 @@ mod tests {
     );
 
     #[gpui::test]
+    fn test_streamed_chat_table_renders_rows_and_columns(cx: &mut TestAppContext) {
+        ensure_theme_initialized(cx);
+        let markdown = cx.new(|cx| Markdown::new("".into(), None, None, cx));
+        for chunk in [
+            "Here is the comparison:\n\n| Feature | Status |\n",
+            "| --- | --- |\n",
+            "| **Copy** | Ready |\n",
+            "| Paste | `Pending` |\n\nDone.",
+        ] {
+            markdown.update(cx, |markdown, cx| markdown.append(chunk, cx));
+            cx.run_until_parked();
+        }
+
+        let rendered = render_markdown_entity_in_view(
+            markdown,
+            MarkdownStyle {
+                soft_break_as_hard_break: true,
+                ..MarkdownStyle::default()
+            },
+            None,
+            Some(px(400.)),
+            cx,
+        );
+        let cell_bounds = |text: &str| {
+            let line = rendered
+                .lines
+                .iter()
+                .find(|line| line.layout.text() == text)
+                .unwrap_or_else(|| panic!("missing rendered cell: {text}"));
+            line.layout.bounds()
+        };
+        let header = cell_bounds("Feature");
+        let first_row = cell_bounds("Copy");
+        let second_row = cell_bounds("Paste");
+        assert!(first_row.top() >= header.bottom());
+        assert!(second_row.top() >= first_row.bottom());
+        assert_eq!(first_row.left(), second_row.left());
+        assert!(cell_bounds("Ready").left() >= first_row.right());
+        assert_eq!(cell_bounds("Ready").left(), cell_bounds("Pending").left());
+        assert!(rendered.lines.iter().all(|line| {
+            !line.layout.text().contains('|') && !line.layout.text().contains("---")
+        }));
+    }
+
+    #[gpui::test]
     fn test_table_columns_are_sized_to_their_content(cx: &mut TestAppContext) {
         fn cells(row: &str) -> impl Iterator<Item = &str> {
             row.trim().trim_matches('|').split('|')

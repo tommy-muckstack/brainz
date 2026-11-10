@@ -13889,6 +13889,27 @@ pub(crate) mod tests {
     }
 
     #[gpui::test]
+    async fn test_queued_message_keeps_mcp_selection(cx: &mut TestAppContext) {
+        init_test(cx);
+        let (conversation_view, cx) =
+            setup_conversation_view(StubAgentServer::default_response(), cx).await;
+        active_thread(&conversation_view, cx).update_in(cx, |view, window, cx| {
+            view.selected_mcp_servers = Some(HashSet::from_iter(["notes".to_owned()]));
+            view.add_to_queue(vec!["Read my meeting notes".into()], vec![], window, cx);
+            view.selected_mcp_servers = Some(HashSet::default());
+            let entry = view.message_queue.first().expect("queued message");
+            assert!(entry.mcp_selection.includes("notes"));
+            assert!(!entry.mcp_selection.includes("calendar"));
+            let id = entry.id;
+            view.move_queued_message_to_main_editor(id, None, None, window, cx);
+            assert_eq!(
+                view.selected_mcp_servers,
+                Some(HashSet::from_iter(["notes".to_owned()]))
+            );
+        });
+    }
+
+    #[gpui::test]
     async fn test_move_queued_message_to_empty_main_editor(cx: &mut TestAppContext) {
         init_test(cx);
 

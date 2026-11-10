@@ -5367,7 +5367,16 @@ impl AcpThread {
         message: Vec<acp_v1::ContentBlock>,
         cx: &mut Context<Self>,
     ) -> BoxFuture<'static, Result<Option<acp_v1::PromptResponse>>> {
-        self.send_inner(message, true, cx)
+        self.send_inner(message, true, None, cx)
+    }
+
+    pub fn send_with_mcp_selection(
+        &mut self,
+        message: Vec<acp_v1::ContentBlock>,
+        selection: McpServerSelection,
+        cx: &mut Context<Self>,
+    ) -> BoxFuture<'static, Result<Option<acp_v1::PromptResponse>>> {
+        self.send_inner(message, true, Some(selection), cx)
     }
 
     /// Sends a prompt without displaying a user-message bubble for it.
@@ -5379,13 +5388,14 @@ impl AcpThread {
         message: Vec<acp_v1::ContentBlock>,
         cx: &mut Context<Self>,
     ) -> BoxFuture<'static, Result<Option<acp_v1::PromptResponse>>> {
-        self.send_inner(message, false, cx)
+        self.send_inner(message, false, None, cx)
     }
 
     fn send_inner(
         &mut self,
         message: Vec<acp_v1::ContentBlock>,
         push_user_message: bool,
+        mcp_selection: Option<McpServerSelection>,
         cx: &mut Context<Self>,
     ) -> BoxFuture<'static, Result<Option<acp_v1::PromptResponse>>> {
         let language_registry = self.project.read(cx).languages().clone();
@@ -5407,6 +5417,13 @@ impl AcpThread {
             .map(|client_user_message_ids| client_user_message_ids.new_id());
 
         self.run_turn(cx, async move |this, cx| {
+            if let Some(selection) = mcp_selection {
+                this.update(cx, |this, cx| {
+                    this.connection
+                        .set_mcp_selection(&this.session_id, selection, cx)
+                })?
+                .await?;
+            }
             if push_user_message {
                 this.update(cx, |this, cx| {
                     this.push_entry(

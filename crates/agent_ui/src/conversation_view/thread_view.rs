@@ -604,6 +604,13 @@ pub struct ThreadView {
     brainz_mcp_reconnecting: Option<String>,
     brainz_mcp_connect_pending: Option<&'static brainz_calendar::mcp::HostedConnector>,
     brainz_mcp_connect_error: Option<SharedString>,
+    pub(super) selected_mcp_servers: Option<HashSet<String>>,
+    known_mcp_servers: Vec<String>,
+    mcp_picker_open: bool,
+    mcp_picker_dismissed_at: Option<std::time::Instant>,
+    mcp_picker_loading: bool,
+    mcp_picker_error: Option<SharedString>,
+    _mcp_picker_task: Option<Task<()>>,
     brainz_permissions_dismissed: bool,
     brainz_permissions_writing: bool,
     _brainz_mcp_task: Option<Task<()>>,
@@ -1046,6 +1053,13 @@ impl ThreadView {
             brainz_mcp_reconnecting: None,
             brainz_mcp_connect_pending: None,
             brainz_mcp_connect_error: None,
+            selected_mcp_servers: None,
+            known_mcp_servers: Vec::new(),
+            mcp_picker_open: false,
+            mcp_picker_dismissed_at: None,
+            mcp_picker_loading: false,
+            mcp_picker_error: None,
+            _mcp_picker_task: None,
             brainz_permissions_dismissed: false,
             brainz_permissions_writing: false,
             _brainz_mcp_task: None,
@@ -1731,6 +1745,26 @@ impl ThreadView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let selection = self.mcp_selection(cx);
+        self.send_content_with_mcp_selection(
+            contents_task,
+            is_native_command,
+            selection,
+            window,
+            cx,
+        );
+    }
+
+    fn send_content_with_mcp_selection(
+        &mut self,
+        contents_task: Task<
+            anyhow::Result<Option<(Vec<acp_v1::ContentBlock>, Vec<Entity<Buffer>>)>>,
+        >,
+        is_native_command: bool,
+        mcp_selection: acp_thread::McpServerSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let session_id = self.thread.read(cx).session_id().clone();
         let parent_session_id = self.thread.read(cx).parent_session_id().cloned();
         let agent_telemetry_id = self.thread.read(cx).connection().telemetry_id();
@@ -1825,7 +1859,7 @@ impl ThreadView {
                 if is_native_command {
                     thread.send_command(contents, cx)
                 } else {
-                    thread.send(contents, cx)
+                    thread.send_with_mcp_selection(contents, mcp_selection, cx)
                 }
             })?;
 
@@ -2199,6 +2233,7 @@ impl ThreadView {
         }
 
         let contents = self.resolve_message_contents(&message_editor, cx);
+        let selection = self.mcp_selection(cx);
 
         cx.spawn_in(window, async move |this, cx| {
             let (content, tracked_buffers) = contents.await?;
@@ -2208,7 +2243,13 @@ impl ThreadView {
             }
 
             this.update_in(cx, |this, window, cx| {
-                this.add_to_queue(content, tracked_buffers, window, cx);
+                this.add_to_queue_with_mcp_selection(
+                    content,
+                    tracked_buffers,
+                    selection,
+                    window,
+                    cx,
+                );
                 message_editor.update(cx, |message_editor, cx| {
                     message_editor.clear(window, cx);
                 });
@@ -2223,6 +2264,18 @@ impl ThreadView {
         &mut self,
         content: Vec<acp_v1::ContentBlock>,
         tracked_buffers: Vec<Entity<Buffer>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let selection = self.mcp_selection(cx);
+        self.add_to_queue_with_mcp_selection(content, tracked_buffers, selection, window, cx);
+    }
+
+    fn add_to_queue_with_mcp_selection(
+        &mut self,
+        content: Vec<acp_v1::ContentBlock>,
+        tracked_buffers: Vec<Entity<Buffer>>,
+        mcp_selection: acp_thread::McpServerSelection,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2259,6 +2312,7 @@ impl ThreadView {
             id,
             content,
             tracked_buffers,
+            mcp_selection,
             steer: false,
             editor,
             _subscription: subscription,
@@ -2416,7 +2470,13 @@ impl ThreadView {
             Ok(Some((content, tracked_buffers)))
         });
 
-        self.send_content(contents_task, is_native_command, window, cx);
+        self.send_content_with_mcp_selection(
+            contents_task,
+            is_native_command,
+            entry.mcp_selection,
+            window,
+            cx,
+        );
     }
 
     pub fn move_queued_message_to_main_editor(
@@ -2431,6 +2491,7 @@ impl ThreadView {
             return false;
         };
         let queued_content = queued_message.content;
+        self.selected_mcp_servers = queued_message.mcp_selection.selected;
         let message_editor = self.message_editor.clone();
 
         window.focus(&message_editor.focus_handle(cx), cx);
@@ -4386,6 +4447,152 @@ impl ThreadView {
         )
     }
 
+    fn mcp_selection(&self, cx: &App) -> acp_thread::McpServerSelection {
+        let mut available = self.known_mcp_servers.clone();
+        if let Some(project) = self
+            .project
+            .upgrade()
+            .filter(|_| self.as_native_thread(cx).is_some())
+        {
+            available.extend(
+                project
+                    .read(cx)
+                    .context_server_store()
+                    .read(cx)
+                    .configured_server_ids()
+                    .iter()
+                    .map(|id| id.0.to_string()),
+            );
+        }
+        available.sort();
+        available.dedup();
+        acp_thread::McpServerSelection {
+            selected: self.selected_mcp_servers.clone(),
+            available,
+        }
+    }
+
+    fn refresh_mcp_servers(&mut self, cx: &mut Context<Self>) {
+        let client = match self.agent_id.0.as_ref() {
+            "claude-acp" => Some(brainz_calendar::mcp::McpClient::Claude),
+            "codex-acp" => Some(brainz_calendar::mcp::McpClient::Codex),
+            _ => None,
+        };
+        self.known_mcp_servers = client
+            .map(brainz_calendar::mcp::server_names_for)
+            .unwrap_or_default();
+        self.mcp_picker_loading = true;
+        self.mcp_picker_error = None;
+        let connection = self.thread.read(cx).connection().clone();
+        let task = connection.mcp_servers(&self.session_id, cx);
+        self._mcp_picker_task = Some(cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.mcp_picker_loading = false;
+                match result {
+                    Ok(Some(names)) => this.known_mcp_servers = names,
+                    Ok(None) => {}
+                    Err(error) => {
+                        this.mcp_picker_error = Some(format!("Could not load MCPs: {error}").into())
+                    }
+                }
+                cx.notify();
+            })
+            .log_err();
+        }));
+    }
+
+    fn render_mcp_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let selection = self.mcp_selection(cx);
+        let supported = self.thread.read(cx).connection().supports_mcp_selection();
+        let label = if !supported {
+            "MCPs".to_owned()
+        } else {
+            match &selection.selected {
+                None => "MCPs: All".to_owned(),
+                Some(selected) if selected.is_empty() => "MCPs: None".to_owned(),
+                Some(_) => format!(
+                    "MCPs: {}/{}",
+                    selection
+                        .available
+                        .iter()
+                        .filter(|server| selection.includes(server))
+                        .count(),
+                    selection.available.len()
+                ),
+            }
+        };
+        div().relative().debug_selector(|| "brainz-mcp-picker".into())
+            .child(Button::new("mcp-picker", label)
+                .label_size(LabelSize::Small)
+                .toggle_state(self.mcp_picker_open || selection.selected.is_some())
+                .tooltip(Tooltip::text("Choose the MCP tools available for your next message"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let just_dismissed = this.mcp_picker_dismissed_at.take()
+                        .is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(300));
+                    if !just_dismissed {
+                        this.mcp_picker_open = !this.mcp_picker_open;
+                    }
+                    if this.mcp_picker_open {
+                        this.refresh_mcp_servers(cx);
+                    }
+                    cx.notify();
+                })))
+            .when(self.mcp_picker_open, |container| container.child(
+                div().absolute().top_0().left_0().child(gpui::deferred(
+                    gpui::anchored().anchor(gpui::Anchor::BottomLeft)
+                        .offset(gpui::point(px(0.), px(-8.)))
+                        .snap_to_window_with_margin(px(8.))
+                        .child(v_flex().id("mcp-picker-panel").occlude()
+                            .w(px(300.)).p_3().gap_2().rounded_lg().border_1()
+                            .border_color(cx.theme().colors().border)
+                            .bg(cx.theme().colors().elevated_surface_background).shadow_lg()
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                this.mcp_picker_open = false;
+                                this.mcp_picker_dismissed_at = Some(std::time::Instant::now());
+                                cx.notify();
+                            }))
+                            .child(Label::new("MCPs for this message"))
+                            .child(div().text_sm().text_color(cx.theme().colors().text_muted)
+                                .child(if supported {
+                                    "Only selected integrations provide tools. Your saved connections and sign-ins stay in place."
+                                } else {
+                                    "This agent does not yet support choosing MCPs per message."
+                                }))
+                            .when(self.mcp_picker_loading, |panel| panel.child(Label::new("Loading MCPs…").color(Color::Muted)))
+                            .when_some(self.mcp_picker_error.clone(), |panel, error| panel.child(div().text_sm().child(error)))
+                            .when(supported && !self.mcp_picker_loading && self.mcp_picker_error.is_none(), |panel| panel
+                                .child(h_flex().gap_2()
+                                    .child(Button::new("mcp-all", "All").on_click(cx.listener(|this, _, _, cx| {
+                                        this.selected_mcp_servers = None;
+                                        cx.notify();
+                                    })))
+                                    .child(Button::new("mcp-none", "None").on_click(cx.listener(|this, _, _, cx| {
+                                        this.selected_mcp_servers = Some(HashSet::default());
+                                        cx.notify();
+                                    }))))
+                                .child(v_flex().id("mcp-picker-servers").max_h(px(280.)).overflow_y_scroll()
+                                    .children(selection.available.iter().enumerate().map(|(index, server)| {
+                                        let enabled = selection.includes(server);
+                                        let server = server.clone();
+                                        Button::new(("mcp-server", index), server.clone())
+                                            .full_width().label_size(LabelSize::Small)
+                                            .toggle_state(enabled)
+                                            .when(enabled, |button| button.end_icon(Icon::new(IconName::Check).size(IconSize::Small)))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                let all = this.mcp_selection(cx).available;
+                                                let selected = this.selected_mcp_servers.get_or_insert_with(|| all.into_iter().collect());
+                                                if !selected.remove(&server) { selected.insert(server.clone()); }
+                                                cx.notify();
+                                            }))
+                                    })))
+                                .when(selection.available.is_empty(), |panel| panel.child(Label::new("No MCPs configured").color(Color::Muted)))
+                            )
+                        )
+                ).with_priority(2))
+            ))
+    }
+
     pub(crate) fn render_message_editor(
         &mut self,
         window: &mut Window,
@@ -4477,6 +4684,7 @@ impl ThreadView {
                                     .flex_wrap()
                                     .gap_0p5()
                                     .child(self.render_add_context_button(cx))
+                                    .child(self.render_mcp_picker(cx))
                                     .child(
                                         // Brainz: the options drawer pops up above this
                                         // toggle, like the "+" menu.
