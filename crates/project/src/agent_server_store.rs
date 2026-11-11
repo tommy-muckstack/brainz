@@ -431,6 +431,7 @@ impl AgentServerStore {
                                         distribution_env: agent.env.clone(),
                                         settings_env: env.clone(),
                                         new_version_available_tx: None,
+                                        loading_status_tx: None,
                                     })
                                         as Box<dyn ExternalAgentServer>,
                                     ExternalAgentSource::Registry,
@@ -1594,6 +1595,7 @@ struct LocalRegistryNpxAgent {
     distribution_env: HashMap<String, String>,
     settings_env: HashMap<String, String>,
     new_version_available_tx: Option<watch::Sender<Option<String>>>,
+    loading_status_tx: Option<watch::Sender<Option<String>>>,
 }
 
 impl ExternalAgentServer for LocalRegistryNpxAgent {
@@ -1607,6 +1609,14 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
 
     fn set_new_version_available_tx(&mut self, tx: watch::Sender<Option<String>>) {
         self.new_version_available_tx = Some(tx);
+    }
+
+    fn take_loading_status_tx(&mut self) -> Option<watch::Sender<Option<String>>> {
+        self.loading_status_tx.take()
+    }
+
+    fn set_loading_status_tx(&mut self, tx: watch::Sender<Option<String>>) {
+        self.loading_status_tx = Some(tx);
     }
 
     fn get_command(
@@ -1623,8 +1633,13 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
         let args = self.args.clone();
         let distribution_env = self.distribution_env.clone();
         let settings_env = self.settings_env.clone();
+        let mut loading_status_tx = self.loading_status_tx.take();
 
         cx.spawn(async move |cx| {
+            if let Some(tx) = loading_status_tx.as_mut() {
+                tx.send(Some("Preparing agent…".to_owned())).log_err();
+            }
+
             let mut env = project_environment
                 .update(cx, |project_environment, cx| {
                     project_environment.default_environment(cx)
@@ -1639,6 +1654,9 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
             fs.create_dir(&install_dir).await?;
 
             let (package_name, package_spec) = bounded_npm_package_spec(&package);
+            if let Some(tx) = loading_status_tx.as_mut() {
+                tx.send(Some("Installing agent…".to_owned())).log_err();
+            }
             node_runtime
                 .run_npm_subcommand(
                     Some(&install_dir),
@@ -1655,6 +1673,9 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
                     ],
                 )
                 .await?;
+            if let Some(tx) = loading_status_tx.as_mut() {
+                tx.send(Some("Starting agent…".to_owned())).log_err();
+            }
             let executable = node_runtime::read_package_executable(
                 install_dir.join("node_modules"),
                 package_name,
@@ -2593,6 +2614,42 @@ mod tests {
                 "tx should have been transferred to the rebuilt agent"
             );
         });
+    }
+
+    #[gpui::test]
+    fn test_same_version_preserves_npx_loading_status(cx: &mut TestAppContext) {
+        init_test_settings(cx);
+        let registry = init_registry(cx, vec![make_npx_agent("test-agent", "1.0.0")]);
+        set_registry_settings(cx, &["test-agent"]);
+        let store = create_agent_server_store(cx);
+
+        let (loading_status_tx, mut loading_status_rx) = watch::channel(None);
+        store.update(cx, |store, _| {
+            store
+                .get_external_agent(&AgentId::new("test-agent"))
+                .expect("agent should be registered")
+                .set_loading_status_tx(loading_status_tx);
+        });
+
+        registry.update(cx, |store, cx| {
+            store.set_agents(vec![make_npx_agent("test-agent", "1.0.0")], cx);
+        });
+        cx.run_until_parked();
+
+        store.update(cx, |store, _| {
+            let mut loading_status_tx = store
+                .get_external_agent(&AgentId::new("test-agent"))
+                .expect("agent should be registered")
+                .take_loading_status_tx()
+                .expect("loading status channel should survive a registry refresh");
+            loading_status_tx
+                .send(Some("Installing agent…".to_owned()))
+                .expect("loading status receiver should remain connected");
+        });
+        assert_eq!(
+            loading_status_rx.borrow().as_deref(),
+            Some("Installing agent…")
+        );
     }
 
     #[gpui::test]
