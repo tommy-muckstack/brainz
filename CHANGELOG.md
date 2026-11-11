@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.62 (2026-11-10)
+
 ### Fixed
 
 - Claude startup: use its Node adapter when both package types are available, preserving MCP selection and avoiding the stalled binary download. Agent downloads now have a completion timeout and reject HTTP error responses; package installs use bounded network retries.
