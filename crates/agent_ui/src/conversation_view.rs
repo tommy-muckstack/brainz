@@ -3595,6 +3595,9 @@ impl Render for ConversationView {
                 v_flex()
                     .flex_1()
                     .size_full()
+                    .gap_2()
+                    .px_4()
+                    .text_center()
                     .items_center()
                     .justify_center()
                     .child(
@@ -3605,6 +3608,13 @@ impl Render for ConversationView {
                                 .with_easing(pulsating_between(0.3, 0.7)),
                             |label, delta| label.alpha(delta),
                         ),
+                    )
+                    .child(
+                        Label::new(
+                            "Agent updates may take several minutes to download. Keep Brainz open.",
+                        )
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
                     )
                     .into_any()
             }
