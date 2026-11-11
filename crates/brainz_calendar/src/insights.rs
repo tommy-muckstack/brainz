@@ -127,6 +127,7 @@ pub(crate) fn todo_context(
         "open_tasks": board.sections.iter().flat_map(|section| section.items.iter().filter(|item| !item.done).map(move |item| json!({
             "section": bounded(&section.name, 100), "task": bounded(&item.title, 350),
             "tag": item.tag.as_deref().map(|v| bounded(v, 100)),
+            "due": item.due.map(|date| date.to_string()),
             "note": item.note.as_deref().map(|v| bounded(v, 200)),
         }))).take(24).collect::<Vec<_>>(),
         "flagged_in_notes": loop_context(loops),
@@ -161,7 +162,7 @@ impl Render for Insight {
                 backend.cached.clone(),
             )
         };
-        if !enabled {
+        if !enabled || (feature == Feature::Themes && error.is_some() && cached.is_none()) {
             return div().into_any_element();
         }
         let cached = cached.as_ref();
@@ -225,18 +226,21 @@ impl Render for Insight {
                     crate::brief::BriefView::narrative_style(window, cx),
                 ))
             })
-            .when_some(error, |this, error| {
-                this.child(
-                    h_flex()
-                        .gap_2()
-                        .child(Label::new(error).size(LabelSize::Small).color(Color::Muted))
-                        .child(
-                            Button::new("retry-background-ai", "Retry")
-                                .label_size(LabelSize::Small)
-                                .on_click(cx.listener(|this, _, _, cx| this.retry(cx))),
-                        ),
-                )
-            })
+            .when_some(
+                error.filter(|_| feature != Feature::Themes),
+                |this, error| {
+                    this.child(
+                        h_flex()
+                            .gap_2()
+                            .child(Label::new(error).size(LabelSize::Small).color(Color::Muted))
+                            .child(
+                                Button::new("retry-background-ai", "Retry")
+                                    .label_size(LabelSize::Small)
+                                    .on_click(cx.listener(|this, _, _, cx| this.retry(cx))),
+                            ),
+                    )
+                },
+            )
             .when(outdated && !running && error.is_none(), |this| {
                 this.child(
                     h_flex()

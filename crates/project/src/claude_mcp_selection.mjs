@@ -1,4 +1,4 @@
-import { readFile, realpath } from 'node:fs/promises';
+import { access, readFile, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -79,7 +79,14 @@ export function installMcpSelection(Agent) {
 if (process.env.BRAINZ_CLAUDE_MCP_PICKER === '1') {
   try {
     const entry = pathToFileURL(await realpath(process.argv[1]));
-    const { ClaudeAcpAgent } = await import(new URL('./acp-agent.js', entry));
+    let module = new URL('./acp-agent.js', entry);
+    try {
+      await access(module);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      module = new URL('./v1/acp-agent.js', entry);
+    }
+    const { ClaudeAcpAgent } = await import(module);
     installMcpSelection(ClaudeAcpAgent);
   } catch (error) {
     console.error(`Brainz MCP picker unavailable: ${error.message}`);

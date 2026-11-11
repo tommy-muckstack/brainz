@@ -607,7 +607,6 @@ pub struct ThreadView {
     pub(super) selected_mcp_servers: Option<HashSet<String>>,
     known_mcp_servers: Vec<String>,
     mcp_picker_open: bool,
-    mcp_picker_dismissed_at: Option<std::time::Instant>,
     mcp_picker_loading: bool,
     mcp_picker_error: Option<SharedString>,
     _mcp_picker_task: Option<Task<()>>,
@@ -1056,7 +1055,6 @@ impl ThreadView {
             selected_mcp_servers: None,
             known_mcp_servers: Vec::new(),
             mcp_picker_open: false,
-            mcp_picker_dismissed_at: None,
             mcp_picker_loading: false,
             mcp_picker_error: None,
             _mcp_picker_task: None,
@@ -4505,39 +4503,7 @@ impl ThreadView {
     fn render_mcp_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let selection = self.mcp_selection(cx);
         let supported = self.thread.read(cx).connection().supports_mcp_selection();
-        let label = if !supported {
-            "MCPs".to_owned()
-        } else {
-            match &selection.selected {
-                None => "MCPs: All".to_owned(),
-                Some(selected) if selected.is_empty() => "MCPs: None".to_owned(),
-                Some(_) => format!(
-                    "MCPs: {}/{}",
-                    selection
-                        .available
-                        .iter()
-                        .filter(|server| selection.includes(server))
-                        .count(),
-                    selection.available.len()
-                ),
-            }
-        };
-        div().relative().debug_selector(|| "brainz-mcp-picker".into())
-            .child(Button::new("mcp-picker", label)
-                .label_size(LabelSize::Small)
-                .toggle_state(self.mcp_picker_open || selection.selected.is_some())
-                .tooltip(Tooltip::text("Choose the MCP tools available for your next message"))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    let just_dismissed = this.mcp_picker_dismissed_at.take()
-                        .is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(300));
-                    if !just_dismissed {
-                        this.mcp_picker_open = !this.mcp_picker_open;
-                    }
-                    if this.mcp_picker_open {
-                        this.refresh_mcp_servers(cx);
-                    }
-                    cx.notify();
-                })))
+        div().absolute().top_0().left_0().debug_selector(|| "brainz-mcp-picker".into())
             .when(self.mcp_picker_open, |container| container.child(
                 div().absolute().top_0().left_0().child(gpui::deferred(
                     gpui::anchored().anchor(gpui::Anchor::BottomLeft)
@@ -4549,7 +4515,6 @@ impl ThreadView {
                             .bg(cx.theme().colors().elevated_surface_background).shadow_lg()
                             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                                 this.mcp_picker_open = false;
-                                this.mcp_picker_dismissed_at = Some(std::time::Instant::now());
                                 cx.notify();
                             }))
                             .child(Label::new("MCPs for this message"))
@@ -4686,8 +4651,11 @@ impl ThreadView {
                                     .min_w_0()
                                     .flex_wrap()
                                     .gap_0p5()
-                                    .child(self.render_add_context_button(cx))
-                                    .child(self.render_mcp_picker(cx))
+                                    .child(
+                                        div().relative()
+                                            .child(self.render_add_context_button(cx))
+                                            .child(self.render_mcp_picker(cx)),
+                                    )
                                     .child(
                                         // Brainz: the options drawer pops up above this
                                         // toggle, like the "+" menu.
@@ -5876,7 +5844,11 @@ impl ThreadView {
             })
             .menu(move |window, cx| {
                 weak_self
-                    .update(cx, |this, cx| this.build_add_context_menu(window, cx))
+                    .update(cx, |this, cx| {
+                        this.mcp_picker_open = false;
+                        cx.notify();
+                        this.build_add_context_menu(window, cx)
+                    })
                     .ok()
             })
     }
@@ -6135,8 +6107,44 @@ impl ThreadView {
 
         let has_selection = has_editor_selection || has_terminal_selection;
 
+        let mcp_selection = self.mcp_selection(cx);
+        let mcp_label = if !self.thread.read(cx).connection().supports_mcp_selection() {
+            "MCPs".to_owned()
+        } else {
+            match &mcp_selection.selected {
+                None => "MCPs: All".to_owned(),
+                Some(selected) if selected.is_empty() => "MCPs: None".to_owned(),
+                Some(_) => format!(
+                    "MCPs: {}/{}",
+                    mcp_selection
+                        .available
+                        .iter()
+                        .filter(|server| mcp_selection.includes(server))
+                        .count(),
+                    mcp_selection.available.len(),
+                ),
+            }
+        };
+        let thread_view = cx.weak_entity();
+
         ContextMenu::build(window, cx, move |menu, _window, _cx| {
             menu.key_context("AddContextMenu")
+                .item(
+                    ContextMenuEntry::new(mcp_label)
+                        .icon(IconName::Server)
+                        .icon_color(Color::Muted)
+                        .icon_size(IconSize::XSmall)
+                        .handler(move |_, cx| {
+                            thread_view
+                                .update(cx, |this, cx| {
+                                    this.mcp_picker_open = true;
+                                    this.refresh_mcp_servers(cx);
+                                    cx.notify();
+                                })
+                                .log_err();
+                        }),
+                )
+                .separator()
                 .item(
                     ContextMenuEntry::new("Files & Directories")
                         .icon(IconName::File)

@@ -444,7 +444,9 @@ async fn build_registry_agents(
 
         let agent = match (binary_agent, npx_agent) {
             (Some(binary_agent), Some(npx_agent)) => {
-                if binary_agent.supports_current_platform {
+                // Claude's MCP selection bridge is a Node preload; the bundled
+                // executable cannot load it even when a native build is available.
+                if binary_agent.supports_current_platform && metadata.id.as_ref() != "claude-acp" {
                     RegistryAgent::Binary(binary_agent)
                 } else {
                     RegistryAgent::Npx(npx_agent)
@@ -682,4 +684,44 @@ struct RegistryNpxDistribution {
     args: Vec<String>,
     #[serde(default)]
     env: HashMap<String, String>,
+}
+
+#[cfg(all(test, feature = "test-support"))]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    async fn claude_uses_node_distribution_when_registry_also_offers_binary(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let platform = current_platform_key().expect("supported test platform");
+        let entries = ["claude-acp", "another-agent"].map(|id| serde_json::json!({
+            "id": id,
+            "name": id,
+            "version": "0.103.0",
+            "description": "Test agent",
+            "distribution": {
+                "binary": {platform: {"archive": "https://example.test/agent.zip", "cmd": "./agent"}},
+                "npx": {"package": format!("{id}@0.103.0")}
+            }
+        }));
+        let index = serde_json::from_value(serde_json::json!({
+            "version": "1", "agents": entries
+        }))
+        .unwrap();
+        let agents = build_registry_agents(
+            fs::FakeFs::new(cx.executor()),
+            http_client::FakeHttpClient::with_404_response(),
+            index,
+            Vec::new(),
+            false,
+            &cx.background_executor,
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(&agents[0], RegistryAgent::Npx(agent) if agent.package.as_ref() == "claude-acp@0.103.0")
+        );
+        assert!(matches!(&agents[1], RegistryAgent::Binary(_)));
+    }
 }

@@ -1643,7 +1643,16 @@ impl ExternalAgentServer for LocalRegistryNpxAgent {
                 .run_npm_subcommand(
                     Some(&install_dir),
                     "install",
-                    &[package_spec.as_str(), "--save-exact"],
+                    &[
+                        package_spec.as_str(),
+                        "--save-exact",
+                        "--no-audit",
+                        "--no-fund",
+                        "--fetch-retries=2",
+                        "--fetch-retry-mintimeout=2000",
+                        "--fetch-retry-maxtimeout=5000",
+                        "--fetch-timeout=30000",
+                    ],
                 )
                 .await?;
             let executable = node_runtime::read_package_executable(

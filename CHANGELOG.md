@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- Claude startup: use its Node adapter when both package types are available, preserving MCP selection and avoiding the stalled binary download. Agent downloads now have a completion timeout and reject HTTP error responses; package installs use bounded network retries.
+
+### Improved
+
+- To-Do: sort within groups by due date, priority, title, or manual order; create and rename groups; move tasks with visible drag handles or the Move to group menu; set, change, and clear due dates. Moving a task into Done completes it, and moving it out reopens it.
+- Chat: MCP selection now lives in the composer's + menu, with the current selection shown in the menu entry.
+- Themes: failed automatic insights no longer display an API-key error banner. Previously generated insights remain visible.
+
 ## 0.1.61 (2026-11-09)
 
 ### Added

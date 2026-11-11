@@ -2,6 +2,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     task::Poll,
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -9,7 +10,26 @@ use async_compression::futures::bufread::{BzDecoder, GzipDecoder};
 use futures::{AsyncRead, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt, io::BufReader};
 use sha2::{Digest, Sha256};
 
-use crate::{HttpClient, github::AssetKind};
+use crate::{
+    AsyncBody, HttpClient, HttpRequestExt, RedirectPolicy, Request, Response, github::AssetKind,
+};
+
+async fn download_response(http_client: &dyn HttpClient, url: &str) -> Result<Response<AsyncBody>> {
+    let request = Request::get(url)
+        .follow_redirects(RedirectPolicy::FollowAll)
+        .timeout(Duration::from_secs(300))
+        .body(AsyncBody::default())?;
+    let response = http_client
+        .send(request)
+        .await
+        .with_context(|| format!("downloading release from {url}"))?;
+    anyhow::ensure!(
+        response.status().is_success(),
+        "Download failed with HTTP {} from {url}",
+        response.status()
+    );
+    Ok(response)
+}
 
 fn sha256_matches(actual: &str, expected: &str) -> bool {
     actual.eq_ignore_ascii_case(expected)
@@ -52,11 +72,8 @@ pub async fn download_server_binary(
         anyhow::bail!("destination path has no parent: {destination_path:?}");
     };
 
+    let mut response = download_response(http_client, url).await?;
     let staging_path = staging_path(destination_parent, asset_kind)?;
-    let mut response = http_client
-        .get(url, Default::default(), true)
-        .await
-        .with_context(|| format!("downloading release from {url}"))?;
     let body = response.body_mut();
 
     if let Err(err) = extract_to_staging(body, digest, url, &staging_path, asset_kind).await {
@@ -86,10 +103,7 @@ pub async fn download_server_raw_binary(
 
     let staging_path = staging_dir_path(destination_parent)?;
     let result = async {
-        let mut response = http_client
-            .get(url, Default::default(), true)
-            .await
-            .with_context(|| format!("downloading release from {url}"))?;
+        let mut response = download_response(http_client, url).await?;
 
         let binary_path = staging_path.join(binary_file_name);
         let mut writer = HashingWriter {
@@ -381,6 +395,7 @@ mod tests {
 
     struct StaticResponseClient {
         body: Vec<u8>,
+        status: u16,
     }
 
     impl HttpClient for StaticResponseClient {
@@ -389,9 +404,10 @@ mod tests {
             _req: http::Request<AsyncBody>,
         ) -> BoxFuture<'static, anyhow::Result<Response<AsyncBody>>> {
             let body = self.body.clone();
+            let status = self.status;
             Box::pin(async move {
                 Ok(Response::builder()
-                    .status(200)
+                    .status(status)
                     .body(AsyncBody::from(body))
                     .unwrap())
             })
@@ -407,13 +423,51 @@ mod tests {
     }
 
     #[test]
+    fn failed_http_response_never_installs_an_error_page_or_leaves_staging() {
+        futures::executor::block_on(async {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let destination = temp_dir.path().join("agent");
+            let client = StaticResponseClient {
+                body: b"Service Unavailable".to_vec(),
+                status: 503,
+            };
+            let error = download_server_raw_binary(
+                &client,
+                "https://example.test/agent",
+                None,
+                &destination,
+                "agent",
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains("503"));
+            assert!(!destination.exists());
+            let error = download_server_binary(
+                &client,
+                "https://example.test/agent.zip",
+                None,
+                &destination,
+                AssetKind::Zip,
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains("503"));
+            assert!(!destination.exists());
+            assert_eq!(std::fs::read_dir(temp_dir.path()).unwrap().count(), 0);
+        });
+    }
+
+    #[test]
     fn downloads_raw_binary_with_uppercase_digest_into_destination_dir() {
         futures::executor::block_on(async {
             let temp_dir = tempfile::tempdir().unwrap();
             let destination_path = temp_dir.path().join("v_1");
             let contents = b"#!/bin/sh\necho hello\n".to_vec();
             let expected_sha_256 = format!("{:X}", Sha256::digest(&contents));
-            let client = StaticResponseClient { body: contents };
+            let client = StaticResponseClient {
+                body: contents,
+                status: 200,
+            };
 
             download_server_raw_binary(
                 &client,
@@ -449,6 +503,7 @@ mod tests {
             let destination_path = temp_dir.path().join("v_1");
             let client = StaticResponseClient {
                 body: b"some binary".to_vec(),
+                status: 200,
             };
 
             let error = download_server_raw_binary(
@@ -483,7 +538,10 @@ mod tests {
                 0x00,
             ];
             let expected_sha_256 = format!("{:X}", Sha256::digest(&archive));
-            let client = StaticResponseClient { body: archive };
+            let client = StaticResponseClient {
+                body: archive,
+                status: 200,
+            };
             let temp_dir = tempfile::tempdir().unwrap();
             let destination_path = temp_dir.path().join("v_1");
 
@@ -511,6 +569,7 @@ mod tests {
             let destination_path = temp_dir.path().join("v_1");
             let client = StaticResponseClient {
                 body: b"not an archive".to_vec(),
+                status: 200,
             };
 
             let error = download_server_binary(

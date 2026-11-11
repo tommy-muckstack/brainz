@@ -14,13 +14,14 @@ use std::{
 };
 
 use anyhow::{Context as _, Result};
-use chrono::Local;
+use chrono::{Local, NaiveDate};
 use editor::{Editor, EditorEvent};
 use gpui::{
     App, Entity, EventEmitter, FocusHandle, Focusable, Subscription, Task, WeakEntity, Window,
     actions,
 };
 use ui::{ContextMenu, PopoverMenu, Tooltip, prelude::*};
+use util::ResultExt as _;
 use workspace::{Item, OpenOptions, OpenVisible, Workspace};
 
 use crate::{
@@ -104,6 +105,8 @@ pub(crate) struct TodoItem {
     pub(crate) title: String,
     pub(crate) tag: Option<String>,
     pub(crate) note: Option<String>,
+    pub(crate) due: Option<NaiveDate>,
+    completed: Option<NaiveDate>,
 }
 
 impl TodoItem {
@@ -121,8 +124,14 @@ impl TodoItem {
         if let Some(tag) = &self.tag {
             line.push_str(&format!(" `{tag}`"));
         }
+        if let Some(due) = self.due {
+            line.push_str(&format!(" (due {due})"));
+        }
         if let Some(note) = &self.note {
             line.push_str(&format!(" ({note})"));
+        }
+        if let Some(completed) = self.completed {
+            line.push_str(&format!(" ({completed})"));
         }
         line
     }
@@ -153,11 +162,32 @@ fn parse_item(line: &str, index: usize) -> Option<TodoItem> {
         .or_else(|| trimmed.strip_prefix("- [X] ").map(|rest| (true, rest)))?;
     let (done, body) = rest;
     let mut body = body.trim().to_owned();
+    let mut completed = None;
+    if body.ends_with(')')
+        && let Some(open) = body.rfind(" (")
+        && let Ok(date) = NaiveDate::parse_from_str(&body[open + 2..body.len() - 1], "%Y-%m-%d")
+    {
+        completed = Some(date);
+        body.truncate(open);
+    }
     let mut note = None;
+    let mut due = None;
     if body.ends_with(')')
         && let Some(open) = body.rfind(" (")
     {
-        note = Some(body[open + 2..body.len() - 1].to_owned());
+        let value = &body[open + 2..body.len() - 1];
+        due = parse_due_note(value);
+        if due.is_none() {
+            note = Some(value.to_owned());
+        }
+        body.truncate(open);
+    }
+    if due.is_none()
+        && body.ends_with(')')
+        && let Some(open) = body.rfind(" (")
+        && let Some(date) = parse_due_note(&body[open + 2..body.len() - 1])
+    {
+        due = Some(date);
         body.truncate(open);
     }
     let mut tag = None;
@@ -184,7 +214,75 @@ fn parse_item(line: &str, index: usize) -> Option<TodoItem> {
         title: title.to_owned(),
         tag,
         note,
+        due,
+        completed,
     })
+}
+
+fn parse_due_note(note: &str) -> Option<NaiveDate> {
+    note.strip_prefix("due ")
+        .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TodoSort {
+    Manual,
+    DueDate,
+    Priority,
+    Title,
+}
+
+impl TodoSort {
+    const ALL: [Self; 4] = [Self::Manual, Self::DueDate, Self::Priority, Self::Title];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Manual => "Manual order",
+            Self::DueDate => "Due date",
+            Self::Priority => "Priority",
+            Self::Title => "Title",
+        }
+    }
+
+    fn sort(self, items: &mut Vec<&TodoItem>) {
+        match self {
+            Self::Manual => items.sort_by_key(|item| item.line),
+            Self::DueDate => {
+                items.sort_by_key(|item| (item.done, item.due.is_none(), item.due, item.line))
+            }
+            Self::Priority => items.sort_by_key(|item| {
+                (
+                    item.done,
+                    match item.priority {
+                        Some(Priority::High) => 0,
+                        Some(Priority::Medium) => 1,
+                        Some(Priority::Low) => 2,
+                        None => 3,
+                    },
+                    item.line,
+                )
+            }),
+            Self::Title => {
+                items.sort_by_key(|item| (item.done, item.title.to_lowercase(), item.line))
+            }
+        }
+    }
+}
+
+fn add_section(text: &str, name: &str) -> Result<String> {
+    let name = name.trim();
+    anyhow::ensure!(
+        !name.is_empty() && !name.contains(['\n', '\r']),
+        "Enter a group name"
+    );
+    anyhow::ensure!(
+        !parse_board(text)
+            .sections
+            .iter()
+            .any(|section| section.name.eq_ignore_ascii_case(name)),
+        "A group with that name already exists"
+    );
+    Ok(format!("{}\n\n## {name}\n", text.trim_end()))
 }
 
 pub(crate) fn parse_board(text: &str) -> TodoBoard {
@@ -283,20 +381,11 @@ fn ensure_line(lines: &[String], line_index: usize, expected: &str) -> Result<()
 fn toggle_line(text: &str, line_index: usize, expected: &str) -> Result<String> {
     let mut lines = lines_of(text);
     ensure_line(&lines, line_index, expected)?;
-    let line = lines[line_index].clone();
-    let trimmed = line.trim_start();
-    let indent = &line[..line.len() - trimmed.len()];
-    if let Some(rest) = trimmed.strip_prefix("- [ ] ") {
-        let today = chrono::Local::now().format("%Y-%m-%d");
-        lines[line_index] = format!("{indent}- [x] {} ({today})", rest.trim_end());
-    } else if let Some(rest) = trimmed
-        .strip_prefix("- [x] ")
-        .or_else(|| trimmed.strip_prefix("- [X] "))
-    {
-        lines[line_index] = format!("{indent}- [ ] {rest}");
-    } else {
-        anyhow::bail!("that line is not a to-do item any more; refresh and try again");
-    }
+    let mut item =
+        parse_item(expected, line_index).context("that line is no longer a to-do item")?;
+    item.done = !item.done;
+    item.completed = item.done.then(|| Local::now().date_naive());
+    lines[line_index] = item.line_with(item.priority, &item.title);
     Ok(join_lines(lines, text))
 }
 
@@ -364,7 +453,32 @@ fn move_line(text: &str, from: usize, expected: &str, target: &DropTarget) -> Re
             STALE_BOARD
         ),
     }
-    let moved = lines.remove(from);
+    let target_line = match target {
+        DropTarget::Before { line, .. } | DropTarget::EndOfSection { line } => *line,
+    };
+    let section_name = |line: usize| {
+        lines
+            .iter()
+            .take(line + 1)
+            .rev()
+            .find_map(|line| line.strip_prefix("## "))
+    };
+    let was_in_done =
+        section_name(from).is_some_and(|name| name.trim().eq_ignore_ascii_case("done"));
+    let moves_to_done =
+        section_name(target_line).is_some_and(|name| name.trim().eq_ignore_ascii_case("done"));
+    let mut moved = lines.remove(from);
+    if let Some(mut item) = parse_item(&moved, from) {
+        if moves_to_done && !item.done {
+            item.done = true;
+            item.completed = Some(Local::now().date_naive());
+            moved = item.line_with(item.priority, &item.title);
+        } else if was_in_done && !moves_to_done {
+            item.done = false;
+            item.completed = None;
+            moved = item.line_with(item.priority, &item.title);
+        }
+    }
     let shifted = |ix: usize| if ix > from { ix - 1 } else { ix };
     match target {
         DropTarget::Before { line, .. } => lines.insert(shifted(*line), moved),
@@ -406,6 +520,16 @@ impl Render for DraggedTodo {
 /// The title being edited in place, or a new item being typed into a
 /// section.
 enum InlineInput {
+    Due {
+        item: TodoItem,
+        editor: Entity<Editor>,
+        _subscription: Subscription,
+    },
+    Section {
+        section: Option<(usize, String)>,
+        editor: Entity<Editor>,
+        _subscription: Subscription,
+    },
     Edit {
         item: TodoItem,
         editor: Entity<Editor>,
@@ -421,7 +545,10 @@ enum InlineInput {
 impl InlineInput {
     fn editor(&self) -> &Entity<Editor> {
         match self {
-            InlineInput::Edit { editor, .. } | InlineInput::Add { editor, .. } => editor,
+            InlineInput::Edit { editor, .. }
+            | InlineInput::Add { editor, .. }
+            | InlineInput::Due { editor, .. }
+            | InlineInput::Section { editor, .. } => editor,
         }
     }
 }
@@ -443,6 +570,7 @@ pub struct TodoView {
     myman_tasks: Vec<myman::MyManTask>,
     error: Option<String>,
     show_done: bool,
+    sort: TodoSort,
     /// No board file yet: the tab shows the starter board until the first add.
     file_missing: bool,
     input: Option<InlineInput>,
@@ -504,6 +632,7 @@ impl TodoView {
             myman_tasks: Vec::new(),
             error: None,
             show_done: false,
+            sort: TodoSort::Manual,
             file_missing: false,
             input: None,
             _load: None,
@@ -928,9 +1057,77 @@ impl TodoView {
         if matches!(&target, DropTarget::Before { line, .. } if *line == dragged.line) {
             return;
         }
+        self.sort = TodoSort::Manual;
         let from = dragged.line;
         let raw = dragged.raw.clone();
         self.edit_board(move |text| move_line(text, from, &raw, &target), cx);
+    }
+
+    fn set_due(&mut self, item: &TodoItem, due: Option<NaiveDate>, cx: &mut Context<Self>) {
+        let mut updated = item.clone();
+        updated.due = due;
+        // Older boards stored the due date in the trailing note field.
+        if updated.note.as_deref().is_some_and(|note| {
+            note.strip_prefix("due ").is_some_and(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "today"
+                        | "tomorrow"
+                        | "mon"
+                        | "monday"
+                        | "tue"
+                        | "tuesday"
+                        | "wed"
+                        | "wednesday"
+                        | "thu"
+                        | "thursday"
+                        | "fri"
+                        | "friday"
+                        | "sat"
+                        | "saturday"
+                        | "sun"
+                        | "sunday"
+                )
+            })
+        }) {
+            updated.note = None;
+        }
+        let new_line = updated.line_with(updated.priority, &updated.title);
+        let line = item.line;
+        let raw = item.raw.clone();
+        self.edit_board(move |text| replace_line(text, line, &raw, &new_line), cx);
+    }
+
+    fn start_due(&mut self, item: &TodoItem, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_input(false, window, cx);
+        let text = item.due.map(|due| due.to_string()).unwrap_or_default();
+        let (editor, subscription) = Self::input_editor(&text, "YYYY-MM-DD", window, cx);
+        self.input = Some(InlineInput::Due {
+            item: item.clone(),
+            editor,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    fn start_section(
+        &mut self,
+        section: Option<(usize, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_input(false, window, cx);
+        let text = section
+            .as_ref()
+            .map(|(_, name)| name.as_str())
+            .unwrap_or_default();
+        let (editor, subscription) = Self::input_editor(text, "Group name", window, cx);
+        self.input = Some(InlineInput::Section {
+            section,
+            editor,
+            _subscription: subscription,
+        });
+        cx.notify();
     }
 
     fn input_editor(
@@ -990,7 +1187,47 @@ impl TodoView {
             return;
         };
         let text = input.editor().read(cx).text(cx).trim().to_owned();
+        if matches!(&input, InlineInput::Due { .. })
+            && !text.is_empty()
+            && NaiveDate::parse_from_str(&text, "%Y-%m-%d").is_err()
+        {
+            self.error =
+                Some("Enter a valid due date as YYYY-MM-DD, or leave it empty to clear it.".into());
+            self.input = Some(input);
+            cx.notify();
+            return;
+        }
         match input {
+            InlineInput::Due { item, .. } => {
+                self.set_due(&item, NaiveDate::parse_from_str(&text, "%Y-%m-%d").ok(), cx);
+            }
+            InlineInput::Section { section, .. } => {
+                if !text.is_empty() {
+                    self.edit_board(
+                        move |board| {
+                            if let Some((line, name)) = section {
+                                anyhow::ensure!(
+                                    !parse_board(board)
+                                        .sections
+                                        .iter()
+                                        .any(|group| group.line != line
+                                            && group.name.eq_ignore_ascii_case(&text)),
+                                    "A group with that name already exists"
+                                );
+                                replace_line(
+                                    board,
+                                    line,
+                                    &format!("## {name}"),
+                                    &format!("## {text}"),
+                                )
+                            } else {
+                                add_section(board, &text)
+                            }
+                        },
+                        cx,
+                    );
+                }
+            }
             InlineInput::Edit { item, .. } => {
                 if !text.is_empty() && text != item.title {
                     let new_line = item.line_with(item.priority, &text);
@@ -1097,6 +1334,166 @@ impl TodoView {
         }
     }
 
+    fn render_due(&self, ix: usize, item: &TodoItem, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(InlineInput::Due {
+            item: editing,
+            editor,
+            ..
+        }) = &self.input
+            && editing.line == item.line
+        {
+            return div()
+                .w(px(150.))
+                .child(self.render_input(editor, cx))
+                .into_any_element();
+        }
+        let today = Local::now().date_naive();
+        let label = item
+            .due
+            .map(|due| {
+                if due == today {
+                    "Today".into()
+                } else if due == today + chrono::Duration::days(1) {
+                    "Tomorrow".into()
+                } else {
+                    due.format("%b %-d, %Y").to_string()
+                }
+            })
+            .unwrap_or_else(|| "Due date".into());
+        let view = cx.entity().downgrade();
+        let item = item.clone();
+        PopoverMenu::new(("brainz-todo-due-menu", ix))
+            .anchor(gpui::Anchor::TopRight)
+            .trigger(
+                Button::new(("brainz-todo-due", ix), label)
+                    .label_size(LabelSize::Small)
+                    .color(if !item.done && item.due.is_some_and(|date| date < today) {
+                        Color::Error
+                    } else {
+                        Color::Muted
+                    })
+                    .tooltip(Tooltip::text("Set or change due date")),
+            )
+            .menu(move |window, cx| {
+                let view = view.clone();
+                let item = item.clone();
+                Some(ContextMenu::build(window, cx, move |mut menu, _, _| {
+                    menu = menu.header("Due date");
+                    for (label, days) in [("Today", 0), ("Tomorrow", 1), ("In one week", 7)] {
+                        let view = view.clone();
+                        let item = item.clone();
+                        menu = menu.entry(label, None, move |_, cx| {
+                            view.update(cx, |this, cx| {
+                                this.set_due(
+                                    &item,
+                                    Some(Local::now().date_naive() + chrono::Duration::days(days)),
+                                    cx,
+                                )
+                            })
+                            .log_err();
+                        });
+                    }
+                    menu = menu.entry("Choose date…", None, {
+                        let view = view.clone();
+                        let item = item.clone();
+                        move |window, cx| {
+                            // The menu restores focus when dismissed; start editing afterwards.
+                            window.defer(cx, {
+                                let view = view.clone();
+                                let item = item.clone();
+                                move |window, cx| {
+                                    view.update(cx, |this, cx| this.start_due(&item, window, cx))
+                                        .log_err();
+                                }
+                            });
+                        }
+                    });
+                    menu.separator().entry("Clear date", None, move |_, cx| {
+                        view.update(cx, |this, cx| this.set_due(&item, None, cx))
+                            .log_err();
+                    })
+                }))
+            })
+            .into_any_element()
+    }
+
+    fn render_move_menu(&self, ix: usize, item: &TodoItem, cx: &mut Context<Self>) -> AnyElement {
+        let view = cx.entity().downgrade();
+        let dragged = DraggedTodo {
+            line: item.line,
+            raw: item.raw.clone(),
+            title: item.title.clone(),
+        };
+        let sections: Vec<_> = self
+            .board
+            .sections
+            .iter()
+            .map(|section| (section.line, section.name.clone()))
+            .collect();
+        PopoverMenu::new(("brainz-todo-move-menu", ix))
+            .anchor(gpui::Anchor::TopRight)
+            .trigger(
+                IconButton::new(("brainz-todo-move", ix), IconName::Ellipsis)
+                    .icon_size(IconSize::Small)
+                    .tooltip(Tooltip::text("Move to group")),
+            )
+            .menu(move |window, cx| {
+                let view = view.clone();
+                let dragged = dragged.clone();
+                let sections = sections.clone();
+                Some(ContextMenu::build(window, cx, move |mut menu, _, _| {
+                    menu = menu.header("Move to group");
+                    for (line, name) in sections {
+                        let view = view.clone();
+                        let dragged = dragged.clone();
+                        menu = menu.entry(name, None, move |_, cx| {
+                            view.update(cx, |this, cx| {
+                                this.move_item(&dragged, DropTarget::EndOfSection { line }, cx)
+                            })
+                            .log_err();
+                        });
+                    }
+                    menu
+                }))
+            })
+            .into_any_element()
+    }
+
+    fn render_sort_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let view = cx.entity().downgrade();
+        let current = self.sort;
+        PopoverMenu::new("brainz-todo-sort-menu")
+            .anchor(gpui::Anchor::TopRight)
+            .trigger(
+                Button::new("brainz-todo-sort", format!("Sort: {}", current.label()))
+                    .label_size(LabelSize::Small),
+            )
+            .menu(move |window, cx| {
+                let view = view.clone();
+                Some(ContextMenu::build(window, cx, move |mut menu, _, _| {
+                    menu = menu.header("Sort within each group");
+                    for sort in TodoSort::ALL {
+                        let view = view.clone();
+                        menu = menu.toggleable_entry(
+                            sort.label(),
+                            current == sort,
+                            IconPosition::Start,
+                            None,
+                            move |_, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.sort = sort;
+                                    cx.notify();
+                                })
+                                .log_err();
+                            },
+                        );
+                    }
+                    menu
+                }))
+            })
+            .into_any_element()
+    }
+
     fn render_item(&self, ix: usize, item: &TodoItem, cx: &mut Context<Self>) -> impl IntoElement {
         let icon = if item.done {
             IconName::BrainzCheckboxChecked
@@ -1137,7 +1534,7 @@ impl TodoView {
                         })
                         .when(item.done, |label| label.strikethrough()),
                 )
-                .tooltip(Tooltip::text("Click to edit · drag to reorder"))
+                .tooltip(Tooltip::text("Click to edit"))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.start_edit(&item, window, cx);
                 }))
@@ -1154,14 +1551,26 @@ impl TodoView {
             .border_t_2()
             .border_color(gpui::transparent_black())
             .hover(|this| this.bg(cx.theme().colors().element_hover))
-            .when(editing.is_none(), |this| {
-                this.cursor_grab()
-                    .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
-            })
             .drag_over::<DraggedTodo>(move |style, _, _, _| style.border_color(drop_color))
             .on_drop(cx.listener(move |this, dragged: &DraggedTodo, _, cx| {
                 this.move_item(dragged, target.clone(), cx);
             }))
+            .child(
+                div()
+                    .id(("brainz-todo-drag", ix))
+                    .px_1()
+                    .py_1()
+                    .cursor_grab()
+                    .tooltip(Tooltip::text(
+                        "Drag to reorder or move to a group · uses manual order",
+                    ))
+                    .child(
+                        Icon::new(IconName::Menu)
+                            .size(IconSize::Small)
+                            .color(Color::Placeholder),
+                    )
+                    .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone())),
+            )
             .child({
                 let item = item.clone();
                 IconButton::new(("brainz-todo-check", ix), icon)
@@ -1186,26 +1595,45 @@ impl TodoView {
                         Some(editor) => self.render_input(&editor, cx),
                         None => title.into_any_element(),
                     })
-                    .when(item.tag.is_some() || item.note.is_some(), |this| {
-                        this.child(
-                            h_flex()
-                                .gap_2()
-                                .when_some(item.note.clone(), |this, note| {
-                                    this.child(
-                                        Label::new(note).size(LabelSize::Small).color(Color::Muted),
+                    .when(
+                        item.tag.is_some()
+                            || item.note.is_some()
+                            || (item.done && item.completed.is_some()),
+                        |this| {
+                            this.child(
+                                h_flex()
+                                    .gap_2()
+                                    .when_some(
+                                        item.completed.filter(|_| item.done),
+                                        |this, date| {
+                                            this.child(
+                                                Label::new(format!("Completed {date}"))
+                                                    .size(LabelSize::Small)
+                                                    .color(Color::Muted),
+                                            )
+                                        },
                                     )
-                                })
-                                .when_some(item.tag.clone(), |this, tag| {
-                                    this.child(
-                                        Label::new(tag)
-                                            .size(LabelSize::Small)
-                                            .color(Color::Placeholder),
-                                    )
-                                }),
-                        )
-                    }),
+                                    .when_some(item.note.clone(), |this, note| {
+                                        this.child(
+                                            Label::new(note)
+                                                .size(LabelSize::Small)
+                                                .color(Color::Muted),
+                                        )
+                                    })
+                                    .when_some(item.tag.clone(), |this, tag| {
+                                        this.child(
+                                            Label::new(tag)
+                                                .size(LabelSize::Small)
+                                                .color(Color::Placeholder),
+                                        )
+                                    }),
+                            )
+                        },
+                    ),
             )
+            .child(self.render_due(ix, item, cx))
             .child(self.render_priority(ix, item, cx))
+            .child(self.render_move_menu(ix, item, cx))
     }
 
     fn render_add_row(&self, section: &TodoSection, cx: &mut Context<Self>) -> AnyElement {
@@ -1319,6 +1747,8 @@ impl Render for TodoView {
             .count();
         let default_section = self.default_section();
         let header = h_flex()
+            .flex_wrap()
+            .gap_2()
             .w_full()
             .items_center()
             .justify_between()
@@ -1335,7 +1765,16 @@ impl Render for TodoView {
             )
             .child(
                 h_flex()
+                    .flex_wrap()
                     .gap_2()
+                    .child(self.render_sort_menu(cx))
+                    .child(
+                        Button::new("brainz-todo-new-group", "New group")
+                            .label_size(LabelSize::Small)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.start_section(None, window, cx)
+                            })),
+                    )
                     .when_some(self.board.updated.clone(), |this, updated| {
                         this.child(
                             Label::new(format!("Updated {updated}"))
@@ -1378,6 +1817,24 @@ impl Render for TodoView {
             );
 
         let mut body: Vec<gpui::AnyElement> = Vec::new();
+        if let Some(InlineInput::Section {
+            section: None,
+            editor,
+            ..
+        }) = &self.input
+        {
+            body.push(
+                h_flex()
+                    .gap_2()
+                    .p_2()
+                    .child(Label::new("New group"))
+                    .child(self.render_input(editor, cx))
+                    .child(Button::new("brainz-todo-save-group", "Add group").on_click(
+                        cx.listener(|this, _, window, cx| this.commit_input(false, window, cx)),
+                    ))
+                    .into_any_element(),
+            );
+        }
         body.push(self.insight.clone().into_any_element());
         if self.file_missing && self.error.is_none() {
             body.push(
@@ -1421,47 +1878,59 @@ impl Render for TodoView {
         for section in &self.board.sections {
             let is_done = section.name.eq_ignore_ascii_case("done");
             let heading = section.line;
-            let visible: Vec<&TodoItem> = section
+            let mut visible: Vec<&TodoItem> = section
                 .items
                 .iter()
                 .filter(|item| self.show_done || !item.done)
                 .collect();
+            self.sort.sort(&mut visible);
             let hidden = section.items.len() - visible.len();
-            let mut block = v_flex().w_full().gap_0p5().child(
-                h_flex()
-                    .id(("brainz-todo-section", heading))
-                    .px_2()
-                    .pt_3()
-                    .pb_1()
-                    .gap_2()
-                    .rounded_md()
-                    .drag_over::<DraggedTodo>(move |style, _, _, _| style.bg(drop_color))
-                    .on_drop(cx.listener(move |this, dragged: &DraggedTodo, _, cx| {
-                        this.move_item(dragged, DropTarget::EndOfSection { line: heading }, cx);
-                    }))
-                    .child(
-                        Label::new(section.name.clone())
-                            .size(LabelSize::Small)
-                            .weight(gpui::FontWeight::SEMIBOLD)
-                            .color(if is_done {
-                                Color::Muted
-                            } else {
-                                Color::Default
-                            }),
-                    )
-                    .child(
-                        Label::new(visible.len().to_string())
-                            .size(LabelSize::Small)
-                            .color(Color::Placeholder),
-                    )
-                    .when(hidden > 0 && !is_done, |this| {
-                        this.child(
-                            Label::new(format!("{hidden} done hidden"))
+            let mut block =
+                v_flex().w_full().gap_0p5().child(
+                    h_flex()
+                        .id(("brainz-todo-section", heading))
+                        .px_2()
+                        .pt_3()
+                        .pb_1()
+                        .gap_2()
+                        .rounded_md()
+                        .drag_over::<DraggedTodo>(move |style, _, _, _| style.bg(drop_color))
+                        .on_drop(cx.listener(move |this, dragged: &DraggedTodo, _, cx| {
+                            this.move_item(dragged, DropTarget::EndOfSection { line: heading }, cx);
+                        }))
+                        .child(match &self.input {
+                            Some(InlineInput::Section {
+                                section: Some((line, _)),
+                                editor,
+                                ..
+                            }) if *line == heading => self.render_input(editor, cx),
+                            _ => Button::new(
+                                ("brainz-todo-rename-group", heading),
+                                section.name.clone(),
+                            )
+                            .label_size(LabelSize::Small)
+                            .tooltip(Tooltip::text("Rename group · drop tasks here to move them"))
+                            .on_click(cx.listener({
+                                let name = section.name.clone();
+                                move |this, _, window, cx| {
+                                    this.start_section(Some((heading, name.clone())), window, cx)
+                                }
+                            }))
+                            .into_any_element(),
+                        })
+                        .child(
+                            Label::new(visible.len().to_string())
                                 .size(LabelSize::Small)
                                 .color(Color::Placeholder),
                         )
-                    }),
-            );
+                        .when(hidden > 0 && !is_done, |this| {
+                            this.child(
+                                Label::new(format!("{hidden} done hidden"))
+                                    .size(LabelSize::Small)
+                                    .color(Color::Placeholder),
+                            )
+                        }),
+                );
             if is_done && !self.show_done {
                 body.push(block.into_any_element());
                 continue;
@@ -1544,6 +2013,92 @@ mod tests {
             .flat_map(|section| section.items)
             .find(|item| item.title == title)
             .expect("item on the board")
+    }
+
+    #[test]
+    fn due_dates_survive_title_priority_and_group_changes() {
+        let text = "## Work\n- [ ] [P2] Ship it `project` (due 2026-11-12) (ask Ada)\n## Later\n";
+        let task = item(text, "Ship it");
+        assert_eq!(task.due, NaiveDate::from_ymd_opt(2026, 11, 12));
+        assert_eq!(task.note.as_deref(), Some("ask Ada"));
+        assert_eq!(task.tag.as_deref(), Some("project"));
+        let updated = task.line_with(Some(Priority::High), "Ship the update");
+        assert_eq!(
+            updated,
+            "- [ ] [P1] Ship the update `project` (due 2026-11-12) (ask Ada)"
+        );
+        let moved = move_line(
+            text,
+            task.line,
+            &task.raw,
+            &DropTarget::EndOfSection { line: 2 },
+        )
+        .unwrap();
+        assert_eq!(item(&moved, "Ship it").due, task.due);
+        let checked = toggle_line(text, task.line, &task.raw).unwrap();
+        let checked_task = item(&checked, "Ship it");
+        assert_eq!(checked_task.due, task.due);
+        assert_eq!(checked_task.note, task.note);
+        assert_eq!(checked_task.tag, task.tag);
+        let reopened = toggle_line(&checked, checked_task.line, &checked_task.raw).unwrap();
+        assert_eq!(reopened, text);
+        let mut cleared = task.clone();
+        cleared.due = None;
+        assert_eq!(
+            cleared.line_with(cleared.priority, &cleared.title),
+            "- [ ] [P2] Ship it `project` (ask Ada)"
+        );
+        assert!(parse_due_note("due 2026-02-30").is_none());
+    }
+
+    #[test]
+    fn sorting_keeps_undated_and_completed_items_after_open_due_dates() {
+        let board = parse_board(
+            "## Work\n- [ ] Zebra\n- [x] Done (due 2026-11-01)\n- [ ] [P3] Later (due 2026-11-15)\n- [ ] [P1] Soon (due 2026-11-11)\n",
+        );
+        let mut items: Vec<_> = board.sections[0].items.iter().collect();
+        TodoSort::DueDate.sort(&mut items);
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Soon", "Later", "Zebra", "Done"]
+        );
+        TodoSort::Priority.sort(&mut items);
+        assert_eq!(items[0].title, "Soon");
+        TodoSort::Title.sort(&mut items);
+        assert_eq!(items[0].title, "Later");
+        TodoSort::Manual.sort(&mut items);
+        assert_eq!(items[0].title, "Zebra");
+    }
+
+    #[test]
+    fn groups_reject_duplicates_and_moving_to_done_completes_the_task() {
+        assert!(add_section(BOARD, "today").is_err());
+        assert!(add_section(BOARD, "Bad\nheading").is_err());
+        let text = add_section(BOARD, "Projects").unwrap();
+        assert_eq!(parse_board(&text).sections.last().unwrap().name, "Projects");
+        let task = item(BOARD, "Call the dentist");
+        let done = parse_board(BOARD).sections[2].line;
+        let completed = move_line(
+            BOARD,
+            task.line,
+            &task.raw,
+            &DropTarget::EndOfSection { line: done },
+        )
+        .unwrap();
+        let task = item(&completed, "Call the dentist");
+        assert!(task.done);
+        let today = parse_board(&completed).sections[0].line;
+        let reopened = move_line(
+            &completed,
+            task.line,
+            &task.raw,
+            &DropTarget::EndOfSection { line: today },
+        )
+        .unwrap();
+        assert!(!item(&reopened, "Call the dentist").done);
     }
 
     #[test]

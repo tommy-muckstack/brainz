@@ -215,7 +215,14 @@ brain's check-off board (`TODO.md` at the root, or the `todo` path in
 `brainz.toml`). Sections are `##` headings, items are `- [ ]` lines, and Done
 folds away; it refreshes every 30 seconds. Ticking an item checks it in place
 with today's date and shows it struck through in amber, so nothing vanishes;
-un-ticking clears the box. Whoever maintains the board tidies Done later.
+un-ticking clears the box. Use **Sort** for manual order, due date, priority, or
+title within each group. Drag the handle on a task to reorder it or drop it on a
+group heading; the task's **…** menu also offers **Move to group**. Dragging
+returns the view to manual order. Moving into Done completes the task; moving
+out reopens it. **New group** adds a section, and clicking a group name renames it.
+Click **Due date** for Today, Tomorrow, In one week, an exact `YYYY-MM-DD` date,
+or Clear date. Dates are saved as `(due YYYY-MM-DD)` alongside existing tags
+and notes; undated tasks sort after dated tasks.
 
 **Themes** in the sidebar opens a tab: what the
 brain has been about, computed from its git history. **Sync** (or a daily
@@ -306,7 +313,7 @@ become symlinks to it, so a memory written in Brainz is there in a terminal
 `claude` session and vice versa. Credentials never move. If the layout is not
 one of the expected shapes, nothing changes and a notification says why.
 
-**MCPs** beside the chat composer lets you choose All, None, or individual
+**MCPs** in the chat composer’s **+** menu lets you choose All, None, or individual
 connectors for the next message. The choice stays selected until you change it;
 queued messages keep the selection they were created with. Unselected MCP tools
 are omitted from the request while connections, sign-ins, and saved permissions
