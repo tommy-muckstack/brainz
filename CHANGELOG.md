@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.64 (2026-11-11)
+
 ### Added
 
 - Avatar: a small animated character now floats above every app while Brainz is open. It blinks and glances around, and hovering it shows a row of colours to pick from. Click it for a menu with a capture field (Enter saves to Inbox.md), your next calendar events, and the newest My Man screenshots and recordings, which copy to the clipboard with one click when My Man is installed. Drag the character to move it, or right-click to hide it until Brainz restarts.
