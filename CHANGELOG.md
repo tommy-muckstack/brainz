@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Improved
+
+- Claude and Codex setup: the loading screen now names each stage (preparing, installing, starting) while Brainz updates an agent, and explains that an update can take several minutes.
+
 ## 0.1.62 (2026-11-10)
 
 ### Fixed

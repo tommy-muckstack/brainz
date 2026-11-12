@@ -440,7 +440,11 @@ impl ThemesView {
 
     /// Appends one line to `pins.md` and re-runs the pass.
     fn curate(&mut self, line: String, cx: &mut Context<Self>) {
-        let action = line.trim_start_matches("- ").split(':').next().unwrap_or("");
+        let action = line
+            .trim_start_matches("- ")
+            .split(':')
+            .next()
+            .unwrap_or("");
         telemetry::event!("Brainz Theme Action", action = action);
         let repo = self.repo.clone();
         let config = self.config.clone();
