@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.65 (2026-11-12)
+
 ### Improved
 
 - Avatar: its colours are now the same twelve offered for chat tabs.
