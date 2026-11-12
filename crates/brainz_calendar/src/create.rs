@@ -215,6 +215,12 @@ const ENTRIES: &[Entry] = &[
         choice: Choice::Action(|| Box::new(NewTodo)),
     },
     Entry {
+        label: "Quick capture",
+        hint: "Saved to Inbox · ⌃⌥N in any app",
+        icon: IconName::Pencil,
+        choice: Choice::Action(|| Box::new(crate::quick_capture::QuickCapture)),
+    },
+    Entry {
         label: "Calendar invite",
         hint: "Finish in Google Calendar",
         icon: IconName::BrainzCalendar,
@@ -226,7 +232,7 @@ pub struct CreateMenu {
     focus_handle: FocusHandle,
     selected: Option<usize>,
     hovered: Option<usize>,
-    hover_counts: [u64; 5],
+    hover_counts: [u64; ENTRIES.len()],
     on_new_folder: SidebarCallback,
 }
 
@@ -238,7 +244,7 @@ impl CreateMenu {
             focus_handle,
             selected: None,
             hovered: None,
-            hover_counts: [0; 5],
+            hover_counts: [0; ENTRIES.len()],
             on_new_folder,
         }
     }

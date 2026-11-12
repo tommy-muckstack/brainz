@@ -11,6 +11,14 @@ use chrono::{DateTime, Local};
 
 const INBOX: &str = "Inbox.md";
 
+gpui::actions!(
+    brainz_capture,
+    [
+        /// Opens the quick capture box, which saves a thought to Inbox.md.
+        QuickCapture
+    ]
+);
+
 /// Adds `text` to the inbox under a `## <date>` heading, creating the file or
 /// the day's heading when needed. Other days' entries are left as they are.
 fn append_capture(existing: &str, text: &str, now: DateTime<Local>) -> String {
@@ -81,12 +89,16 @@ mod native {
     use std::{ffi::c_void, sync::OnceLock};
 
     use editor::Editor;
+    use std::sync::Arc;
+
     use gpui::{
-        App, AppContext as _, Bounds, Entity, FocusHandle, Focusable, Size,
-        WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, point, px,
+        App, AppContext as _, Bounds, Entity, FocusHandle, Focusable, Image, ImageFormat,
+        MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Size,
+        WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, img, point, px,
     };
     use ui::prelude::*;
     use util::ResultExt as _;
+    use workspace::Workspace;
 
     type OsStatus = i32;
     type EventRef = *mut c_void;
@@ -141,6 +153,22 @@ mod native {
     }
 
     pub(super) fn init(cx: &mut App) {
+        cx.on_action(|_: &super::QuickCapture, cx| open(cx));
+        // The avatar lives only while a workspace window does: a lone
+        // floating panel would count as an open window, so closing the last
+        // real window would neither quit Brainz nor let the Dock reopen it.
+        cx.observe_new(|_: &mut Workspace, _, cx| cx.defer(show_avatar))
+            .detach();
+        cx.on_window_closed(|cx, _| {
+            let only_capture_windows_remain = cx.windows().into_iter().all(|window| {
+                window.downcast::<AvatarView>().is_some()
+                    || window.downcast::<CaptureView>().is_some()
+            });
+            if only_capture_windows_remain {
+                hide_avatar(cx);
+            }
+        })
+        .detach();
         let (sender, receiver) = smol::channel::bounded(1);
         if PRESSED.set(sender).is_err() {
             return;
@@ -239,6 +267,149 @@ mod native {
             },
         )
         .log_err();
+    }
+
+    const AVATAR_WINDOW: Pixels = px(72.);
+    const AVATAR_MARGIN: Pixels = px(28.);
+    /// Movement past this turns a press on the avatar into a drag.
+    const AVATAR_DRAG_DISTANCE: Pixels = px(4.);
+
+    fn show_avatar(cx: &mut App) {
+        if AVATAR_HIDDEN.load(std::sync::atomic::Ordering::Relaxed)
+            || cx
+                .windows()
+                .into_iter()
+                .any(|window| window.downcast::<AvatarView>().is_some())
+        {
+            return;
+        }
+        let Some(display) = cx.primary_display() else {
+            return;
+        };
+        let screen = display.bounds();
+        let bounds = Bounds {
+            origin: point(
+                screen.origin.x + screen.size.width - AVATAR_WINDOW - AVATAR_MARGIN,
+                screen.origin.y + screen.size.height - AVATAR_WINDOW - AVATAR_MARGIN * 3.,
+            ),
+            size: Size {
+                width: AVATAR_WINDOW,
+                height: AVATAR_WINDOW,
+            },
+        };
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: None,
+                focus: false,
+                show: true,
+                kind: WindowKind::PopUp,
+                is_movable: true,
+                display_id: Some(display.id()),
+                window_background: WindowBackgroundAppearance::Transparent,
+                ..Default::default()
+            },
+            |_, cx| cx.new(|_| AvatarView::new()),
+        )
+        .log_err();
+    }
+
+    fn hide_avatar(cx: &mut App) {
+        for window in cx.windows() {
+            if let Some(avatar) = window.downcast::<AvatarView>() {
+                avatar
+                    .update(cx, |_, window, _| window.remove_window())
+                    .log_err();
+            }
+        }
+    }
+
+    /// Set by right-clicking the avatar; it stays away until Brainz restarts.
+    static AVATAR_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    /// The floating brain that opens the capture box from any app.
+    pub struct AvatarView {
+        image: Arc<Image>,
+        pressed_at: Option<Point<Pixels>>,
+        dragged: bool,
+    }
+
+    impl AvatarView {
+        fn new() -> Self {
+            Self {
+                image: Arc::new(Image::from_bytes(
+                    ImageFormat::Png,
+                    include_bytes!("../../../assets/brainz/avatar/brainz.png").to_vec(),
+                )),
+                pressed_at: None,
+                dragged: false,
+            }
+        }
+
+        fn press(&mut self, event: &MouseDownEvent, _: &mut Window, _: &mut Context<Self>) {
+            self.pressed_at = Some(event.position);
+            self.dragged = false;
+        }
+
+        fn drag(&mut self, event: &MouseMoveEvent, window: &mut Window, _: &mut Context<Self>) {
+            let Some(pressed_at) = self.pressed_at else {
+                return;
+            };
+            if self.dragged || event.pressed_button != Some(MouseButton::Left) {
+                return;
+            }
+            let moved = event.position - pressed_at;
+            if moved.x.abs() > AVATAR_DRAG_DISTANCE || moved.y.abs() > AVATAR_DRAG_DISTANCE {
+                self.dragged = true;
+                window.start_window_move();
+            }
+        }
+
+        fn release(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+            if self.pressed_at.take().is_some() && !self.dragged {
+                cx.defer(open);
+            }
+        }
+    }
+
+    impl Render for AvatarView {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let colors = cx.theme().colors();
+            div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .id("brainz-avatar")
+                        .size(px(52.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(colors.border)
+                        .bg(colors.text_accent)
+                        .shadow_lg()
+                        .cursor_pointer()
+                        .hover(|this| this.border_color(colors.text))
+                        .tooltip(ui::Tooltip::text(
+                            "Capture a thought. Drag to move, right-click to hide.",
+                        ))
+                        .on_mouse_down(MouseButton::Left, cx.listener(Self::press))
+                        .on_mouse_move(cx.listener(Self::drag))
+                        .on_mouse_up(MouseButton::Left, cx.listener(Self::release))
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(|_, _, window, _| {
+                                AVATAR_HIDDEN.store(true, std::sync::atomic::Ordering::Relaxed);
+                                window.remove_window();
+                            }),
+                        )
+                        .child(img(self.image.clone()).size(px(34.))),
+                )
+        }
     }
 
     pub struct CaptureView {

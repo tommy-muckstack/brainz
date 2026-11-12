@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Quick capture: a small brain button now floats above every app while Brainz is open. Click it to jot a thought into Inbox.md, drag it to move it, or right-click to hide it until Brainz restarts. Control-Option-N and a new Quick capture entry in the Create menu open the same box.
+
 ## 0.1.63 (2026-11-11)
 
 ### Improved
