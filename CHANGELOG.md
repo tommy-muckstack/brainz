@@ -5,6 +5,7 @@
 ### Fixed
 
 - Avatar: the area around the character is see-through again instead of a black box.
+- Chat: a pasted-text card inside a sent message is readable on every tab colour. On light colours such as amber it was dark text on a dark card.
 
 ### Improved
 

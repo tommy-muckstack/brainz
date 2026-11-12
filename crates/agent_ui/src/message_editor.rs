@@ -1651,12 +1651,14 @@ impl MessageEditor {
         let read_only = self.editor.read(cx).read_only(cx);
         let preview = pasted_text_preview(content);
         let colors = cx.theme().colors();
-        let border = colors.border;
-        let background = colors.element_background;
-        let ink = if self.bubble_color.is_some() {
-            self.bubble_text_color(cx)
+        // Inside a sent bubble the card is a tint of the bubble's own text
+        // colour: the theme's dark card under that text is unreadable on a
+        // light bubble such as amber.
+        let (ink, border, background) = if self.bubble_color.is_some() {
+            let ink = self.bubble_text_color(cx);
+            (ink, ink.opacity(0.28), ink.opacity(0.08))
         } else {
-            colors.text
+            (colors.text, colors.border, colors.element_background)
         };
         let muted = ink.opacity(0.7);
         let tooltip = if read_only {
