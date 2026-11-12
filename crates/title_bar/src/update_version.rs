@@ -128,8 +128,11 @@ impl Render for UpdateVersion {
             return Empty.into_any_element();
         }
         if self.showing_up_to_date {
-            let version =
-                AutoUpdater::get(cx).map(|updater| updater.read(cx).current_version().to_string());
+            // Only the release number: the build metadata after it is noise here.
+            let version = AutoUpdater::get(cx).map(|updater| {
+                let version = updater.read(cx).current_version();
+                format!("{}.{}.{}", version.major, version.minor, version.patch)
+            });
             return match version {
                 Some(version) => UpdateButton::up_to_date_with_version(version).into_any_element(),
                 None => UpdateButton::up_to_date().into_any_element(),

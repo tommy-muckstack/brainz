@@ -522,7 +522,7 @@ fn brain_cites(brain: &Path, stems: &[&str]) -> HashSet<String> {
 pub static TASK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// `key: value` pairs of the YAML front matter, scalars only.
-fn front_matter(note: &str) -> HashMap<String, String> {
+pub(crate) fn front_matter(note: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let mut lines = note.lines();
     if lines.next().map(str::trim) != Some("---") {

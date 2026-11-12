@@ -65,7 +65,7 @@ fn append_capture(existing: &str, text: &str, now: DateTime<Local>) -> String {
     note
 }
 
-fn save_capture(brain: &Path, text: &str) -> Result<()> {
+pub(crate) fn save_capture(brain: &Path, text: &str) -> Result<()> {
     let path = brain.join(INBOX);
     let existing = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -89,12 +89,15 @@ mod native {
     use std::{ffi::c_void, sync::OnceLock};
 
     use editor::Editor;
-    use std::sync::Arc;
+    use std::{
+        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+        time::Duration,
+    };
 
     use gpui::{
-        App, AppContext as _, Bounds, Entity, FocusHandle, Focusable, Image, ImageFormat,
-        MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Size,
-        WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, img, point, px,
+        Animation, AnimationExt as _, App, AppContext as _, Bounds, Entity, FocusHandle, Focusable,
+        Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Size,
+        WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, point, px, rgb, svg,
     };
     use ui::prelude::*;
     use util::ResultExt as _;
@@ -163,12 +166,14 @@ mod native {
             let only_capture_windows_remain = cx.windows().into_iter().all(|window| {
                 window.downcast::<AvatarView>().is_some()
                     || window.downcast::<CaptureView>().is_some()
+                    || crate::capture_menu::owns(window)
             });
             if only_capture_windows_remain {
                 hide_avatar(cx);
             }
         })
         .detach();
+        crate::capture_menu::init(avatar_bounds, cx);
         let (sender, receiver) = smol::channel::bounded(1);
         if PRESSED.set(sender).is_err() {
             return;
@@ -269,13 +274,28 @@ mod native {
         .log_err();
     }
 
-    const AVATAR_WINDOW: Pixels = px(72.);
+    const AVATAR_WINDOW: Size<Pixels> = Size {
+        width: px(96.),
+        height: px(96.),
+    };
     const AVATAR_MARGIN: Pixels = px(28.);
     /// Movement past this turns a press on the avatar into a drag.
     const AVATAR_DRAG_DISTANCE: Pixels = px(4.);
+    /// One pass through the idle routine: bob, blinks, a look to each side.
+    const AVATAR_LOOP: Duration = Duration::from_secs(12);
+    const AVATAR_COLORS: &[u32] = &[0xf2f2f0, 0xf5c84b, 0xf59ab5, 0x8fc4f7, 0x9be0a8, 0xc3a6f5];
+    const AVATAR_INK: u32 = 0x2b2b2b;
+
+    /// Set by right-clicking the avatar; it stays away until Brainz restarts.
+    static AVATAR_HIDDEN: AtomicBool = AtomicBool::new(false);
+    static AVATAR_COLOR: AtomicUsize = AtomicUsize::new(0);
+
+    fn avatar_color_file() -> std::path::PathBuf {
+        paths::data_dir().join("avatar-color")
+    }
 
     fn show_avatar(cx: &mut App) {
-        if AVATAR_HIDDEN.load(std::sync::atomic::Ordering::Relaxed)
+        if AVATAR_HIDDEN.load(Ordering::Relaxed)
             || cx
                 .windows()
                 .into_iter()
@@ -286,16 +306,20 @@ mod native {
         let Some(display) = cx.primary_display() else {
             return;
         };
+        if let Some(saved) = std::fs::read_to_string(avatar_color_file())
+            .ok()
+            .and_then(|saved| saved.trim().parse::<usize>().ok())
+            .filter(|saved| *saved < AVATAR_COLORS.len())
+        {
+            AVATAR_COLOR.store(saved, Ordering::Relaxed);
+        }
         let screen = display.bounds();
         let bounds = Bounds {
             origin: point(
-                screen.origin.x + screen.size.width - AVATAR_WINDOW - AVATAR_MARGIN,
-                screen.origin.y + screen.size.height - AVATAR_WINDOW - AVATAR_MARGIN * 3.,
+                screen.origin.x + screen.size.width - AVATAR_WINDOW.width - AVATAR_MARGIN,
+                screen.origin.y + screen.size.height - AVATAR_WINDOW.height - AVATAR_MARGIN * 3.,
             ),
-            size: Size {
-                width: AVATAR_WINDOW,
-                height: AVATAR_WINDOW,
-            },
+            size: AVATAR_WINDOW,
         };
         cx.open_window(
             WindowOptions {
@@ -309,9 +333,24 @@ mod native {
                 window_background: WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| AvatarView::new()),
+            |_, cx| {
+                cx.new(|_| AvatarView {
+                    pressed_at: None,
+                    dragged: false,
+                    hovered: false,
+                })
+            },
         )
         .log_err();
+    }
+
+    fn avatar_bounds(cx: &mut App) -> Option<Bounds<Pixels>> {
+        cx.windows().into_iter().find_map(|window| {
+            window
+                .downcast::<AvatarView>()?
+                .update(cx, |_, window, _| window.bounds())
+                .ok()
+        })
     }
 
     fn hide_avatar(cx: &mut App) {
@@ -324,28 +363,53 @@ mod native {
         }
     }
 
-    /// Set by right-clicking the avatar; it stays away until Brainz restarts.
-    static AVATAR_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    /// Smoothly 0 → 1 → 0 across `start..end`, holding 1 between the ramps.
+    fn hold(time: f32, start: f32, end: f32, ramp: f32) -> f32 {
+        if time <= start || time >= end {
+            return 0.;
+        }
+        let edge = ((time - start).min(end - time) / ramp).clamp(0., 1.);
+        edge * edge * (3. - 2. * edge)
+    }
 
-    /// The floating brain that opens the capture box from any app.
+    /// How open the eyes are at `time` seconds into the loop: 1 is open.
+    fn eye_openness(time: f32) -> f32 {
+        const BLINKS: [f32; 4] = [2.1, 6.4, 6.75, 10.3];
+        const BLINK_SECONDS: f32 = 0.16;
+        BLINKS
+            .iter()
+            .map(|blink| ((time - blink).abs() / (BLINK_SECONDS / 2.)).min(1.))
+            .fold(1., f32::min)
+    }
+
+    /// The wink near the end of the loop closes only the left eye.
+    fn wink(time: f32) -> f32 {
+        hold(time, 11.0, 11.45, 0.12)
+    }
+
+    /// How far the eyebrows are raised at `time`, from 0 to 1: a quick lift
+    /// on their own, a smaller one with each glance, and one with the wink.
+    fn brow_lift(time: f32) -> f32 {
+        hold(time, 0.8, 1.5, 0.2)
+            .max(hold(time, 3.4, 5.2, 0.35) * 0.5)
+            .max(hold(time, 7.2, 7.7, 0.18))
+            .max(hold(time, 8.0, 9.5, 0.35) * 0.5)
+            .max(wink(time))
+    }
+
+    /// Sideways glance at `time`: negative looks left, positive right.
+    fn glance(time: f32) -> f32 {
+        hold(time, 3.4, 5.2, 0.35) * -1. + hold(time, 8.0, 9.5, 0.35)
+    }
+
+    /// The floating character that opens the menu from any app.
     pub struct AvatarView {
-        image: Arc<Image>,
         pressed_at: Option<Point<Pixels>>,
         dragged: bool,
+        hovered: bool,
     }
 
     impl AvatarView {
-        fn new() -> Self {
-            Self {
-                image: Arc::new(Image::from_bytes(
-                    ImageFormat::Png,
-                    include_bytes!("../../../assets/brainz/avatar/brainz.png").to_vec(),
-                )),
-                pressed_at: None,
-                dragged: false,
-            }
-        }
-
         fn press(&mut self, event: &MouseDownEvent, _: &mut Window, _: &mut Context<Self>) {
             self.pressed_at = Some(event.position);
             self.dragged = false;
@@ -365,49 +429,132 @@ mod native {
             }
         }
 
-        fn release(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        fn release(&mut self, _: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
             if self.pressed_at.take().is_some() && !self.dragged {
-                cx.defer(open);
+                let anchor = window.bounds();
+                cx.defer(move |cx| crate::capture_menu::toggle(anchor, cx));
             }
+        }
+
+        fn pick_color(&mut self, index: usize, cx: &mut Context<Self>) {
+            AVATAR_COLOR.store(index, Ordering::Relaxed);
+            std::fs::write(avatar_color_file(), index.to_string()).log_err();
+            cx.notify();
         }
     }
 
     impl Render for AvatarView {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let colors = cx.theme().colors();
-            div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .id("brainz-avatar")
-                        .size(px(52.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_full()
-                        .border_1()
-                        .border_color(colors.border)
-                        .bg(colors.text_accent)
-                        .shadow_lg()
-                        .cursor_pointer()
-                        .hover(|this| this.border_color(colors.text))
-                        .tooltip(ui::Tooltip::text(
-                            "Capture a thought. Drag to move, right-click to hide.",
-                        ))
-                        .on_mouse_down(MouseButton::Left, cx.listener(Self::press))
-                        .on_mouse_move(cx.listener(Self::drag))
-                        .on_mouse_up(MouseButton::Left, cx.listener(Self::release))
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(|_, _, window, _| {
-                                AVATAR_HIDDEN.store(true, std::sync::atomic::Ordering::Relaxed);
-                                window.remove_window();
-                            }),
+            let selected = AVATAR_COLOR.load(Ordering::Relaxed);
+            let color: Hsla = rgb(AVATAR_COLORS.get(selected).copied().unwrap_or(0xf2f2f0)).into();
+            let mut shade = color;
+            shade.l *= 0.82;
+            let ink: Hsla = rgb(AVATAR_INK).into();
+            // The artwork is drawn on a 120 × 100 grid and shown at 0.65.
+            let width = px(78.);
+            let height = px(65.);
+            let character = div()
+                .id("brainz-avatar")
+                .relative()
+                .w(px(84.))
+                .h(px(74.))
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, cx.listener(Self::press))
+                .on_mouse_move(cx.listener(Self::drag))
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::release))
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(|_, _, window, _| {
+                        AVATAR_HIDDEN.store(true, Ordering::Relaxed);
+                        window.remove_window();
+                    }),
+                )
+                .with_animation(
+                    "brainz-avatar-idle",
+                    Animation::new(AVATAR_LOOP).repeat(),
+                    move |this, delta| {
+                        let time = delta * AVATAR_LOOP.as_secs_f32();
+                        let bob = (time / 4. * std::f32::consts::TAU).sin() * 1.5;
+                        let look = glance(time) * 3.5;
+                        let open = eye_openness(time);
+                        let brows = brow_lift(time) * 2.5;
+                        let top = 4. + bob;
+                        let eye = |center: f32, open: f32| {
+                            let eye_height = (13. * open).max(1.5);
+                            div()
+                                .absolute()
+                                .left(px(3. + center * 0.65 - 3. + look))
+                                .top(px(top + 62. * 0.65 - eye_height / 2.))
+                                .w(px(6.))
+                                .h(px(eye_height))
+                                .rounded_full()
+                                .bg(ink)
+                        };
+                        this.child(
+                            svg()
+                                .path("icons/brainz/avatar-body.svg")
+                                .absolute()
+                                .left(px(3.))
+                                .top(px(top + 3.))
+                                .w(width)
+                                .h(height)
+                                .text_color(shade),
                         )
-                        .child(img(self.image.clone()).size(px(34.))),
+                        .child(
+                            svg()
+                                .path("icons/brainz/avatar-body.svg")
+                                .absolute()
+                                .left(px(3.))
+                                .top(px(top))
+                                .w(width)
+                                .h(height)
+                                .text_color(color),
+                        )
+                        .child(
+                            svg()
+                                .path("icons/brainz/avatar-brows.svg")
+                                .absolute()
+                                .left(px(3. + look * 0.6))
+                                .top(px(top - brows))
+                                .w(width)
+                                .h(height)
+                                .text_color(ink),
+                        )
+                        .child(eye(45., open.min(1. - wink(time))))
+                        .child(eye(75., open))
+                    },
+                );
+            v_flex()
+                .id("brainz-avatar-window")
+                .size_full()
+                .items_center()
+                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                    this.hovered = *hovered;
+                    cx.notify();
+                }))
+                .child(character)
+                .child(
+                    h_flex()
+                        .h(px(18.))
+                        .gap_1()
+                        .when(!self.hovered, |this| this.invisible())
+                        .children(AVATAR_COLORS.iter().enumerate().map(|(index, swatch)| {
+                            div()
+                                .id(("brainz-avatar-color", index))
+                                .size(px(11.))
+                                .rounded_full()
+                                .bg(rgb(*swatch))
+                                .border_1()
+                                .border_color(if index == selected {
+                                    rgb(0xffffff)
+                                } else {
+                                    rgb(0x55554f)
+                                })
+                                .cursor_pointer()
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.pick_color(index, cx)),
+                                )
+                        })),
                 )
         }
     }

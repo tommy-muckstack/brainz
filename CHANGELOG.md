@@ -4,7 +4,9 @@
 
 ### Added
 
-- Quick capture: a small brain button now floats above every app while Brainz is open. Click it to jot a thought into Inbox.md, drag it to move it, or right-click to hide it until Brainz restarts. Control-Option-N and a new Quick capture entry in the Create menu open the same box.
+- Avatar: a small animated character now floats above every app while Brainz is open. It blinks and glances around, and hovering it shows a row of colours to pick from. Click it for a menu with a capture field (Enter saves to Inbox.md), your next calendar events, and the newest My Man screenshots and recordings, which copy to the clipboard with one click when My Man is installed. Drag the character to move it, or right-click to hide it until Brainz restarts.
+- Avatar: a notice appears beside the character about ten minutes before a calendar event starts.
+- Quick capture: the Create menu has a Quick capture entry that opens the same box as Control-Option-N.
 
 ## 0.1.63 (2026-11-11)
 
