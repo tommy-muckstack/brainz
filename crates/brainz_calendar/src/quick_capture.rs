@@ -84,6 +84,26 @@ pub fn init(cx: &mut gpui::App) {
 #[cfg(not(target_os = "macos"))]
 pub fn init(_: &mut gpui::App) {}
 
+/// Whether the floating avatar is switched on.
+#[cfg(target_os = "macos")]
+pub fn avatar_enabled() -> bool {
+    native::avatar_enabled()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn avatar_enabled() -> bool {
+    false
+}
+
+/// Shows or hides the floating avatar and remembers the choice.
+#[cfg(target_os = "macos")]
+pub fn toggle_avatar(cx: &mut gpui::App) {
+    native::toggle_avatar(cx);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn toggle_avatar(_: &mut gpui::App) {}
+
 #[cfg(target_os = "macos")]
 mod native {
     use std::{ffi::c_void, sync::OnceLock};
@@ -157,6 +177,7 @@ mod native {
 
     pub(super) fn init(cx: &mut App) {
         cx.on_action(|_: &super::QuickCapture, cx| open(cx));
+        AVATAR_HIDDEN.store(avatar_off_file().exists(), Ordering::Relaxed);
         // The avatar lives only while a workspace window does: a lone
         // floating panel would count as an open window, so closing the last
         // real window would neither quit Brainz nor let the Dock reopen it.
@@ -290,8 +311,32 @@ mod native {
     /// Features drawn on a body too dark for the usual ink.
     const AVATAR_LIGHT_INK: u32 = 0xf3f0e8;
 
-    /// Set by right-clicking the avatar; it stays away until Brainz restarts.
+    /// Switched from the status bar and remembered across launches.
     static AVATAR_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+    fn avatar_off_file() -> std::path::PathBuf {
+        paths::data_dir().join("avatar-off")
+    }
+
+    pub(super) fn avatar_enabled() -> bool {
+        !AVATAR_HIDDEN.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn toggle_avatar(cx: &mut App) {
+        let hide = avatar_enabled();
+        AVATAR_HIDDEN.store(hide, Ordering::Relaxed);
+        if hide {
+            std::fs::write(avatar_off_file(), "").log_err();
+            hide_avatar(cx);
+        } else {
+            if let Err(error) = std::fs::remove_file(avatar_off_file())
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                log::warn!("brainz: could not remember the avatar is on: {error}");
+            }
+            show_avatar(cx);
+        }
+    }
     static AVATAR_COLOR: AtomicUsize = AtomicUsize::new(usize::MAX);
 
     /// The chosen colour's place in the palette; the default until one is
@@ -358,7 +403,7 @@ mod native {
                 cx.new(|cx| AvatarView {
                     pressed_at: None,
                     dragged: false,
-                    hovered: false,
+                    palette_open: false,
                     _transparency: crate::capture_menu::keep_transparent(window, cx),
                 })
             },
@@ -426,7 +471,7 @@ mod native {
     pub struct AvatarView {
         pressed_at: Option<Point<Pixels>>,
         dragged: bool,
-        hovered: bool,
+        palette_open: bool,
         _transparency: gpui::Subscription,
     }
 
@@ -463,6 +508,7 @@ mod native {
             };
             AVATAR_COLOR.store(index, Ordering::Relaxed);
             std::fs::write(avatar_color_file(), name).log_err();
+            self.palette_open = false;
             cx.notify();
         }
     }
@@ -493,9 +539,9 @@ mod native {
                 .on_mouse_up(MouseButton::Left, cx.listener(Self::release))
                 .on_mouse_down(
                     MouseButton::Right,
-                    cx.listener(|_, _, window, _| {
-                        AVATAR_HIDDEN.store(true, Ordering::Relaxed);
-                        window.remove_window();
+                    cx.listener(|this, _, _, cx| {
+                        this.palette_open = !this.palette_open;
+                        cx.notify();
                     }),
                 )
                 .with_animation(
@@ -557,17 +603,13 @@ mod native {
                 .id("brainz-avatar-window")
                 .size_full()
                 .items_center()
-                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                    this.hovered = *hovered;
-                    cx.notify();
-                }))
                 .child(character)
                 .child(
                     h_flex()
                         .w(px(86.))
                         .flex_wrap()
                         .gap_1()
-                        .when(!self.hovered, |this| this.invisible())
+                        .when(!self.palette_open, |this| this.invisible())
                         .children(
                             AVATAR_COLORS
                                 .iter()

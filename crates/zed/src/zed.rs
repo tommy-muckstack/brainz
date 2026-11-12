@@ -603,6 +603,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         // Brainz: Brief, Calendar, To-Do, Themes, and Connectors live in the
         // sidebar navigation now, not the status bar.
         let brainz_launch_button = cx.new(|_| brainz_calendar::launcher::LaunchButton::new());
+        let brainz_avatar_button = cx.new(|_| brainz_calendar::launcher::AvatarButton);
         let diagnostic_summary =
             cx.new(|cx| diagnostics::items::DiagnosticIndicator::new(workspace, cx));
         let active_file_name = cx.new(|_| workspace::active_file_name::ActiveFileName::new());
@@ -637,6 +638,7 @@ pub fn initialize_workspace(app_state: Arc<AppState>, cx: &mut App) {
         workspace.status_bar().update(cx, |status_bar, cx| {
             status_bar.add_left_item(search_button, window, cx);
             status_bar.add_left_item(brainz_launch_button, window, cx);
+            status_bar.add_left_item(brainz_avatar_button, window, cx);
             status_bar.add_left_item(lsp_button, window, cx);
             status_bar.add_left_item(diagnostic_summary, window, cx);
             status_bar.add_left_item(active_file_name, window, cx);

@@ -79,6 +79,43 @@ impl Render for LaunchButton {
     }
 }
 
+/// The anchor beside the rocket: shows or hides the floating avatar.
+pub struct AvatarButton;
+
+impl Render for AvatarButton {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let enabled = crate::quick_capture::avatar_enabled();
+        div().child(
+            IconButton::new("brainz-avatar-button", IconName::BrainzAnchor)
+                .icon_size(IconSize::Small)
+                .toggle_state(enabled)
+                .tooltip(Tooltip::text(if enabled {
+                    "Hide the avatar"
+                } else {
+                    "Show the avatar"
+                }))
+                .on_click(cx.listener(|_, _, _, cx| {
+                    crate::quick_capture::toggle_avatar(cx);
+                    cx.notify();
+                })),
+        )
+    }
+}
+
+impl StatusItemView for AvatarButton {
+    fn set_active_pane_item(
+        &mut self,
+        _: Option<&dyn ItemHandle>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+    }
+
+    fn hide_setting(&self, _: &App) -> Option<HideStatusItem> {
+        None
+    }
+}
+
 impl StatusItemView for LaunchButton {
     fn set_active_pane_item(
         &mut self,

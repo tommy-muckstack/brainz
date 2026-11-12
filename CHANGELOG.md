@@ -8,6 +8,7 @@
 
 ### Improved
 
+- Avatar: an anchor button beside the rocket in the status bar turns the character on and off, and the choice is remembered. Right-clicking the character now opens its colour choices instead of hiding it, and the colours no longer appear on hover.
 - Avatar: it moves far less often, with long still stretches between a blink, a glance or a wink.
 - Avatar menu: My Man rows show Copy and Show in Finder buttons on hover, and the Next up heading has a Calendar link that opens the Calendar tab. Clicking an event does the same.
 

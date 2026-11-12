@@ -201,6 +201,8 @@ pub enum IconName {
     BrainzLoops,
     /// Brainz: Brief tab button (sun).
     BrainzBrief,
+    /// Brainz: status-bar toggle for the floating avatar (anchor).
+    BrainzAnchor,
     /// Brainz: sliders used for the composer's model/mode options toggle.
     BrainzSliders,
     /// Brainz: open to-do item (rounded square).
@@ -352,6 +354,7 @@ impl IconName {
             Self::Save => return "icons/brainz/save.svg".into(),
             Self::BrainzLoops => return "icons/brainz/loops.svg".into(),
             Self::BrainzBrief => return "icons/brainz/brief.svg".into(),
+            Self::BrainzAnchor => return "icons/brainz/anchor.svg".into(),
             Self::BrainzClaude => return "icons/brainz/claude.svg".into(),
             Self::BrainzCodex => return "icons/brainz/codex.svg".into(),
             Self::Split => return "icons/brainz/split.svg".into(),
