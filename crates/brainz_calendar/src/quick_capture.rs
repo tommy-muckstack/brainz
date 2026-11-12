@@ -276,19 +276,35 @@ mod native {
 
     const AVATAR_WINDOW: Size<Pixels> = Size {
         width: px(96.),
-        height: px(96.),
+        height: px(106.),
     };
     const AVATAR_MARGIN: Pixels = px(28.);
     /// Movement past this turns a press on the avatar into a drag.
     const AVATAR_DRAG_DISTANCE: Pixels = px(4.);
     /// One pass through the idle routine: bob, blinks, a look to each side.
     const AVATAR_LOOP: Duration = Duration::from_secs(12);
-    const AVATAR_COLORS: &[u32] = &[0xf2f2f0, 0xf5c84b, 0xf59ab5, 0x8fc4f7, 0x9be0a8, 0xc3a6f5];
+    const AVATAR_COLORS: &[(&str, u32)] = ui::BRAINZ_TAB_COLORS;
+    const AVATAR_DEFAULT_COLOR: &str = "White";
     const AVATAR_INK: u32 = 0x2b2b2b;
+    /// Features drawn on a body too dark for the usual ink.
+    const AVATAR_LIGHT_INK: u32 = 0xf3f0e8;
 
     /// Set by right-clicking the avatar; it stays away until Brainz restarts.
     static AVATAR_HIDDEN: AtomicBool = AtomicBool::new(false);
-    static AVATAR_COLOR: AtomicUsize = AtomicUsize::new(0);
+    static AVATAR_COLOR: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+    /// The chosen colour's place in the palette; the default until one is
+    /// picked, or when a saved name is no longer offered.
+    fn avatar_color_index() -> usize {
+        let index = AVATAR_COLOR.load(Ordering::Relaxed);
+        if index < AVATAR_COLORS.len() {
+            return index;
+        }
+        AVATAR_COLORS
+            .iter()
+            .position(|(name, _)| *name == AVATAR_DEFAULT_COLOR)
+            .unwrap_or(0)
+    }
 
     fn avatar_color_file() -> std::path::PathBuf {
         paths::data_dir().join("avatar-color")
@@ -306,10 +322,14 @@ mod native {
         let Some(display) = cx.primary_display() else {
             return;
         };
+        // Saved by name, so the choice survives the palette being reordered.
         if let Some(saved) = std::fs::read_to_string(avatar_color_file())
             .ok()
-            .and_then(|saved| saved.trim().parse::<usize>().ok())
-            .filter(|saved| *saved < AVATAR_COLORS.len())
+            .and_then(|saved| {
+                AVATAR_COLORS
+                    .iter()
+                    .position(|(name, _)| *name == saved.trim())
+            })
         {
             AVATAR_COLOR.store(saved, Ordering::Relaxed);
         }
@@ -437,19 +457,27 @@ mod native {
         }
 
         fn pick_color(&mut self, index: usize, cx: &mut Context<Self>) {
+            let Some((name, _)) = AVATAR_COLORS.get(index) else {
+                return;
+            };
             AVATAR_COLOR.store(index, Ordering::Relaxed);
-            std::fs::write(avatar_color_file(), index.to_string()).log_err();
+            std::fs::write(avatar_color_file(), name).log_err();
             cx.notify();
         }
     }
 
     impl Render for AvatarView {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let selected = AVATAR_COLOR.load(Ordering::Relaxed);
-            let color: Hsla = rgb(AVATAR_COLORS.get(selected).copied().unwrap_or(0xf2f2f0)).into();
+            let selected = avatar_color_index();
+            let color: Hsla = rgb(AVATAR_COLORS
+                .get(selected)
+                .map_or(AVATAR_LIGHT_INK, |(_, color)| *color))
+            .into();
+            let dark = color.l < 0.3;
             let mut shade = color;
-            shade.l *= 0.82;
-            let ink: Hsla = rgb(AVATAR_INK).into();
+            // A dark body gets a lighter rim, or its edge would vanish.
+            shade.l = if dark { color.l + 0.12 } else { color.l * 0.82 };
+            let ink: Hsla = rgb(if dark { AVATAR_LIGHT_INK } else { AVATAR_INK }).into();
             // The artwork is drawn on a 120 × 100 grid and shown at 0.65.
             let width = px(78.);
             let height = px(65.);
@@ -535,26 +563,32 @@ mod native {
                 .child(character)
                 .child(
                     h_flex()
-                        .h(px(18.))
+                        .w(px(86.))
+                        .flex_wrap()
                         .gap_1()
                         .when(!self.hovered, |this| this.invisible())
-                        .children(AVATAR_COLORS.iter().enumerate().map(|(index, swatch)| {
-                            div()
-                                .id(("brainz-avatar-color", index))
-                                .size(px(11.))
-                                .rounded_full()
-                                .bg(rgb(*swatch))
-                                .border_1()
-                                .border_color(if index == selected {
-                                    rgb(0xffffff)
-                                } else {
-                                    rgb(0x55554f)
-                                })
-                                .cursor_pointer()
-                                .on_click(
-                                    cx.listener(move |this, _, _, cx| this.pick_color(index, cx)),
-                                )
-                        })),
+                        .children(
+                            AVATAR_COLORS
+                                .iter()
+                                .enumerate()
+                                .map(|(index, (_, swatch))| {
+                                    div()
+                                        .id(("brainz-avatar-color", index))
+                                        .size(px(11.))
+                                        .rounded_full()
+                                        .bg(rgb(*swatch))
+                                        .border_1()
+                                        .border_color(if index == selected {
+                                            rgb(0xffffff)
+                                        } else {
+                                            rgb(0x55554f)
+                                        })
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.pick_color(index, cx)
+                                        }))
+                                }),
+                        ),
                 )
         }
     }
