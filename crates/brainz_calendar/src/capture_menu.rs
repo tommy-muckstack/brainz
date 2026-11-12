@@ -248,6 +248,18 @@ fn beside(anchor: Bounds<Pixels>, size: Size<Pixels>, cx: &App) -> Bounds<Pixels
     Bounds { origin, size }
 }
 
+/// Brainz applies the theme's window background to every window whenever a
+/// setting changes, which would turn a long-lived see-through window into an
+/// opaque black box. This puts the transparency back each time.
+pub fn keep_transparent<V: 'static>(
+    window: &mut Window,
+    cx: &mut Context<V>,
+) -> gpui::Subscription {
+    cx.observe_global_in::<settings::SettingsStore>(window, |_, window, _| {
+        window.set_background_appearance(WindowBackgroundAppearance::Transparent);
+    })
+}
+
 fn popup(bounds: Bounds<Pixels>, focus: bool) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -292,8 +304,15 @@ pub fn toggle(anchor: Bounds<Pixels>, cx: &mut App) {
             .await;
         cx.update(|cx| {
             let events = upcoming(&cx.default_global::<MenuState>().events, Local::now());
-            let rows = events.len() + captures.len();
-            let sections = usize::from(!events.is_empty()) + usize::from(!captures.is_empty());
+            // With a brain open the calendar section always shows, with one
+            // quiet line when nothing is coming up.
+            let event_rows = if brain.is_some() {
+                events.len().max(1)
+            } else {
+                events.len()
+            };
+            let rows = event_rows + captures.len();
+            let sections = usize::from(event_rows > 0) + usize::from(!captures.is_empty());
             let height = px(24.)
                 + px(if brain.is_some() { 48. } else { 0. })
                 + px(30.) * sections as f32
@@ -390,6 +409,24 @@ impl MenuView {
                 cx.notify();
             }
         }
+    }
+
+    /// Brings a Brainz window forward on its Calendar tab and closes the menu.
+    fn open_calendar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let workspace = cx
+            .windows()
+            .into_iter()
+            .find_map(|window| window.downcast::<workspace::MultiWorkspace>());
+        if let Some(workspace) = workspace {
+            cx.activate(true);
+            workspace
+                .update(cx, |_, window, cx| {
+                    window.activate_window();
+                    window.dispatch_action(Box::new(crate::OpenCalendar), cx);
+                })
+                .log_err();
+        }
+        window.remove_window();
     }
 
     fn copy(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -530,35 +567,86 @@ impl Render for MenuView {
                     ),
                 )
             })
-            .when(!self.events.is_empty(), |this| {
-                this.child(section("Next up"))
-                    .children(self.events.iter().map(|event| {
-                        h_flex()
-                            .h(px(44.))
-                            .px_1()
-                            .gap_3()
-                            .child(
-                                Icon::new(IconName::BrainzCalendar)
-                                    .size(IconSize::Small)
-                                    .color(Color::Muted),
-                            )
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .overflow_hidden()
-                                    .child(Label::new(event.title.clone()).truncate())
-                                    .child(
-                                        Label::new(starts_label(event, now))
-                                            .size(LabelSize::Small)
-                                            .color(Color::Muted),
-                                    ),
-                            )
-                    }))
+            .when(self.brain.is_some() || !self.events.is_empty(), |this| {
+                this.child(
+                    h_flex()
+                        .h(px(30.))
+                        .px_1()
+                        .pb_1()
+                        .items_end()
+                        .justify_between()
+                        .child(
+                            Label::new("Next up")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            h_flex()
+                                .id("brainz-menu-open-calendar")
+                                .gap_1()
+                                .cursor_pointer()
+                                .opacity(0.7)
+                                .hover(|this| this.opacity(1.))
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.open_calendar(window, cx)
+                                    }),
+                                )
+                                .child(
+                                    Label::new("Calendar")
+                                        .size(LabelSize::Small)
+                                        .color(Color::Muted),
+                                )
+                                .child(
+                                    Icon::new(IconName::ArrowUpRight)
+                                        .size(IconSize::XSmall)
+                                        .color(Color::Muted),
+                                ),
+                        ),
+                )
+                .when(self.events.is_empty(), |this| {
+                    this.child(
+                        div().h(px(44.)).px_1().flex().items_center().child(
+                            Label::new("Nothing in the next day")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                    )
+                })
+                .children(self.events.iter().enumerate().map(|(index, event)| {
+                    h_flex()
+                        .id(("brainz-menu-event", index))
+                        .h(px(44.))
+                        .px_1()
+                        .gap_3()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|this| this.bg(colors.element_hover))
+                        .on_click(cx.listener(|this, _, window, cx| this.open_calendar(window, cx)))
+                        .child(
+                            Icon::new(IconName::BrainzCalendar)
+                                .size(IconSize::Small)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .overflow_hidden()
+                                .child(Label::new(event.title.clone()).truncate())
+                                .child(
+                                    Label::new(starts_label(event, now))
+                                        .size(LabelSize::Small)
+                                        .color(Color::Muted),
+                                ),
+                        )
+                }))
             })
             .when(!self.captures.is_empty(), |this| {
-                this.child(section("Recent from My Man · click to copy"))
-                    .children(self.captures.iter().enumerate().map(|(index, capture)| {
+                this.child(section("Recent from My Man")).children(
+                    self.captures.iter().enumerate().map(|(index, capture)| {
                         let copied = self.copied == Some(index);
+                        let group = SharedString::from(format!("brainz-capture-row-{index}"));
+                        let file = capture.file.clone();
                         let preview = match (&capture.thumbnail, capture.kind) {
                             (Some(thumbnail), CaptureKind::Screenshot) => img(thumbnail.clone())
                                 .w(px(48.))
@@ -582,14 +670,12 @@ impl Render for MenuView {
                                 .into_any_element(),
                         };
                         h_flex()
-                            .id(("brainz-capture-row", index))
+                            .group(group.clone())
                             .h(px(44.))
                             .px_1()
                             .gap_3()
                             .rounded_md()
-                            .cursor_pointer()
                             .hover(|this| this.bg(colors.element_hover))
-                            .on_click(cx.listener(move |this, _, _, cx| this.copy(index, cx)))
                             .child(preview)
                             .child(
                                 div()
@@ -606,7 +692,33 @@ impl Render for MenuView {
                                     .size(LabelSize::Small)
                                     .color(Color::Muted)
                             })
-                    }))
+                            .child(
+                                h_flex()
+                                    .gap_0p5()
+                                    .visible_on_hover(group)
+                                    .child(
+                                        IconButton::new(
+                                            ("brainz-capture-copy", index),
+                                            IconName::Copy,
+                                        )
+                                        .icon_size(IconSize::Small)
+                                        .tooltip(ui::Tooltip::text("Copy to clipboard"))
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| this.copy(index, cx)),
+                                        ),
+                                    )
+                                    .child(
+                                        IconButton::new(
+                                            ("brainz-capture-reveal", index),
+                                            IconName::FolderOpen,
+                                        )
+                                        .icon_size(IconSize::Small)
+                                        .tooltip(ui::Tooltip::text("Show in Finder"))
+                                        .on_click(move |_, _, cx| cx.reveal_path(&file)),
+                                    ),
+                            )
+                    }),
+                )
             })
             .when_some(self.error.clone(), |this, error| {
                 this.child(Label::new(error).size(LabelSize::Small).color(Color::Error))
@@ -628,9 +740,10 @@ fn open_notice(event: CalendarEvent, anchor: Bounds<Pixels>, cx: &mut App) {
         + Duration::from_secs(60);
     let bounds = beside(anchor, NOTICE_SIZE, cx);
     let Some(notice) = cx
-        .open_window(popup(bounds, false), move |_, cx| {
-            cx.new(|_| NoticeView {
+        .open_window(popup(bounds, false), move |window, cx| {
+            cx.new(|cx| NoticeView {
                 event: Arc::new(event),
+                _transparency: keep_transparent(window, cx),
             })
         })
         .log_err()
@@ -650,6 +763,7 @@ fn open_notice(event: CalendarEvent, anchor: Bounds<Pixels>, cx: &mut App) {
 /// The heads-up shown beside the avatar before an event; a click dismisses it.
 pub struct NoticeView {
     event: Arc<CalendarEvent>,
+    _transparency: gpui::Subscription,
 }
 
 impl Render for NoticeView {

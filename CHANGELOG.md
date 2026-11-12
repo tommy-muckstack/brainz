@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- Avatar: the area around the character is see-through again instead of a black box.
+
+### Improved
+
+- Avatar: it moves far less often, with long still stretches between a blink, a glance or a wink.
+- Avatar menu: My Man rows show Copy and Show in Finder buttons on hover, and the Next up heading has a Calendar link that opens the Calendar tab. Clicking an event does the same.
+
 ## 0.1.65 (2026-11-12)
 
 ### Improved

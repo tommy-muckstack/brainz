@@ -281,8 +281,9 @@ mod native {
     const AVATAR_MARGIN: Pixels = px(28.);
     /// Movement past this turns a press on the avatar into a drag.
     const AVATAR_DRAG_DISTANCE: Pixels = px(4.);
-    /// One pass through the idle routine: bob, blinks, a look to each side.
-    const AVATAR_LOOP: Duration = Duration::from_secs(12);
+    /// One pass through the idle routine. It is mostly stillness: a blink
+    /// every eight seconds or so, and one glance, brow lift or wink between.
+    const AVATAR_LOOP: Duration = Duration::from_secs(45);
     const AVATAR_COLORS: &[(&str, u32)] = ui::BRAINZ_TAB_COLORS;
     const AVATAR_DEFAULT_COLOR: &str = "White";
     const AVATAR_INK: u32 = 0x2b2b2b;
@@ -353,11 +354,12 @@ mod native {
                 window_background: WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
-            |_, cx| {
-                cx.new(|_| AvatarView {
+            |window, cx| {
+                cx.new(|cx| AvatarView {
                     pressed_at: None,
                     dragged: false,
                     hovered: false,
+                    _transparency: crate::capture_menu::keep_transparent(window, cx),
                 })
             },
         )
@@ -394,7 +396,7 @@ mod native {
 
     /// How open the eyes are at `time` seconds into the loop: 1 is open.
     fn eye_openness(time: f32) -> f32 {
-        const BLINKS: [f32; 4] = [2.1, 6.4, 6.75, 10.3];
+        const BLINKS: [f32; 6] = [4., 13., 21., 21.4, 30., 39.];
         const BLINK_SECONDS: f32 = 0.16;
         BLINKS
             .iter()
@@ -404,22 +406,20 @@ mod native {
 
     /// The wink near the end of the loop closes only the left eye.
     fn wink(time: f32) -> f32 {
-        hold(time, 11.0, 11.45, 0.12)
+        hold(time, 34.0, 34.45, 0.12)
     }
 
-    /// How far the eyebrows are raised at `time`, from 0 to 1: a quick lift
-    /// on their own, a smaller one with each glance, and one with the wink.
+    /// How far the eyebrows are raised at `time`, from 0 to 1: one lift on
+    /// their own, a smaller one with each glance, and one with the wink.
     fn brow_lift(time: f32) -> f32 {
-        hold(time, 0.8, 1.5, 0.2)
-            .max(hold(time, 3.4, 5.2, 0.35) * 0.5)
-            .max(hold(time, 7.2, 7.7, 0.18))
-            .max(hold(time, 8.0, 9.5, 0.35) * 0.5)
+        hold(time, 17.0, 17.7, 0.2)
+            .max(glance(time).abs() * 0.5)
             .max(wink(time))
     }
 
     /// Sideways glance at `time`: negative looks left, positive right.
     fn glance(time: f32) -> f32 {
-        hold(time, 3.4, 5.2, 0.35) * -1. + hold(time, 8.0, 9.5, 0.35)
+        hold(time, 9.0, 10.6, 0.35) * -1. + hold(time, 26.0, 27.5, 0.35)
     }
 
     /// The floating character that opens the menu from any app.
@@ -427,6 +427,7 @@ mod native {
         pressed_at: Option<Point<Pixels>>,
         dragged: bool,
         hovered: bool,
+        _transparency: gpui::Subscription,
     }
 
     impl AvatarView {
@@ -502,7 +503,7 @@ mod native {
                     Animation::new(AVATAR_LOOP).repeat(),
                     move |this, delta| {
                         let time = delta * AVATAR_LOOP.as_secs_f32();
-                        let bob = (time / 4. * std::f32::consts::TAU).sin() * 1.5;
+                        let bob = (time / 7.5 * std::f32::consts::TAU).sin() * 0.8;
                         let look = glance(time) * 3.5;
                         let open = eye_openness(time);
                         let brows = brow_lift(time) * 2.5;
