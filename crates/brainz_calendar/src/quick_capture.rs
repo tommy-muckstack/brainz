@@ -411,11 +411,16 @@ mod native {
         .log_err();
     }
 
-    fn avatar_bounds(cx: &mut App) -> Option<Bounds<Pixels>> {
+    fn avatar_bounds(cx: &mut App) -> Option<(Bounds<Pixels>, Option<gpui::DisplayId>)> {
         cx.windows().into_iter().find_map(|window| {
             window
                 .downcast::<AvatarView>()?
-                .update(cx, |_, window, _| window.bounds())
+                .update(cx, |_, window, cx| {
+                    (
+                        window.bounds(),
+                        window.display(cx).map(|display| display.id()),
+                    )
+                })
                 .ok()
         })
     }
@@ -498,7 +503,8 @@ mod native {
         fn release(&mut self, _: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
             if self.pressed_at.take().is_some() && !self.dragged {
                 let anchor = window.bounds();
-                cx.defer(move |cx| crate::capture_menu::toggle(anchor, cx));
+                let display = window.display(cx).map(|display| display.id());
+                cx.defer(move |cx| crate::capture_menu::toggle(anchor, display, cx));
             }
         }
 

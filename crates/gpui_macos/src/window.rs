@@ -1870,6 +1870,12 @@ impl PlatformWindow for MacWindow {
                 NSColor::colorWithSRGBRed_green_blue_alpha_(nil, 0f64, 0f64, 0f64, 0.0001)
             };
             this.native_window.setBackgroundColor_(background_color);
+            // A see-through pop-up draws its own outline. The system shadow
+            // follows the window's whole rectangle and shows as a box around it.
+            let level: cocoa::foundation::NSInteger = msg_send![this.native_window, level];
+            if level == NSPopUpWindowLevel as cocoa::foundation::NSInteger {
+                this.native_window.setHasShadow_(opaque as BOOL);
+            }
 
             if background_appearance != WindowBackgroundAppearance::Blurred {
                 if let Some(blur_view) = this.blurred_view {
@@ -2635,7 +2641,44 @@ extern "C" fn handle_key_equivalent(this: &Object, _: Sel, native_event: id) -> 
                     // returning NO loses Command keys before JavaScript sees them.
                     // Deliver once to the focused editor, before GPUI or menus
                     // interpret formatting keys as workspace actions.
-                    let _: () = msg_send![first_responder, keyDown: native_event];
+                    static FORWARDED: std::sync::atomic::AtomicU64 =
+                        std::sync::atomic::AtomicU64::new(0);
+                    let timestamp: f64 = msg_send![native_event, timestamp];
+                    let resent = FORWARDED
+                        .swap(timestamp.to_bits(), std::sync::atomic::Ordering::Relaxed)
+                        == timestamp.to_bits();
+                    if !resent {
+                        let _: () = msg_send![first_responder, keyDown: native_event];
+                        return YES;
+                    }
+                    // WebKit sends a key the page left alone back through the
+                    // application so the Edit menu can act on it; that is the
+                    // only way a web view copies, cuts, pastes or selects all.
+                    // Forwarding it again would drop it, and the menus must not
+                    // see the other keys, so perform the edit command here.
+                    let modifiers = event.keystroke.modifiers;
+                    let command = if modifiers.platform
+                        && !modifiers.control
+                        && !modifiers.alt
+                        && !modifiers.shift
+                    {
+                        match event.keystroke.key.as_str() {
+                            "c" => Some(sel!(copy:)),
+                            "x" => Some(sel!(cut:)),
+                            "v" => Some(sel!(paste:)),
+                            "a" => Some(sel!(selectAll:)),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(command) = command {
+                        let responds: BOOL =
+                            msg_send![first_responder, respondsToSelector: command];
+                        if responds == YES {
+                            let _: id = msg_send![first_responder, performSelector: command withObject: nil];
+                        }
+                    }
                     return YES;
                 }
             }

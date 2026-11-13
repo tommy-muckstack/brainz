@@ -1148,6 +1148,7 @@ impl WhiteboardView {
                         this.update(cx, |this, cx| match result {
                             Ok(()) => this.did_relocate(destination, cx),
                             Err(error) => {
+                                log::error!("Canvas could not follow its renamed file: {error}");
                                 this.send(json!({"type":"saveError", "message":error.to_string()}))
                             }
                         })
@@ -1936,6 +1937,10 @@ pub(crate) mod native {
                 }
                 NativeEvent::StorageReply(message) => self.send(message),
                 NativeEvent::Saved(Err(message)) => {
+                    log::error!(
+                        "Canvas {} could not be saved: {message}",
+                        self.target.path.display()
+                    );
                     self.send(json!({"type": "saveError", "message": message}))
                 }
                 NativeEvent::Recovered(result) => {
@@ -2251,6 +2256,7 @@ pub(crate) mod native {
                             }
                             if error != previous_error {
                                 if let Some(message) = &error {
+                                    log::error!("Canvas {} could not be synced: {message}", this.target.path.display());
                                     this.send(json!({"type":"saveError","message":message}));
                                 }
                                 previous_error = error;

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Fixed
+
+- Canvas: Command-C, Command-X and Command-V work on objects again, so copying a box and pasting it makes a second one. The same fix restores copy, cut, paste and select all while typing in canvas text and in notes. Brainz was passing the key to the canvas and then swallowing the follow-up that performs the edit.
+- Canvas: double-clicking a box or sticky opens it for typing even when it is already selected, when the click lands on its selection frame, or when the canvas was briefly busy.
+- Canvas: letters typed after leaving a sticky no longer land as stray text on the canvas.
+- Avatar: the faint box around the character is gone. It was the system shadow of its see-through window.
+- Avatar menu: it opens beside the character on whichever display the character is on.
+
+### Improved
+
+- Canvas: single-key shortcuts are gone. Letters no longer switch tools, so typing can never pick a tool or draw by accident. Tools are chosen from the tray or with Command-K, and typing with one box selected still starts its label.
+- Canvas: when a save fails, the reason is now written to the Brainz log.
+- Avatar menu: it slides out of the character when it opens.
+- Avatar menu: Calendar now opens the coming week's events inside the menu, grouped by day, instead of switching to Brainz. Open in Brainz is still there at the bottom.
+- Avatar menu: when Brainz has no calendar access yet, the menu says so and offers to ask for it, instead of reporting an empty day.
+
 ## 0.1.66 (2026-11-13)
 
 ### Fixed

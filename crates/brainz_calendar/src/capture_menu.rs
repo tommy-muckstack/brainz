@@ -14,9 +14,10 @@ use anyhow::{Context as _, Result, anyhow};
 use chrono::{DateTime, Local};
 use editor::Editor;
 use gpui::{
-    App, AppContext as _, Bounds, ClipboardItem, Entity, FocusHandle, Focusable, Global, Image,
-    ImageFormat, ObjectFit, Pixels, Size, WindowBackgroundAppearance, WindowBounds, WindowKind,
-    WindowOptions, img, point, px,
+    Animation, AnimationExt as _, App, AppContext as _, Bounds, ClipboardItem, DisplayId, Entity,
+    FocusHandle, Focusable, Global, Image, ImageFormat, MouseButton, ObjectFit, Pixels, Size,
+    WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, ease_out_quint, img,
+    point, px,
 };
 use ui::prelude::*;
 use util::ResultExt as _;
@@ -24,6 +25,13 @@ use util::ResultExt as _;
 use crate::{CalendarEvent, LoadState, myman::MyMan};
 
 const MENU_WIDTH: Pixels = px(340.);
+/// The menu's window is this tall and see-through; the panel inside it hugs
+/// the edge nearest the avatar, so it can grow without the window moving.
+const MENU_HEIGHT: Pixels = px(560.);
+const MENU_OPEN: Duration = Duration::from_millis(180);
+/// How far the panel travels as it slides out of the avatar.
+const MENU_SLIDE: f32 = 28.;
+const AGENDA_HEIGHT: Pixels = px(300.);
 const NOTICE_SIZE: Size<Pixels> = Size {
     width: px(300.),
     height: px(64.),
@@ -163,6 +171,45 @@ fn starts_label(event: &CalendarEvent, now: DateTime<Local>) -> String {
 }
 
 /// The identity of one occurrence, so a repeating event is announced each time.
+/// The heading an agenda day goes under.
+fn day_label(day: chrono::NaiveDate, today: chrono::NaiveDate) -> String {
+    match (day - today).num_days() {
+        0 => "Today".into(),
+        1 => "Tomorrow".into(),
+        _ => day.format("%A, %b %-d").to_string(),
+    }
+}
+
+fn time_label(event: &CalendarEvent) -> String {
+    if event.all_day {
+        "All day".into()
+    } else {
+        event.start.format("%-I:%M %p").to_string()
+    }
+}
+
+/// Everything still to come, in order, each with its day's heading when it is
+/// the first event of that day.
+fn agenda(events: &[CalendarEvent], now: DateTime<Local>) -> Vec<(Option<String>, CalendarEvent)> {
+    let mut coming = events
+        .iter()
+        .filter(|event| event.end > now)
+        .cloned()
+        .collect::<Vec<_>>();
+    coming.sort_by_key(|event| (event.start, !event.all_day));
+    let today = now.date_naive();
+    let mut previous = None;
+    coming
+        .into_iter()
+        .map(|event| {
+            let day = event.start.date_naive().max(today);
+            let heading = (previous != Some(day)).then(|| day_label(day, today));
+            previous = Some(day);
+            (heading, event)
+        })
+        .collect()
+}
+
 fn notice_key(event: &CalendarEvent) -> String {
     format!("{}@{}", event.id, event.start.to_rfc3339())
 }
@@ -170,6 +217,7 @@ fn notice_key(event: &CalendarEvent) -> String {
 #[derive(Default)]
 struct MenuState {
     events: Vec<CalendarEvent>,
+    needs_permission: bool,
     announced: HashSet<String>,
     closed_at: Option<Instant>,
 }
@@ -178,15 +226,12 @@ impl Global for MenuState {}
 
 /// Keeps the calendar fresh and raises a notice beside `anchor` (the avatar's
 /// bounds, when it is on screen) shortly before each event.
-pub fn init(anchor: fn(&mut App) -> Option<Bounds<Pixels>>, cx: &mut App) {
+pub fn init(anchor: fn(&mut App) -> Option<(Bounds<Pixels>, Option<DisplayId>)>, cx: &mut App) {
     cx.spawn(async move |cx| {
         loop {
             let loaded = cx.background_spawn(async { crate::load_events() }).await;
             match loaded {
-                Ok((LoadState::Ready, events)) => {
-                    cx.update(|cx| cx.default_global::<MenuState>().events = events);
-                }
-                Ok(_) => {}
+                Ok((state, events)) => cx.update(|cx| store_events(state, events, cx)),
                 Err(error) => log::warn!("brainz: avatar calendar refresh failed: {error:#}"),
             }
             cx.background_executor().timer(CALENDAR_REFRESH).await;
@@ -197,7 +242,7 @@ pub fn init(anchor: fn(&mut App) -> Option<Bounds<Pixels>>, cx: &mut App) {
         loop {
             cx.background_executor().timer(NOTICE_CHECK).await;
             cx.update(|cx| {
-                let Some(anchor) = anchor(cx) else {
+                let Some((anchor, display)) = anchor(cx) else {
                     return;
                 };
                 let now = Local::now();
@@ -215,7 +260,7 @@ pub fn init(anchor: fn(&mut App) -> Option<Bounds<Pixels>>, cx: &mut App) {
                     .cloned();
                 if let Some(event) = due {
                     state.announced.insert(notice_key(&event));
-                    open_notice(event, anchor, cx);
+                    open_notice(event, anchor, display, cx);
                 }
             });
         }
@@ -223,29 +268,46 @@ pub fn init(anchor: fn(&mut App) -> Option<Bounds<Pixels>>, cx: &mut App) {
     .detach();
 }
 
+fn store_events(state: LoadState, events: Vec<CalendarEvent>, cx: &mut App) {
+    let menu = cx.default_global::<MenuState>();
+    match state {
+        LoadState::Ready => {
+            menu.events = events;
+            menu.needs_permission = false;
+        }
+        LoadState::NeedsPermission => menu.needs_permission = true,
+        _ => {}
+    }
+}
+
 /// Where a window of `size` sits beside the avatar: above it and flush with
-/// its right edge, or below when there is no room above.
-fn beside(anchor: Bounds<Pixels>, size: Size<Pixels>, cx: &App) -> Bounds<Pixels> {
+/// its right edge, or below when there is no room above. Also says whether it
+/// ended up above. Window positions are measured from the corner of the
+/// window's own display, so only that display's size is needed.
+fn beside(
+    anchor: Bounds<Pixels>,
+    size: Size<Pixels>,
+    display: Option<DisplayId>,
+    cx: &App,
+) -> (Bounds<Pixels>, bool) {
     let screen = cx
         .displays()
         .into_iter()
-        .map(|display| display.bounds())
-        .find(|bounds| bounds.contains(&anchor.center()))
-        .or_else(|| cx.primary_display().map(|display| display.bounds()));
+        .find(|candidate| Some(candidate.id()) == display)
+        .or_else(|| cx.primary_display())
+        .map(|display| display.bounds().size);
     let mut origin = point(
         anchor.right() - size.width,
         anchor.top() - size.height - GAP,
     );
-    if let Some(screen) = screen {
-        if origin.y < screen.top() + GAP * 4. {
-            origin.y = anchor.bottom() + GAP;
-        }
-        origin.x = origin
-            .x
-            .min(screen.right() - size.width - GAP)
-            .max(screen.left() + GAP);
+    let above = origin.y >= GAP * 4.;
+    if !above {
+        origin.y = anchor.bottom() + GAP;
     }
-    Bounds { origin, size }
+    if let Some(screen) = screen {
+        origin.x = origin.x.min(screen.width - size.width - GAP).max(GAP);
+    }
+    (Bounds { origin, size }, above)
 }
 
 /// Brainz applies the theme's window background to every window whenever a
@@ -260,7 +322,7 @@ pub fn keep_transparent<V: 'static>(
     })
 }
 
-fn popup(bounds: Bounds<Pixels>, focus: bool) -> WindowOptions {
+fn popup(bounds: Bounds<Pixels>, focus: bool, display_id: Option<DisplayId>) -> WindowOptions {
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         titlebar: None,
@@ -268,13 +330,14 @@ fn popup(bounds: Bounds<Pixels>, focus: bool) -> WindowOptions {
         show: true,
         kind: WindowKind::PopUp,
         is_movable: false,
+        display_id,
         window_background: WindowBackgroundAppearance::Transparent,
         ..Default::default()
     }
 }
 
 /// Opens the menu beside the avatar, or closes it when it is already open.
-pub fn toggle(anchor: Bounds<Pixels>, cx: &mut App) {
+pub fn toggle(anchor: Bounds<Pixels>, display: Option<DisplayId>, cx: &mut App) {
     if let Some(existing) = cx
         .windows()
         .into_iter()
@@ -303,35 +366,22 @@ pub fn toggle(anchor: Bounds<Pixels>, cx: &mut App) {
             })
             .await;
         cx.update(|cx| {
-            let events = upcoming(&cx.default_global::<MenuState>().events, Local::now());
-            // With a brain open the calendar section always shows, with one
-            // quiet line when nothing is coming up.
-            let event_rows = if brain.is_some() {
-                events.len().max(1)
-            } else {
-                events.len()
-            };
-            let rows = event_rows + captures.len();
-            let sections = usize::from(event_rows > 0) + usize::from(!captures.is_empty());
-            let height = px(24.)
-                + px(if brain.is_some() { 48. } else { 0. })
-                + px(30.) * sections as f32
-                + px(44.) * rows as f32
-                + px(if rows == 0 && brain.is_none() {
-                    40.
-                } else {
-                    0.
-                });
-            let bounds = beside(
+            let state = cx.default_global::<MenuState>();
+            let events = state.events.clone();
+            let needs_permission = state.needs_permission;
+            let (bounds, above) = beside(
                 anchor,
                 Size {
                     width: MENU_WIDTH,
-                    height,
+                    height: MENU_HEIGHT,
                 },
+                display,
                 cx,
             );
-            cx.open_window(popup(bounds, true), move |window, cx| {
-                let view = cx.new(|cx| MenuView::new(brain, events, captures, window, cx));
+            cx.open_window(popup(bounds, true, display), move |window, cx| {
+                let view = cx.new(|cx| {
+                    MenuView::new(brain, events, captures, above, needs_permission, window, cx)
+                });
                 let focus = view.read(cx).focus_handle(cx);
                 window.focus(&focus, cx);
                 window.activate_window();
@@ -354,10 +404,15 @@ pub struct MenuView {
     editor: Option<Entity<Editor>>,
     events: Vec<CalendarEvent>,
     captures: Vec<Capture>,
+    /// Whether the menu sits above the avatar, and so grows upward from it.
+    above: bool,
+    calendar_open: bool,
+    needs_permission: bool,
     copied: Option<usize>,
     error: Option<String>,
     focus_handle: FocusHandle,
     _activation: gpui::Subscription,
+    _transparency: gpui::Subscription,
 }
 
 impl MenuView {
@@ -365,6 +420,8 @@ impl MenuView {
         brain: Option<PathBuf>,
         events: Vec<CalendarEvent>,
         captures: Vec<Capture>,
+        above: bool,
+        needs_permission: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -386,10 +443,14 @@ impl MenuView {
             editor,
             events,
             captures,
+            above,
+            calendar_open: false,
+            needs_permission,
             copied: None,
             error: None,
             focus_handle: cx.focus_handle(),
             _activation: activation,
+            _transparency: keep_transparent(window, cx),
         }
     }
 
@@ -409,6 +470,30 @@ impl MenuView {
                 cx.notify();
             }
         }
+    }
+
+    /// Asks macOS for calendar access, then fills the menu with what it allows.
+    fn allow_calendar(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let loaded = cx.background_spawn(async { crate::request_events() }).await;
+            this.update(cx, |this, cx| {
+                match loaded {
+                    Ok((state, events)) => {
+                        store_events(state, events, cx);
+                        let menu = cx.default_global::<MenuState>();
+                        this.events = menu.events.clone();
+                        this.needs_permission = menu.needs_permission;
+                        this.error = None;
+                    }
+                    Err(error) => {
+                        this.error = Some(format!("Couldn't read the calendar: {error:#}"));
+                    }
+                }
+                cx.notify();
+            })
+            .log_err();
+        })
+        .detach();
     }
 
     /// Brings a Brainz window forward on its Calendar tab and closes the menu.
@@ -530,9 +615,12 @@ impl Render for MenuView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors();
         let now = Local::now();
+        let next = upcoming(&self.events, now);
+        let above = self.above;
+        let calendar_open = self.calendar_open;
         let nothing_to_show =
             self.editor.is_none() && self.events.is_empty() && self.captures.is_empty();
-        v_flex()
+        let panel = v_flex()
             .key_context("BrainzQuickCapture")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::confirm))
@@ -542,7 +630,13 @@ impl Render for MenuView {
             .on_action(
                 cx.listener(|_, _: &editor::actions::Cancel, window, _| window.remove_window()),
             )
-            .size_full()
+            // A press on the panel must not reach the see-through backdrop,
+            // which closes the menu.
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .relative()
+            .w_full()
+            .max_h_full()
+            .overflow_hidden()
             .p_3()
             .rounded_xl()
             .border_1()
@@ -576,70 +670,185 @@ impl Render for MenuView {
                         .items_end()
                         .justify_between()
                         .child(
-                            Label::new("Next up")
+                            Label::new(if calendar_open { "Calendar" } else { "Next up" })
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
-                        .child(
-                            h_flex()
-                                .id("brainz-menu-open-calendar")
-                                .gap_1()
-                                .cursor_pointer()
-                                .opacity(0.7)
-                                .hover(|this| this.opacity(1.))
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.open_calendar(window, cx)
-                                    }),
-                                )
-                                .child(
-                                    Label::new("Calendar")
+                        .when(!self.needs_permission, |this| {
+                            this.child(
+                                h_flex()
+                                    .id("brainz-menu-toggle-calendar")
+                                    .gap_1()
+                                    .cursor_pointer()
+                                    .opacity(0.7)
+                                    .hover(|this| this.opacity(1.))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.calendar_open = !this.calendar_open;
+                                        cx.notify();
+                                    }))
+                                    .child(
+                                        Label::new(if calendar_open {
+                                            "Show less"
+                                        } else {
+                                            "Calendar"
+                                        })
                                         .size(LabelSize::Small)
                                         .color(Color::Muted),
-                                )
-                                .child(
-                                    Icon::new(IconName::ArrowUpRight)
+                                    )
+                                    .child(
+                                        Icon::new(if calendar_open {
+                                            IconName::ChevronUp
+                                        } else {
+                                            IconName::ChevronDown
+                                        })
                                         .size(IconSize::XSmall)
                                         .color(Color::Muted),
-                                ),
-                        ),
+                                    ),
+                            )
+                        }),
                 )
-                .when(self.events.is_empty(), |this| {
+                .when(self.needs_permission, |this| {
                     this.child(
-                        div().h(px(44.)).px_1().flex().items_center().child(
-                            Label::new("Nothing in the next day")
-                                .size(LabelSize::Small)
-                                .color(Color::Muted),
-                        ),
+                        h_flex()
+                            .id("brainz-menu-allow-calendar")
+                            .h(px(44.))
+                            .px_1()
+                            .gap_3()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|this| this.bg(colors.element_hover))
+                            .on_click(cx.listener(|this, _, _, cx| this.allow_calendar(cx)))
+                            .child(
+                                Icon::new(IconName::BrainzCalendar)
+                                    .size(IconSize::Small)
+                                    .color(Color::Muted),
+                            )
+                            .child(Label::new("Allow calendar access to see what's next")),
                     )
                 })
-                .children(self.events.iter().enumerate().map(|(index, event)| {
-                    h_flex()
-                        .id(("brainz-menu-event", index))
-                        .h(px(44.))
-                        .px_1()
-                        .gap_3()
-                        .rounded_md()
-                        .cursor_pointer()
-                        .hover(|this| this.bg(colors.element_hover))
-                        .on_click(cx.listener(|this, _, window, cx| this.open_calendar(window, cx)))
-                        .child(
-                            Icon::new(IconName::BrainzCalendar)
-                                .size(IconSize::Small)
-                                .color(Color::Muted),
+                .when(
+                    !self.needs_permission && !calendar_open && next.is_empty(),
+                    |this| {
+                        this.child(
+                            div().h(px(44.)).px_1().flex().items_center().child(
+                                Label::new("Nothing in the next day")
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            ),
                         )
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .overflow_hidden()
-                                .child(Label::new(event.title.clone()).truncate())
-                                .child(
-                                    Label::new(starts_label(event, now))
-                                        .size(LabelSize::Small)
-                                        .color(Color::Muted),
-                                ),
-                        )
-                }))
+                    },
+                )
+                .when(!calendar_open, |this| {
+                    this.children(next.iter().enumerate().map(|(index, event)| {
+                        h_flex()
+                            .id(("brainz-menu-event", index))
+                            .h(px(44.))
+                            .px_1()
+                            .gap_3()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|this| this.bg(colors.element_hover))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.calendar_open = true;
+                                cx.notify();
+                            }))
+                            .child(
+                                Icon::new(IconName::BrainzCalendar)
+                                    .size(IconSize::Small)
+                                    .color(Color::Muted),
+                            )
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .overflow_hidden()
+                                    .child(Label::new(event.title.clone()).truncate())
+                                    .child(
+                                        Label::new(starts_label(event, now))
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    ),
+                            )
+                    }))
+                })
+                .when(calendar_open, |this| {
+                    let days = agenda(&self.events, now);
+                    this.child(
+                        v_flex()
+                            .id("brainz-menu-agenda")
+                            .max_h(AGENDA_HEIGHT)
+                            .overflow_y_scroll()
+                            .when(days.is_empty(), |this| {
+                                this.child(
+                                    div().h(px(44.)).px_1().flex().items_center().child(
+                                        Label::new("Nothing in the next week")
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    ),
+                                )
+                            })
+                            .children(days.into_iter().map(|(heading, event)| {
+                                v_flex()
+                                    .when_some(heading, |this, heading| {
+                                        this.child(
+                                            div().px_1().pt_2().pb_1().child(
+                                                Label::new(heading)
+                                                    .size(LabelSize::Small)
+                                                    .color(Color::Accent),
+                                            ),
+                                        )
+                                    })
+                                    .child(
+                                        h_flex()
+                                            .h(px(30.))
+                                            .px_1()
+                                            .gap_3()
+                                            .child(
+                                                div().w(px(64.)).flex_none().child(
+                                                    Label::new(time_label(&event))
+                                                        .size(LabelSize::Small)
+                                                        .color(Color::Muted),
+                                                ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .w(px(3.))
+                                                    .h(px(16.))
+                                                    .flex_none()
+                                                    .rounded_full()
+                                                    .bg(event.color.unwrap_or(colors.border)),
+                                            )
+                                            .child(
+                                                div().flex_1().overflow_hidden().child(
+                                                    Label::new(event.title.clone()).truncate(),
+                                                ),
+                                            ),
+                                    )
+                            })),
+                    )
+                    .child(
+                        h_flex()
+                            .id("brainz-menu-open-calendar")
+                            .h(px(30.))
+                            .px_1()
+                            .gap_1()
+                            .cursor_pointer()
+                            .opacity(0.7)
+                            .hover(|this| this.opacity(1.))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_calendar(window, cx)),
+                            )
+                            .child(
+                                Label::new("Open in Brainz")
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            )
+                            .child(
+                                Icon::new(IconName::ArrowUpRight)
+                                    .size(IconSize::XSmall)
+                                    .color(Color::Muted),
+                            ),
+                    )
+                })
             })
             .when(!self.captures.is_empty(), |this| {
                 this.child(section("Recent from My Man")).children(
@@ -722,11 +931,36 @@ impl Render for MenuView {
             })
             .when_some(self.error.clone(), |this, error| {
                 this.child(Label::new(error).size(LabelSize::Small).color(Color::Error))
-            })
+            });
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .when(above, |this| this.justify_end())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _, window, _| window.remove_window()),
+            )
+            .child(panel.with_animation(
+                "brainz-menu-open",
+                Animation::new(MENU_OPEN).with_easing(ease_out_quint()),
+                move |panel, delta| {
+                    // Starts tucked toward the avatar and slides out of it.
+                    let offset = (1. - delta) * MENU_SLIDE;
+                    panel
+                        .opacity(delta)
+                        .top(px(if above { offset } else { -offset }))
+                },
+            ))
     }
 }
 
-fn open_notice(event: CalendarEvent, anchor: Bounds<Pixels>, cx: &mut App) {
+fn open_notice(
+    event: CalendarEvent,
+    anchor: Bounds<Pixels>,
+    display: Option<DisplayId>,
+    cx: &mut App,
+) {
     for window in cx.windows() {
         if let Some(notice) = window.downcast::<NoticeView>() {
             notice
@@ -738,9 +972,9 @@ fn open_notice(event: CalendarEvent, anchor: Bounds<Pixels>, cx: &mut App) {
         .to_std()
         .unwrap_or(Duration::ZERO)
         + Duration::from_secs(60);
-    let bounds = beside(anchor, NOTICE_SIZE, cx);
+    let (bounds, _) = beside(anchor, NOTICE_SIZE, display, cx);
     let Some(notice) = cx
-        .open_window(popup(bounds, false), move |window, cx| {
+        .open_window(popup(bounds, false, display), move |window, cx| {
             cx.new(|cx| NoticeView {
                 event: Arc::new(event),
                 _transparency: keep_transparent(window, cx),
@@ -824,6 +1058,31 @@ mod tests {
             organizer: None,
             attendee_emails: Vec::new(),
         }
+    }
+
+    #[test]
+    fn agenda_lists_what_is_left_under_one_heading_per_day() {
+        let now = at(10, 0);
+        let events = [
+            event("tomorrow", at(9, 0) + chrono::Duration::days(1), 30, false),
+            event("over", at(8, 0), 30, false),
+            event("later", at(15, 0), 30, false),
+            event("running", at(9, 45), 30, false),
+            event("friday", at(9, 0) + chrono::Duration::days(2), 30, false),
+        ];
+        let listed = agenda(&events, now)
+            .into_iter()
+            .map(|(heading, event)| (heading, event.id))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            listed,
+            vec![
+                (Some("Today".to_owned()), "running".to_owned()),
+                (None, "later".to_owned()),
+                (Some("Tomorrow".to_owned()), "tomorrow".to_owned()),
+                (Some("Friday, Nov 13".to_owned()), "friday".to_owned()),
+            ]
+        );
     }
 
     #[test]

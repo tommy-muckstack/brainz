@@ -179,6 +179,11 @@ pub fn load_events() -> Result<(LoadState, Vec<CalendarEvent>)> {
     load_events_with_request(false)
 }
 
+/// Like [`load_events`], but lets macOS ask for calendar access first.
+pub(crate) fn request_events() -> Result<(LoadState, Vec<CalendarEvent>)> {
+    load_events_with_request(true)
+}
+
 #[allow(clippy::disallowed_methods)]
 fn load_events_with_request(request_access: bool) -> Result<(LoadState, Vec<CalendarEvent>)> {
     let helper = helper_path()?;
