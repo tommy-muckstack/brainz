@@ -122,7 +122,7 @@ fn recent_captures(myman: &MyMan) -> Vec<Capture> {
         CaptureKind::Recording,
     ));
     captures.retain(|capture| capture.file.is_file());
-    captures.sort_by(|a, b| b.captured.cmp(&a.captured));
+    captures.sort_by_key(|capture| std::cmp::Reverse(capture.captured));
     captures.truncate(CAPTURE_LIMIT);
     captures
 }

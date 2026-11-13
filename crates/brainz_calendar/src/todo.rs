@@ -2042,7 +2042,7 @@ mod tests {
         assert_eq!(checked_task.tag, task.tag);
         let reopened = toggle_line(&checked, checked_task.line, &checked_task.raw).unwrap();
         assert_eq!(reopened, text);
-        let mut cleared = task.clone();
+        let mut cleared = task;
         cleared.due = None;
         assert_eq!(
             cleared.line_with(cleared.priority, &cleared.title),
