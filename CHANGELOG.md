@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.67 (2026-11-13)
+
 ### Fixed
 
 - Canvas: Command-C, Command-X and Command-V work on objects again, so copying a box and pasting it makes a second one. The same fix restores copy, cut, paste and select all while typing in canvas text and in notes. Brainz was passing the key to the canvas and then swallowing the follow-up that performs the edit.
