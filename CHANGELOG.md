@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.66 (2026-11-13)
+
 ### Fixed
 
 - Avatar: the area around the character is see-through again instead of a black box.
