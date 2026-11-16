@@ -2641,44 +2641,8 @@ extern "C" fn handle_key_equivalent(this: &Object, _: Sel, native_event: id) -> 
                     // returning NO loses Command keys before JavaScript sees them.
                     // Deliver once to the focused editor, before GPUI or menus
                     // interpret formatting keys as workspace actions.
-                    static FORWARDED: std::sync::atomic::AtomicU64 =
-                        std::sync::atomic::AtomicU64::new(0);
-                    let timestamp: f64 = msg_send![native_event, timestamp];
-                    let resent = FORWARDED
-                        .swap(timestamp.to_bits(), std::sync::atomic::Ordering::Relaxed)
-                        == timestamp.to_bits();
-                    if !resent {
-                        let _: () = msg_send![first_responder, keyDown: native_event];
-                        return YES;
-                    }
-                    // WebKit sends a key the page left alone back through the
-                    // application so the Edit menu can act on it; that is the
-                    // only way a web view copies, cuts, pastes or selects all.
-                    // Forwarding it again would drop it, and the menus must not
-                    // see the other keys, so perform the edit command here.
-                    let modifiers = event.keystroke.modifiers;
-                    let command = if modifiers.platform
-                        && !modifiers.control
-                        && !modifiers.alt
-                        && !modifiers.shift
-                    {
-                        match event.keystroke.key.as_str() {
-                            "c" => Some(sel!(copy:)),
-                            "x" => Some(sel!(cut:)),
-                            "v" => Some(sel!(paste:)),
-                            "a" => Some(sel!(selectAll:)),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    };
-                    if let Some(command) = command {
-                        let responds: BOOL =
-                            msg_send![first_responder, respondsToSelector: command];
-                        if responds == YES {
-                            let _: id = msg_send![first_responder, performSelector: command withObject: nil];
-                        }
-                    }
+                    let _: () = msg_send![first_responder, keyDown: native_event];
+                    perform_web_edit_command(first_responder, &event.keystroke);
                     return YES;
                 }
             }
@@ -2706,6 +2670,29 @@ fn native_editor_owns_shortcut(keystroke: &Keystroke) -> bool {
         }
     }
     !(modifiers.platform && modifiers.control && keystroke.key == "v")
+}
+
+/// WebKit never hands back a Command key that a child web view's page left
+/// alone, and the Edit menu never sees it either, so copy, cut and paste run
+/// here after the page has had its keydown. The page's own Command-V handling
+/// ignores the paste event that follows.
+unsafe fn perform_web_edit_command(first_responder: id, keystroke: &Keystroke) {
+    let modifiers = keystroke.modifiers;
+    if !modifiers.platform || modifiers.control || modifiers.alt || modifiers.shift {
+        return;
+    }
+    let command = match keystroke.key.as_str() {
+        "c" => sel!(copy:),
+        "x" => sel!(cut:),
+        "v" => sel!(paste:),
+        _ => return,
+    };
+    unsafe {
+        let responds: BOOL = msg_send![first_responder, respondsToSelector: command];
+        if responds == YES {
+            let _: () = msg_send![first_responder, performSelector: command withObject: nil];
+        }
+    }
 }
 
 extern "C" fn handle_key_down(this: &Object, _: Sel, native_event: id) {
