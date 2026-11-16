@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed
+
+- Avatar: the calendar heads-up is smaller. Hovering shows a − in its corner that dismisses it; clicking the rest of it no longer does.
+
+### Fixed
+
+- Avatar menu and To-Do: titles on calendar and suggestion tiles use the theme's text colour instead of black, so they read on the dark background.
+
 ## 0.1.69 (2026-11-16)
 
 ### Changed

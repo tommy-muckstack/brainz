@@ -430,6 +430,7 @@ fn suggestion_tile(
                 .flex_1()
                 .min_h_0()
                 .text_sm()
+                .text_color(colors.text)
                 .line_height(px(18.))
                 .line_clamp(3)
                 .child(title),

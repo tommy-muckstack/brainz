@@ -33,8 +33,8 @@ const MENU_OPEN: Duration = Duration::from_millis(180);
 const MENU_SLIDE: f32 = 28.;
 const TILE_WIDTH: Pixels = px(136.);
 const NOTICE_SIZE: Size<Pixels> = Size {
-    width: px(306.),
-    height: px(70.),
+    width: px(232.),
+    height: px(50.),
 };
 const GAP: Pixels = px(8.);
 const CAPTURE_LIMIT: usize = 6;
@@ -787,6 +787,7 @@ impl Render for MenuView {
                                         .child(
                                             div()
                                                 .text_sm()
+                                                .text_color(colors.text)
                                                 .line_height(px(17.))
                                                 .line_clamp(2)
                                                 .child(event.title),
@@ -991,47 +992,83 @@ impl Render for NoticeView {
         let notice = h_flex()
             .id("brainz-event-notice")
             .size_full()
-            .px_4()
-            .gap_3()
-            .rounded_xl()
+            .pl_2p5()
+            .pr_5()
+            .gap_2()
+            .rounded_lg()
             .border_1()
             .border_color(tint.unwrap_or(colors.text_accent))
             .bg(surface)
-            .cursor_pointer()
-            .on_click(|_, window, _| window.remove_window())
-            .child(Icon::new(IconName::BrainzCalendar).color(icon_color))
+            .child(
+                Icon::new(IconName::BrainzCalendar)
+                    .size(IconSize::Small)
+                    .color(icon_color),
+            )
             .child(
                 v_flex()
                     .flex_1()
-                    .overflow_hidden()
-                    .child(Label::new(self.event.title.clone()).truncate())
+                    .min_w_0()
+                    .child(
+                        Label::new(self.event.title.clone())
+                            .size(LabelSize::Small)
+                            .truncate(),
+                    )
                     .child(
                         Label::new(countdown_label(&self.event, now))
-                            .size(LabelSize::Small)
+                            .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     ),
             );
+        let dismiss = div()
+            .id("brainz-event-notice-dismiss")
+            .absolute()
+            .top(px(7.))
+            .right(px(7.))
+            .size(px(16.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .border_1()
+            .border_color(colors.border)
+            .bg(colors.element_background)
+            .cursor_pointer()
+            .visible_on_hover("brainz-event-notice-frame")
+            .hover(|this| this.bg(colors.element_hover))
+            .tooltip(ui::Tooltip::text("Dismiss"))
+            .on_click(|_, window, _| window.remove_window())
+            .child(
+                Icon::new(IconName::Dash)
+                    .size(IconSize::XSmall)
+                    .color(Color::Muted),
+            );
         // The window is see-through and exactly the notice's size; the inset
         // keeps the rounded border's corners from being clipped by its edge.
-        let frame = div().size_full().p(px(3.));
+        let frame = div()
+            .group("brainz-event-notice-frame")
+            .relative()
+            .size_full()
+            .p(px(3.));
         match tint {
-            None => frame.child(notice.into_any_element()),
-            Some(tint) => frame.child(
-                notice
-                    .with_animation(
-                        // A new id per level restarts the pulse in the new colour.
-                        ("brainz-event-notice-pulse", urgency as usize),
-                        Animation::new(Duration::from_millis(2400))
-                            .repeat()
-                            .with_easing(pulsating_between(0.0, 1.0)),
-                        move |notice, delta| {
-                            notice
-                                .border_color(tint.opacity(0.45 + 0.55 * delta))
-                                .bg(surface.blend(tint.opacity(0.08 + 0.22 * delta)))
-                        },
-                    )
-                    .into_any_element(),
-            ),
+            None => frame.child(notice.into_any_element()).child(dismiss),
+            Some(tint) => frame
+                .child(
+                    notice
+                        .with_animation(
+                            // A new id per level restarts the pulse in the new colour.
+                            ("brainz-event-notice-pulse", urgency as usize),
+                            Animation::new(Duration::from_millis(2400))
+                                .repeat()
+                                .with_easing(pulsating_between(0.0, 1.0)),
+                            move |notice, delta| {
+                                notice
+                                    .border_color(tint.opacity(0.45 + 0.55 * delta))
+                                    .bg(surface.blend(tint.opacity(0.08 + 0.22 * delta)))
+                            },
+                        )
+                        .into_any_element(),
+                )
+                .child(dismiss),
         }
     }
 }
