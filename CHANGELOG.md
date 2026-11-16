@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.69 (2026-11-16)
+
 ### Changed
 
 - Avatar: the calendar heads-up counts down to the second, slowly pulses yellow from five minutes out and red from one minute out until the event starts, and its rounded corners are no longer clipped.
