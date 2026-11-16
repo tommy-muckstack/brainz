@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.70 (2026-11-16)
+
 ### Changed
 
 - Avatar: when the calendar heads-up turns red a minute before a meeting, a short chime plays and the avatar shakes once.
