@@ -120,13 +120,14 @@ mod native {
     use editor::Editor;
     use std::{
         sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use gpui::{
         Animation, AnimationExt as _, App, AppContext as _, Bounds, Entity, FocusHandle, Focusable,
         Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Size,
-        WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, point, px, rgb, svg,
+        Transformation, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, point,
+        px, rgb, size, svg,
     };
     use ui::prelude::*;
     use util::ResultExt as _;
@@ -310,6 +311,8 @@ mod native {
     };
     const AVATAR_MARGIN: Pixels = px(28.);
     const AVATAR_SHAKE: Duration = Duration::from_millis(1400);
+    const AVATAR_TRICK_EVERY: Duration = Duration::from_secs(60);
+    const AVATAR_TRICK: Duration = Duration::from_millis(1300);
     const ALERT_SOUND: &str = "/System/Library/Sounds/Glass.aiff";
     /// Movement past this turns a press on the avatar into a drag.
     const AVATAR_DRAG_DISTANCE: Pixels = px(4.);
@@ -412,6 +415,7 @@ mod native {
             },
             |window, cx| {
                 cx.new(|cx| AvatarView {
+                    born: Instant::now(),
                     alerts: 0,
                     pressed_at: None,
                     dragged: false,
@@ -501,6 +505,27 @@ mod native {
     }
 
     /// Sideways glance at `time`: negative looks left, positive right.
+    /// Once a minute the avatar does a trick, alternating a spin about its
+    /// upright axis with a forward flip. Returns the horizontal and vertical
+    /// scale of the body; a negative value means its back is showing.
+    pub(super) fn trick(elapsed: f32) -> (f32, f32) {
+        let period = AVATAR_TRICK_EVERY.as_secs_f32();
+        let length = AVATAR_TRICK.as_secs_f32();
+        let cycle = elapsed % (period * 2.);
+        let (start, spin) = if cycle < period {
+            (period - length, true)
+        } else {
+            (period * 2. - length, false)
+        };
+        let progress = (cycle - start) / length;
+        if !(0.0..1.0).contains(&progress) {
+            return (1., 1.);
+        }
+        let eased = 0.5 - (progress * std::f32::consts::PI).cos() / 2.;
+        let turn = (eased * std::f32::consts::TAU).cos();
+        if spin { (turn, 1.) } else { (1., turn) }
+    }
+
     fn glance(time: f32) -> f32 {
         hold(time, 9.0, 10.6, 0.35) * -1. + hold(time, 26.0, 27.5, 0.35)
     }
@@ -509,6 +534,8 @@ mod native {
     pub struct AvatarView {
         /// Bumped for each meeting alert; a new value starts a new shake.
         alerts: usize,
+        /// The tricks run on their own clock, independent of the idle loop.
+        born: Instant,
         pressed_at: Option<Point<Pixels>>,
         dragged: bool,
         palette_open: bool,
@@ -569,6 +596,7 @@ mod native {
             // The artwork is drawn on a 120 × 100 grid and shown at 0.65.
             let width = px(78.);
             let height = px(65.);
+            let born = self.born;
             let character = div()
                 .id("brainz-avatar")
                 .relative()
@@ -590,18 +618,30 @@ mod native {
                     Animation::new(AVATAR_LOOP).repeat(),
                     move |this, delta| {
                         let time = delta * AVATAR_LOOP.as_secs_f32();
+                        let (turn_x, turn_y) = trick(born.elapsed().as_secs_f32());
+                        // The face is on the front only; it rides the turn.
+                        let facing = turn_x > 0. && turn_y > 0.;
+                        let body_scale = Transformation::scale(size(
+                            turn_x.abs().max(0.02),
+                            turn_y.abs().max(0.02),
+                        ));
                         let bob = (time / 7.5 * std::f32::consts::TAU).sin() * 0.8;
                         let look = glance(time) * 3.5;
                         let open = eye_openness(time);
                         let brows = brow_lift(time) * 2.5;
                         let top = 4. + bob;
+                        let middle_x = 3. + 39.;
+                        let middle_y = top + 32.5;
                         let eye = |center: f32, open: f32| {
-                            let eye_height = (13. * open).max(1.5);
+                            let eye_height = (13. * open).max(1.5) * turn_y;
+                            let eye_width = 6. * turn_x;
+                            let x = middle_x + (3. + center * 0.65 + look - middle_x) * turn_x;
+                            let y = middle_y + (top + 62. * 0.65 - middle_y) * turn_y;
                             div()
                                 .absolute()
-                                .left(px(3. + center * 0.65 - 3. + look))
-                                .top(px(top + 62. * 0.65 - eye_height / 2.))
-                                .w(px(6.))
+                                .left(px(x - eye_width / 2.))
+                                .top(px(y - eye_height / 2.))
+                                .w(px(eye_width))
                                 .h(px(eye_height))
                                 .rounded_full()
                                 .bg(ink)
@@ -614,7 +654,8 @@ mod native {
                                 .top(px(top + 3.))
                                 .w(width)
                                 .h(height)
-                                .text_color(shade),
+                                .text_color(shade)
+                                .with_transformation(body_scale),
                         )
                         .child(
                             svg()
@@ -624,20 +665,24 @@ mod native {
                                 .top(px(top))
                                 .w(width)
                                 .h(height)
-                                .text_color(color),
+                                .text_color(color)
+                                .with_transformation(body_scale),
                         )
-                        .child(
-                            svg()
-                                .path("icons/brainz/avatar-brows.svg")
-                                .absolute()
-                                .left(px(3. + look * 0.6))
-                                .top(px(top - brows))
-                                .w(width)
-                                .h(height)
-                                .text_color(ink),
-                        )
-                        .child(eye(45., open.min(1. - wink(time))))
-                        .child(eye(75., open))
+                        .when(facing, |this| {
+                            this.child(
+                                svg()
+                                    .path("icons/brainz/avatar-brows.svg")
+                                    .absolute()
+                                    .left(px(3. + look * 0.6 * turn_x))
+                                    .top(px(top - brows * turn_y))
+                                    .w(width)
+                                    .h(height)
+                                    .text_color(ink)
+                                    .with_transformation(body_scale),
+                            )
+                            .child(eye(45., open.min(1. - wink(time))))
+                            .child(eye(75., open))
+                        })
                     },
                 );
             let alerts = self.alerts;
@@ -784,6 +829,18 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn avatar_spins_then_flips_once_a_minute() {
+        use native::trick;
+        assert_eq!(trick(10.), (1., 1.));
+        let (turn_x, turn_y) = trick(59.35);
+        assert!(turn_x < -0.9 && turn_y == 1., "{turn_x} {turn_y}");
+        let (turn_x, turn_y) = trick(119.35);
+        assert!(turn_x == 1. && turn_y < -0.9, "{turn_x} {turn_y}");
+        assert_eq!(trick(121.), (1., 1.));
+    }
     use chrono::TimeZone as _;
 
     fn at(day: u32, hour: u32) -> DateTime<Local> {

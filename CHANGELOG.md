@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.71 (2026-11-16)
+
+### Changed
+
+- App icon: the brain is now the avatar, a cloud with a face, drawn dark on cream and cream on dark for the dark icon style.
+- Avatar: about once a minute it does a quick trick, alternating a spin and a forward flip, between its usual blinks and glances.
+
 ## 0.1.70 (2026-11-16)
 
 ### Changed
