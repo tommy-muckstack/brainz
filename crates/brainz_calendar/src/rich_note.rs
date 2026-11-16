@@ -352,7 +352,7 @@ fn claude_request(
         ),
         "todos" => (
             format!(
-                "Turn the action items in this passage from `{note}` into to-dos on my To-Do board (`{todo_board}`), under Today, one line per action, each ending with a link back to the note. Don't edit the note itself.\n\n{passage}"
+                "Turn the action items in this passage from `{note}` into suggested to-dos: append one `- [ ] ` line per action to `{todo_board}`, each ending with a link back to the note. I add suggestions to my board myself from the To-Do tab, so don't edit the board or the note.\n\n{passage}"
             ),
             true,
         ),
@@ -951,7 +951,9 @@ mod native {
                 .unwrap_or(&self.path)
                 .to_string_lossy()
                 .into_owned();
-            let board = crate::brain_config::BrainConfig::load(&brain).todo;
+            let board = crate::todo::suggestions_relative(
+                &crate::brain_config::BrainConfig::load(&brain).todo,
+            );
             let Some((message, send)) = super::claude_request(action, &note, text, &board) else {
                 return;
             };
@@ -1410,9 +1412,9 @@ mod tests {
         assert!(rewrite.contains("`work/plan.md`"));
         assert!(rewrite.contains("````markdown\nUse ```code``` here\n````"));
         let (todos, _) =
-            claude_request("todos", "work/plan.md", "Call Sam", "ops/TODO.md").unwrap();
-        assert!(todos.contains("`ops/TODO.md`"));
-        assert!(todos.contains("Don't edit the note"));
+            claude_request("todos", "work/plan.md", "Call Sam", "ops/TODO.suggested.md").unwrap();
+        assert!(todos.contains("`ops/TODO.suggested.md`"));
+        assert!(todos.contains("don't edit the board or the note"));
         let (ask, send) = claude_request("ask", "work/plan.md", "Call Sam", "TODO.md").unwrap();
         assert!(!send);
         assert!(ask.ends_with("```\n\n"));

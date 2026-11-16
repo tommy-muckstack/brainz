@@ -10,6 +10,7 @@
 
 ### Changed
 
+- To-Do: nothing goes on the board unless you add it. A "Suggested" row of tiles you scroll sideways sits under the board, with Add and Delete on each: suggestions saved beside the board (`TODO.suggested.md` next to `TODO.md`), tasks My Man heard in meetings, and ⏳/⏰ lines flagged in notes. The note's "Turn into to-dos" Claude action now writes suggestions instead of editing the board.
 - Avatar menu: the calendar is a row of tiles you scroll sideways, one per event for the coming week, instead of a list that expands and collapses. Each tile shows the day, the time and the title, and opens the Calendar tab.
 
 ## 0.1.67 (2026-11-13)

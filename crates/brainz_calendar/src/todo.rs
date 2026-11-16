@@ -2,10 +2,11 @@
 //! `brainz.toml`, `TODO.md` by default). The tab checks items off, adds new
 //! ones, edits their wording and priority, and drags them between positions
 //! and sections; every change is a line edit to the Markdown file, so a bot
-//! keeping the board reads the same file it always did. Below the board,
-//! "Flagged in notes" lists the ⏳ and ⏰ lines the signals pass found in
-//! notes, each with Add to To-Do (copies it onto the board and ticks the
-//! note) or Dismiss (ticks the note).
+//! keeping the board reads the same file it always did. Nothing lands on
+//! the board unless the user adds it: below the board, a "Suggested" row of
+//! tiles offers lines from the suggestions file beside the board (where
+//! Claude's note action writes), tasks My Man heard in meetings, and the ⏳
+//! and ⏰ lines flagged in notes, each with Add and Delete.
 
 use std::{
     path::{Path, PathBuf},
@@ -338,6 +339,113 @@ fn load_board(path: &Path) -> Result<TodoBoard> {
 
 /// The open loops of the last signals pass, oldest first; none when the
 /// pass has not run.
+const SUGGESTION_WIDTH: Pixels = px(220.);
+
+/// The suggestions file sits beside the board: `TODO.md` → `TODO.suggested.md`.
+pub(crate) fn suggestions_relative(board: &str) -> String {
+    let board = Path::new(board);
+    let stem = board
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "TODO".to_owned());
+    board
+        .with_file_name(format!("{stem}.suggested.md"))
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Suggestion {
+    /// The trimmed line, so Add and Delete remove exactly this one.
+    raw: String,
+    title: String,
+}
+
+fn parse_suggestions(text: &str) -> Vec<Suggestion> {
+    text.lines()
+        .filter_map(|line| {
+            let raw = line.trim();
+            let title = raw.strip_prefix("- [ ] ")?.trim();
+            (!title.is_empty()).then(|| Suggestion {
+                raw: raw.to_owned(),
+                title: title.to_owned(),
+            })
+        })
+        .collect()
+}
+
+fn load_suggestions(path: &Path) -> Vec<Suggestion> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => parse_suggestions(&text),
+        Err(error) => {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log::error!(
+                    "brainz suggested to-dos: reading {}: {error}",
+                    path.display()
+                );
+            }
+            Vec::new()
+        }
+    }
+}
+
+fn remove_suggestion(text: &str, raw: &str) -> Result<String> {
+    let mut lines = text.lines().collect::<Vec<_>>();
+    let index = lines
+        .iter()
+        .position(|line| line.trim() == raw)
+        .context(STALE_BOARD)?;
+    lines.remove(index);
+    let mut output = lines.join("\n");
+    if text.ends_with('\n') && !output.is_empty() {
+        output.push('\n');
+    }
+    Ok(output)
+}
+
+fn suggestion_tile(
+    id: (&'static str, usize),
+    source: AnyElement,
+    title: String,
+    meta: Option<String>,
+    add: Button,
+    delete: Button,
+    cx: &App,
+) -> AnyElement {
+    let colors = cx.theme().colors();
+    v_flex()
+        .id(id)
+        .flex_none()
+        .w(SUGGESTION_WIDTH)
+        .h(px(132.))
+        .p_3()
+        .gap_1()
+        .rounded_lg()
+        .border_1()
+        .border_color(colors.border_variant)
+        .bg(colors.element_background)
+        .child(source)
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .text_sm()
+                .line_height(px(18.))
+                .line_clamp(3)
+                .child(title),
+        )
+        .when_some(meta, |this, meta| {
+            this.child(
+                Label::new(meta)
+                    .size(LabelSize::Small)
+                    .color(Color::Placeholder)
+                    .truncate(),
+            )
+        })
+        .child(h_flex().gap_1().child(add).child(delete))
+        .into_any_element()
+}
+
 fn load_loops(repo: &PathBuf) -> Vec<OpenLoop> {
     let config = BrainConfig::load(repo);
     let mut loops = signals::load_signals(repo, &config)
@@ -568,6 +676,9 @@ pub struct TodoView {
     /// Open tasks My Man pulled out of meetings and notes, not yet on the
     /// board or dismissed.
     myman_tasks: Vec<myman::MyManTask>,
+    suggestions_path: PathBuf,
+    /// Lines in the suggestions file, waiting to be added or deleted.
+    suggestions: Vec<Suggestion>,
     error: Option<String>,
     show_done: bool,
     sort: TodoSort,
@@ -619,6 +730,7 @@ impl TodoView {
                 }
             }
         });
+        let suggestions_path = repo.join(suggestions_relative(&relative));
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             workspace,
@@ -630,6 +742,8 @@ impl TodoView {
             board: TodoBoard::default(),
             loops: Vec::new(),
             myman_tasks: Vec::new(),
+            suggestions_path,
+            suggestions: Vec::new(),
             error: None,
             show_done: false,
             sort: TodoSort::Manual,
@@ -645,8 +759,9 @@ impl TodoView {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let path = self.path.clone();
         let repo = self.repo.clone();
+        let suggestions_path = self.suggestions_path.clone();
         self._load = Some(cx.spawn(async move |this, cx| {
-            let (result, loops, myman_tasks, file_missing) = cx
+            let (result, loops, myman_tasks, file_missing, suggestions) = cx
                 .background_spawn(async move {
                     let myman_tasks = myman::MyMan::detect(&BrainConfig::load(&repo))
                         .map(|myman| myman::pending_tasks(&myman))
@@ -657,6 +772,7 @@ impl TodoView {
                         load_loops(&repo),
                         myman_tasks,
                         file_missing,
+                        load_suggestions(&suggestions_path),
                     )
                 })
                 .await;
@@ -671,6 +787,7 @@ impl TodoView {
                 }
                 this.loops = loops;
                 this.myman_tasks = myman_tasks;
+                this.suggestions = suggestions;
                 let context = crate::insights::todo_context(
                     &this.board,
                     &this.loops,
@@ -721,83 +838,204 @@ impl TodoView {
         .detach();
     }
 
-    fn render_myman_tasks(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        if self.myman_tasks.is_empty() {
-            return None;
+    /// Moves a line from the suggestions file onto the board under Today,
+    /// or just deletes it.
+    fn resolve_suggestion(&mut self, ix: usize, add: bool, cx: &mut Context<Self>) {
+        if ix >= self.suggestions.len() {
+            return;
         }
-        let mut block = v_flex()
+        let suggestion = self.suggestions.remove(ix);
+        cx.notify();
+        let board = self.path.clone();
+        let suggestions = self.suggestions_path.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let _serialised = BOARD_LOCK
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let text = std::fs::read_to_string(&suggestions)
+                        .with_context(|| format!("reading {}", suggestions.display()))?;
+                    let remaining = remove_suggestion(&text, &suggestion.raw)?;
+                    if add {
+                        let board_text = read_board_text(&board)?;
+                        let output = open_loops::insert_board_line(
+                            &board_text,
+                            &format!("- [ ] {}", suggestion.title),
+                            true,
+                        );
+                        write_board_text(&board, &output)?;
+                    }
+                    write_board_text(&suggestions, &remaining)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Err(error) = result {
+                    log::error!("brainz suggested to-do: {error:#}");
+                    this.error = Some(format!("Could not update the suggestions: {error:#}"));
+                }
+                this.refresh(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn render_suggestions(&self, cx: &mut Context<Self>) -> AnyElement {
+        let today = Local::now().date_naive();
+        let count = self.suggestions.len() + self.myman_tasks.len() + self.loops.len();
+        let source = |icon: IconName, text: String, color: Color| {
+            h_flex()
+                .gap_1p5()
+                .child(Icon::new(icon).size(IconSize::XSmall).color(color))
+                .child(
+                    Label::new(text)
+                        .size(LabelSize::Small)
+                        .color(color)
+                        .truncate(),
+                )
+                .into_any_element()
+        };
+        let mut tiles: Vec<AnyElement> = Vec::with_capacity(count);
+        for (ix, suggestion) in self.suggestions.iter().enumerate() {
+            tiles.push(suggestion_tile(
+                ("brainz-todo-suggested", ix),
+                source(IconName::Sparkle, "Suggested".into(), Color::Accent),
+                markdown::markdown_to_plain_text(&suggestion.title),
+                None,
+                Button::new(("brainz-todo-suggested-add", ix), "Add")
+                    .label_size(LabelSize::Small)
+                    .style(ButtonStyle::Filled)
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.resolve_suggestion(ix, true, cx)),
+                    ),
+                Button::new(("brainz-todo-suggested-delete", ix), "Delete")
+                    .label_size(LabelSize::Small)
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.resolve_suggestion(ix, false, cx)),
+                    ),
+                cx,
+            ));
+        }
+        for (ix, task) in self.myman_tasks.iter().enumerate() {
+            tiles.push(suggestion_tile(
+                ("brainz-todo-myman", ix),
+                source(
+                    IconName::BrainzCalendar,
+                    format!("My Man {}", task.source),
+                    Color::Muted,
+                ),
+                task.title.clone(),
+                task.date.map(|date| date.to_string()),
+                Button::new(("brainz-todo-myman-add", ix), "Add")
+                    .label_size(LabelSize::Small)
+                    .style(ButtonStyle::Filled)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.resolve_myman_task(ix, true, cx);
+                    })),
+                Button::new(("brainz-todo-myman-dismiss", ix), "Delete")
+                    .label_size(LabelSize::Small)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.resolve_myman_task(ix, false, cx);
+                    })),
+                cx,
+            ));
+        }
+        for (ix, open_loop) in self.loops.iter().enumerate() {
+            let text = markdown::markdown_to_plain_text(&open_loop.text)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let who = match (&open_loop.counterparty, open_loop.owed_by_owner()) {
+                (_, true) => format!("{} owes", self.owner),
+                (Some(person), false) => format!("Waiting on {person}"),
+                (None, false) => "Waiting".to_owned(),
+            };
+            let file = open_loop.file.clone();
+            let note = h_flex()
+                .id(("brainz-todo-loop-open", ix))
+                .min_w_0()
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_relative(&file, window, cx);
+                }))
+                .tooltip(Tooltip::text("Open the note"))
+                .child(source(
+                    IconName::FileDoc,
+                    format!(
+                        "{} {}",
+                        open_loop.marker,
+                        signals::file_label(&open_loop.file)
+                    ),
+                    Color::Muted,
+                ))
+                .into_any_element();
+            tiles.push(suggestion_tile(
+                ("brainz-todo-loop", ix),
+                note,
+                text,
+                Some(format!("{who} · {} days", open_loop.age_days(today))),
+                Button::new(("brainz-todo-loop-add", ix), "Add")
+                    .label_size(LabelSize::Small)
+                    .style(ButtonStyle::Filled)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.resolve_loop(ix, true, cx);
+                    })),
+                Button::new(("brainz-todo-loop-dismiss", ix), "Delete")
+                    .label_size(LabelSize::Small)
+                    .tooltip(Tooltip::text("Ticks the line in its note"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.resolve_loop(ix, false, cx);
+                    })),
+                cx,
+            ));
+        }
+        v_flex()
             .w_full()
-            .gap_0p5()
+            .gap_1()
             .child(
                 h_flex()
                     .px_2()
-                    .pt_5()
-                    .pb_0p5()
+                    .pt_6()
                     .gap_2()
                     .child(
-                        Label::new("From My Man")
+                        Label::new("Suggested")
                             .size(LabelSize::Small)
                             .weight(gpui::FontWeight::SEMIBOLD),
                     )
-                    .child(
-                        Label::new(self.myman_tasks.len().to_string())
-                            .size(LabelSize::Small)
-                            .color(Color::Placeholder),
-                    ),
+                    .when(count > 0, |this| {
+                        this.child(
+                            Label::new(count.to_string())
+                                .size(LabelSize::Small)
+                                .color(Color::Placeholder),
+                        )
+                    }),
             )
             .child(
                 div().px_2().pb_1().child(
-                    Label::new(
-                        "Tasks My Man heard in meetings or found in notes. Add to To-Do puts one under Today; Dismiss hides it here and leaves My Man's own list alone.",
-                    )
+                    Label::new(if count == 0 {
+                        "Nothing suggested right now. Nothing goes on your board until you add it."
+                    } else {
+                        "Nothing goes on your board until you add it."
+                    })
                     .size(LabelSize::Small)
                     .color(Color::Muted),
                 ),
-            );
-        for (ix, task) in self.myman_tasks.iter().enumerate() {
-            let when = task
-                .date
-                .map(|date| format!(" · {date}"))
-                .unwrap_or_default();
-            block = block.child(
-                h_flex()
-                    .id(("brainz-todo-myman", ix))
-                    .w_full()
-                    .items_center()
-                    .gap_2p5()
-                    .px_2()
-                    .py_1p5()
-                    .rounded_md()
-                    .hover(|this| this.bg(cx.theme().colors().element_hover))
-                    .child(
-                        v_flex()
-                            .min_w_0()
-                            .flex_1()
-                            .child(Label::new(task.title.clone()).truncate())
-                            .child(
-                                Label::new(format!("My Man {}{when}", task.source))
-                                    .size(LabelSize::Small)
-                                    .color(Color::Placeholder),
-                            ),
-                    )
-                    .child(
-                        Button::new(("brainz-todo-myman-add", ix), "Add to To-Do")
-                            .label_size(LabelSize::Small)
-                            .style(ButtonStyle::Filled)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.resolve_myman_task(ix, true, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(("brainz-todo-myman-dismiss", ix), "Dismiss")
-                            .label_size(LabelSize::Small)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.resolve_myman_task(ix, false, cx);
-                            })),
-                    ),
-            );
-        }
-        Some(block.into_any_element())
+            )
+            .when(count > 0, |this| {
+                this.child(
+                    h_flex()
+                        .id("brainz-todo-suggestions")
+                        .w_full()
+                        .px_2()
+                        .pb_2()
+                        .gap_2()
+                        .items_start()
+                        .overflow_x_scroll()
+                        .children(tiles),
+                )
+            })
+            .into_any_element()
     }
 
     /// Ticks the loop's marker in its note and, when `add` is set, copies
@@ -874,126 +1112,6 @@ impl TodoView {
                     .detach_and_log_err(cx);
             })
             .ok();
-    }
-
-    fn render_loops(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let today = Local::now().date_naive();
-        let mut block = v_flex()
-            .w_full()
-            .gap_0p5()
-            .child(
-                h_flex()
-                    .px_2()
-                    .pt_5()
-                    .pb_0p5()
-                    .gap_2()
-                    .child(
-                        Label::new("Flagged in notes")
-                            .size(LabelSize::Small)
-                            .weight(gpui::FontWeight::SEMIBOLD),
-                    )
-                    .child(
-                        Label::new(self.loops.len().to_string())
-                            .size(LabelSize::Small)
-                            .color(Color::Placeholder),
-                    ),
-            )
-            .child(
-                div().px_2().pb_1().child(
-                    Label::new(
-                        "Lines in your notes that start with ⏳ (waiting on someone) or ⏰ (you owe it) and never made it onto the board. Add to To-Do copies one here and ticks the note; Dismiss just ticks the note.",
-                    )
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
-                ),
-            );
-        if self.loops.is_empty() {
-            return block
-                .child(
-                    div().px_2().py_1().child(
-                        Label::new("Nothing flagged")
-                            .size(LabelSize::Small)
-                            .color(Color::Placeholder),
-                    ),
-                )
-                .into_any_element();
-        }
-        for (ix, open_loop) in self.loops.iter().enumerate() {
-            let text = markdown::markdown_to_plain_text(&open_loop.text)
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
-            let who = match (&open_loop.counterparty, open_loop.owed_by_owner()) {
-                (_, true) => format!("{} owes", self.owner),
-                (Some(person), false) => format!("Waiting on {person}"),
-                (None, false) => "Waiting".to_owned(),
-            };
-            let file = open_loop.file.clone();
-            let source = signals::file_label(&open_loop.file);
-            let age = open_loop.age_days(today);
-            block = block.child(
-                h_flex()
-                    .id(("brainz-todo-loop", ix))
-                    .w_full()
-                    .items_center()
-                    .gap_2p5()
-                    .px_2()
-                    .py_1p5()
-                    .rounded_md()
-                    .hover(|this| this.bg(cx.theme().colors().element_hover))
-                    .child(
-                        div()
-                            .w(px(20.))
-                            .flex_none()
-                            .child(Label::new(open_loop.marker.clone()).size(LabelSize::Small)),
-                    )
-                    .child(
-                        v_flex()
-                            .min_w_0()
-                            .flex_1()
-                            .child(Label::new(text).truncate())
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .child(Label::new(who).size(LabelSize::Small).color(
-                                        if open_loop.owed_by_owner() {
-                                            Color::Warning
-                                        } else {
-                                            Color::Muted
-                                        },
-                                    ))
-                                    .child(
-                                        Label::new(format!("{age} days · {source}"))
-                                            .size(LabelSize::Small)
-                                            .color(Color::Placeholder),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        Button::new(("brainz-todo-loop-open", ix), "Open note")
-                            .label_size(LabelSize::Small)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_relative(&file, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(("brainz-todo-loop-add", ix), "Add to To-Do")
-                            .label_size(LabelSize::Small)
-                            .style(ButtonStyle::Filled)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.resolve_loop(ix, true, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(("brainz-todo-loop-dismiss", ix), "Dismiss")
-                            .label_size(LabelSize::Small)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.resolve_loop(ix, false, cx);
-                            })),
-                    ),
-            );
-        }
-        block.into_any_element()
     }
 
     /// Applies one edit to the board file on a background thread, then
@@ -1962,8 +2080,7 @@ impl Render for TodoView {
             }
             body.push(block.into_any_element());
         }
-        body.push(self.render_loops(cx));
-        body.extend(self.render_myman_tasks(cx));
+        body.push(self.render_suggestions(cx));
 
         v_flex()
             .id("brainz-todo")
@@ -2003,6 +2120,29 @@ impl Render for TodoView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suggestions_live_beside_the_board_and_come_off_one_line_at_a_time() {
+        assert_eq!(
+            suggestions_relative("ops/desk/TODO.md"),
+            "ops/desk/TODO.suggested.md"
+        );
+        assert_eq!(suggestions_relative("TODO.md"), "TODO.suggested.md");
+        let text = "# Suggested\n\n- [ ] Call Ada\n- [x] Old\n  - [ ] Send the deck\n";
+        let suggestions = parse_suggestions(text);
+        assert_eq!(
+            suggestions
+                .iter()
+                .map(|suggestion| suggestion.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Call Ada", "Send the deck"]
+        );
+        assert_eq!(
+            remove_suggestion(text, &suggestions[1].raw).unwrap(),
+            "# Suggested\n\n- [ ] Call Ada\n- [x] Old\n"
+        );
+        assert!(remove_suggestion(text, "- [ ] Gone").is_err());
+    }
 
     const BOARD: &str = "# TODO\n\n## Today\n\n- [ ] Call the dentist `dentist`\n- [ ] [P1] Send the deck (due Fri)\n\n## Delayed / Waiting\n\n_(nothing waiting)_\n\n## Done\n\n- [x] Book the room (2026-10-01)\n";
 
