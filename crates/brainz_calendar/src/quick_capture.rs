@@ -95,6 +95,15 @@ pub fn avatar_enabled() -> bool {
     false
 }
 
+/// A meeting is a minute away: a short chime, and the avatar shakes once.
+#[cfg(target_os = "macos")]
+pub fn alert_avatar(cx: &mut gpui::App) {
+    native::alert_avatar(cx);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn alert_avatar(_: &mut gpui::App) {}
+
 /// Shows or hides the floating avatar and remembers the choice.
 #[cfg(target_os = "macos")]
 pub fn toggle_avatar(cx: &mut gpui::App) {
@@ -300,6 +309,8 @@ mod native {
         height: px(106.),
     };
     const AVATAR_MARGIN: Pixels = px(28.);
+    const AVATAR_SHAKE: Duration = Duration::from_millis(1400);
+    const ALERT_SOUND: &str = "/System/Library/Sounds/Glass.aiff";
     /// Movement past this turns a press on the avatar into a drag.
     const AVATAR_DRAG_DISTANCE: Pixels = px(4.);
     /// One pass through the idle routine. It is mostly stillness: a blink
@@ -401,6 +412,7 @@ mod native {
             },
             |window, cx| {
                 cx.new(|cx| AvatarView {
+                    alerts: 0,
                     pressed_at: None,
                     dragged: false,
                     palette_open: false,
@@ -409,6 +421,27 @@ mod native {
             },
         )
         .log_err();
+    }
+
+    pub(super) fn alert_avatar(cx: &mut App) {
+        cx.background_spawn(async {
+            smol::process::Command::new("/usr/bin/afplay")
+                .arg(ALERT_SOUND)
+                .status()
+                .await
+                .log_err();
+        })
+        .detach();
+        for window in cx.windows() {
+            if let Some(avatar) = window.downcast::<AvatarView>() {
+                avatar
+                    .update(cx, |avatar, _, cx| {
+                        avatar.alerts += 1;
+                        cx.notify();
+                    })
+                    .log_err();
+            }
+        }
     }
 
     fn avatar_bounds(cx: &mut App) -> Option<(Bounds<Pixels>, Option<gpui::DisplayId>)> {
@@ -474,6 +507,8 @@ mod native {
 
     /// The floating character that opens the menu from any app.
     pub struct AvatarView {
+        /// Bumped for each meeting alert; a new value starts a new shake.
+        alerts: usize,
         pressed_at: Option<Point<Pixels>>,
         dragged: bool,
         palette_open: bool,
@@ -605,6 +640,19 @@ mod native {
                         .child(eye(75., open))
                     },
                 );
+            let alerts = self.alerts;
+            // Always wrapped, so an alert never restarts the idle routine.
+            let character = div().relative().child(character).with_animation(
+                ("brainz-avatar-alert", alerts),
+                Animation::new(AVATAR_SHAKE),
+                move |this, delta| {
+                    if alerts == 0 {
+                        return this;
+                    }
+                    let shake = (delta * std::f32::consts::TAU * 5.).sin() * 4. * (1. - delta);
+                    this.left(px(shake))
+                },
+            );
             v_flex()
                 .id("brainz-avatar-window")
                 .size_full()

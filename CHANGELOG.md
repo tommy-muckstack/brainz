@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Avatar: when the calendar heads-up turns red a minute before a meeting, a short chime plays and the avatar shakes once.
 - Avatar: the calendar heads-up is smaller. Hovering shows a − in its corner that dismisses it; clicking the rest of it no longer does.
 
 ### Fixed

@@ -924,11 +924,21 @@ fn open_notice(
         .open_window(popup(bounds, false, display), move |window, cx| {
             cx.new(|cx| NoticeView {
                 event: Arc::new(event),
+                alerted: false,
                 _transparency: keep_transparent(window, cx),
                 _tick: cx.spawn(async move |this, cx| {
                     loop {
                         cx.background_executor().timer(Duration::from_secs(1)).await;
-                        if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        let ticked = this.update(cx, |notice: &mut NoticeView, cx| {
+                            if !notice.alerted
+                                && urgency(&notice.event, Local::now()) == Urgency::Now
+                            {
+                                notice.alerted = true;
+                                crate::quick_capture::alert_avatar(cx);
+                            }
+                            cx.notify();
+                        });
+                        if ticked.is_err() {
                             break;
                         }
                     }
@@ -952,6 +962,8 @@ fn open_notice(
 /// The heads-up shown beside the avatar before an event; a click dismisses it.
 pub struct NoticeView {
     event: Arc<CalendarEvent>,
+    /// The chime and shake play once, when the notice first turns red.
+    alerted: bool,
     _transparency: gpui::Subscription,
     _tick: gpui::Task<()>,
 }
