@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.1.68 (2026-11-16)
+
+### Fixed
+
+- Notes and canvas: Command-C, Command-X and Command-V copy, cut and paste with the system clipboard again. WebKit never handed an unhandled Command key back to Brainz, so the 0.1.67 fix never ran; Brainz now performs the edit right after the page sees the key.
+
+### Changed
+
+- Avatar menu: the calendar is a row of tiles you scroll sideways, one per event for the coming week, instead of a list that expands and collapses. Each tile shows the day, the time and the title, and opens the Calendar tab.
+
 ## 0.1.67 (2026-11-13)
 
 ### Fixed
