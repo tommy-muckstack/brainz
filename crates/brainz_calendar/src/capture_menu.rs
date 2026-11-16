@@ -17,7 +17,7 @@ use gpui::{
     Animation, AnimationExt as _, App, AppContext as _, Bounds, ClipboardItem, DisplayId, Entity,
     FocusHandle, Focusable, Global, Image, ImageFormat, MouseButton, ObjectFit, Pixels, Size,
     WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, ease_out_quint, img,
-    point, px,
+    point, pulsating_between, px,
 };
 use ui::prelude::*;
 use util::ResultExt as _;
@@ -33,8 +33,8 @@ const MENU_OPEN: Duration = Duration::from_millis(180);
 const MENU_SLIDE: f32 = 28.;
 const TILE_WIDTH: Pixels = px(136.);
 const NOTICE_SIZE: Size<Pixels> = Size {
-    width: px(300.),
-    height: px(64.),
+    width: px(306.),
+    height: px(70.),
 };
 const GAP: Pixels = px(8.);
 const CAPTURE_LIMIT: usize = 6;
@@ -142,6 +142,17 @@ fn age(captured: DateTime<Local>, now: DateTime<Local>) -> String {
         60..1440 => format!("{}h", minutes / 60),
         _ => captured.format("%b %-d").to_string(),
     }
+}
+
+/// The heads-up counts down to the second, so it never reads "in 10 min"
+/// eight minutes out.
+fn countdown_label(event: &CalendarEvent, now: DateTime<Local>) -> String {
+    let seconds = (event.start - now).num_seconds();
+    let clock = event.start.format("%-I:%M %p");
+    if seconds <= 0 {
+        return format!("now · {clock}");
+    }
+    format!("in {}:{:02} · {clock}", seconds / 60, seconds % 60)
 }
 
 fn starts_label(event: &CalendarEvent, now: DateTime<Local>) -> String {
@@ -913,6 +924,14 @@ fn open_notice(
             cx.new(|cx| NoticeView {
                 event: Arc::new(event),
                 _transparency: keep_transparent(window, cx),
+                _tick: cx.spawn(async move |this, cx| {
+                    loop {
+                        cx.background_executor().timer(Duration::from_secs(1)).await;
+                        if this.update(cx, |_, cx| cx.notify()).is_err() {
+                            break;
+                        }
+                    }
+                }),
             })
         })
         .log_err()
@@ -933,34 +952,87 @@ fn open_notice(
 pub struct NoticeView {
     event: Arc<CalendarEvent>,
     _transparency: gpui::Subscription,
+    _tick: gpui::Task<()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Urgency {
+    Calm,
+    /// Five minutes or less: the notice pulses yellow.
+    Soon,
+    /// A minute or less, or already started: the notice pulses red.
+    Now,
+}
+
+fn urgency(event: &CalendarEvent, now: DateTime<Local>) -> Urgency {
+    match (event.start - now).num_seconds() {
+        ..=60 => Urgency::Now,
+        61..=300 => Urgency::Soon,
+        _ => Urgency::Calm,
+    }
 }
 
 impl Render for NoticeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors();
-        h_flex()
+        let now = Local::now();
+        let urgency = urgency(&self.event, now);
+        let tint = match urgency {
+            Urgency::Calm => None,
+            Urgency::Soon => Some(cx.theme().status().warning),
+            Urgency::Now => Some(cx.theme().status().error),
+        };
+        let icon_color = match urgency {
+            Urgency::Calm => Color::Accent,
+            Urgency::Soon => Color::Warning,
+            Urgency::Now => Color::Error,
+        };
+        let surface = colors.elevated_surface_background;
+        let notice = h_flex()
             .id("brainz-event-notice")
             .size_full()
             .px_4()
             .gap_3()
             .rounded_xl()
             .border_1()
-            .border_color(colors.text_accent)
-            .bg(colors.elevated_surface_background)
+            .border_color(tint.unwrap_or(colors.text_accent))
+            .bg(surface)
             .cursor_pointer()
             .on_click(|_, window, _| window.remove_window())
-            .child(Icon::new(IconName::BrainzCalendar).color(Color::Accent))
+            .child(Icon::new(IconName::BrainzCalendar).color(icon_color))
             .child(
                 v_flex()
                     .flex_1()
                     .overflow_hidden()
                     .child(Label::new(self.event.title.clone()).truncate())
                     .child(
-                        Label::new(starts_label(&self.event, Local::now()))
+                        Label::new(countdown_label(&self.event, now))
                             .size(LabelSize::Small)
                             .color(Color::Muted),
                     ),
-            )
+            );
+        // The window is see-through and exactly the notice's size; the inset
+        // keeps the rounded border's corners from being clipped by its edge.
+        let frame = div().size_full().p(px(3.));
+        match tint {
+            None => frame.child(notice.into_any_element()),
+            Some(tint) => frame.child(
+                notice
+                    .with_animation(
+                        // A new id per level restarts the pulse in the new colour.
+                        ("brainz-event-notice-pulse", urgency as usize),
+                        Animation::new(Duration::from_millis(2400))
+                            .repeat()
+                            .with_easing(pulsating_between(0.0, 1.0)),
+                        move |notice, delta| {
+                            notice
+                                .border_color(tint.opacity(0.45 + 0.55 * delta))
+                                .bg(surface.blend(tint.opacity(0.08 + 0.22 * delta)))
+                        },
+                    )
+                    .into_any_element(),
+            ),
+        }
     }
 }
 
@@ -1044,6 +1116,36 @@ mod tests {
         assert_eq!(capture.title, "Recording · 1m 21s");
         assert_eq!(capture.thumbnail, None);
         assert!(parse_capture(CaptureKind::Recording, "# No front matter").is_none());
+    }
+
+    #[test]
+    fn notice_turns_yellow_at_five_minutes_and_red_at_one() {
+        let start = at(9, 10);
+        let soon = event("soon", start, 30, false);
+        let before = |seconds| start - chrono::Duration::seconds(seconds);
+        assert_eq!(urgency(&soon, before(301)), Urgency::Calm);
+        assert_eq!(urgency(&soon, before(300)), Urgency::Soon);
+        assert_eq!(urgency(&soon, before(61)), Urgency::Soon);
+        assert_eq!(urgency(&soon, before(60)), Urgency::Now);
+        assert_eq!(
+            urgency(&soon, start + chrono::Duration::seconds(30)),
+            Urgency::Now
+        );
+    }
+
+    #[test]
+    fn countdown_ticks_by_the_second() {
+        let start = at(9, 10);
+        let soon = event("soon", start, 30, false);
+        assert_eq!(
+            countdown_label(&soon, start - chrono::Duration::seconds(462)),
+            "in 7:42 · 9:10 AM"
+        );
+        assert_eq!(
+            countdown_label(&soon, start - chrono::Duration::seconds(5)),
+            "in 0:05 · 9:10 AM"
+        );
+        assert_eq!(countdown_label(&soon, start), "now · 9:10 AM");
     }
 
     #[test]
