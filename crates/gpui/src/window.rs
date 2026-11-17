@@ -5454,6 +5454,13 @@ impl Window {
             }
             PlatformInput::MouseExited(mouse_exited) => {
                 self.modifiers = mouse_exited.modifiers;
+                if mouse_exited.pressed_button.is_none() {
+                    // The pointer has left, so nothing here is hovered any
+                    // more. Without this a small window keeps the last
+                    // position inside it and its hover styles stay on.
+                    self.mouse_position = point(px(-1.), px(-1.));
+                    self.refresh();
+                }
                 PlatformInput::MouseExited(mouse_exited)
             }
             PlatformInput::ModifiersChanged(modifiers_changed) => {
