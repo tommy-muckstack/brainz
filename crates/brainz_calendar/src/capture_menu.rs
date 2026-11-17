@@ -23,7 +23,12 @@ use gpui::{
 use ui::prelude::*;
 use util::ResultExt as _;
 
-use crate::{CalendarEvent, LoadState, myman::MyMan};
+use crate::{
+    CalendarEvent, LoadState,
+    avatar_help::{self, ForYou},
+    myman::MyMan,
+    quick_capture::{self, Reaction},
+};
 
 const MENU_WIDTH: Pixels = px(340.);
 /// The menu's window is this tall and see-through; the panel inside it hugs
@@ -41,10 +46,15 @@ const TILE_TITLE_SIZE: Pixels = px(12.);
 const TITLE_SCROLL_SPEED: f32 = 28.;
 /// A long title rests this long at each end before scrolling back.
 const TITLE_SCROLL_REST: f32 = 1.6;
-const NOTICE_SIZE: Size<Pixels> = Size {
-    width: px(232.),
-    height: px(50.),
-};
+const NOTICE_WIDTH: Pixels = px(244.);
+const NOTICE_HEIGHT: Pixels = px(50.);
+/// A notice with buttons under its text.
+const NOTICE_HEIGHT_WITH_BUTTONS: Pixels = px(84.);
+/// How often the avatar rereads the to-do board and its suggestions.
+const SNAPSHOT_REFRESH: Duration = Duration::from_secs(60);
+/// At most this many "For you" rows in the menu.
+const FOR_YOU_LIMIT: usize = 4;
+const WRAP_UP_PROMPT: &str = "Help me wrap up today. Look at my to-do board, today's calendar, and the notes I changed today. Tell me what got done and what's still open, then suggest my top three for tomorrow.";
 const GAP: Pixels = px(8.);
 const CAPTURE_LIMIT: usize = 6;
 /// Newest files read per My Man folder; names start with the capture date.
@@ -226,19 +236,25 @@ fn notice_key(event: &CalendarEvent) -> String {
 struct MenuState {
     events: Vec<CalendarEvent>,
     needs_permission: bool,
-    /// Events whose notice was dismissed; each later event still gets one.
+    /// Notices that were dismissed; each later event still gets one.
     dismissed: HashSet<String>,
     /// Events the avatar already chimed for, so a notice that is hidden and
     /// shown again (behind the menu) does not chime twice.
     chimed: HashSet<String>,
+    /// Meetings the avatar already greeted as they started.
+    greeted: HashSet<String>,
     closed_at: Option<Instant>,
     avatar: Option<fn(&mut App) -> Option<AnyWindowHandle>>,
+    for_you: Vec<ForYou>,
+    top_today: Option<String>,
+    /// "For you" items already shown in the menu; read from disk once.
+    seen: Option<HashSet<String>>,
 }
 
 impl Global for MenuState {}
 
-/// Keeps the calendar fresh and keeps a notice beside `avatar` (the avatar's
-/// window, when it is on screen) for the event that is next up.
+/// Keeps the calendar and the to-do board fresh, and keeps a notice beside
+/// `avatar` (the avatar's window, when it is on screen) for what is next.
 pub fn init(avatar: fn(&mut App) -> Option<AnyWindowHandle>, cx: &mut App) {
     cx.default_global::<MenuState>().avatar = Some(avatar);
     cx.spawn(async move |cx| {
@@ -254,6 +270,27 @@ pub fn init(avatar: fn(&mut App) -> Option<AnyWindowHandle>, cx: &mut App) {
     .detach();
     cx.spawn(async move |cx| {
         loop {
+            let brain = cx.update(|cx| {
+                crate::github_sync::state(cx).and_then(|state| state.read(cx).repo().cloned())
+            });
+            if let Some(brain) = brain {
+                let snapshot = cx
+                    .background_spawn(async move { avatar_help::snapshot(&brain) })
+                    .await;
+                cx.update(|cx| {
+                    let state = cx.default_global::<MenuState>();
+                    state.for_you = snapshot.for_you;
+                    state.top_today = snapshot.top_today;
+                    quick_capture::refresh_avatar(cx);
+                    sync_notice(cx);
+                });
+            }
+            cx.background_executor().timer(SNAPSHOT_REFRESH).await;
+        }
+    })
+    .detach();
+    cx.spawn(async move |cx| {
+        loop {
             cx.background_executor().timer(NOTICE_CHECK).await;
             cx.update(sync_notice);
         }
@@ -261,6 +298,35 @@ pub fn init(avatar: fn(&mut App) -> Option<AnyWindowHandle>, cx: &mut App) {
     .detach();
     // The menu closing brings the notice back; the avatar closing takes it away.
     cx.on_window_closed(|cx, _| cx.defer(sync_notice)).detach();
+}
+
+fn seen_file() -> PathBuf {
+    paths::data_dir().join("avatar-seen")
+}
+
+/// Whether the menu holds "For you" items the menu has not shown yet.
+pub fn has_unseen(cx: &mut App) -> bool {
+    let MenuState { seen, for_you, .. } = cx.default_global::<MenuState>();
+    let seen = seen.get_or_insert_with(|| {
+        std::fs::read_to_string(seen_file())
+            .map(|text| text.lines().map(str::to_owned).collect())
+            .unwrap_or_default()
+    });
+    for_you.iter().any(|item| !seen.contains(&item.key()))
+}
+
+/// Remembers everything "For you" as shown, which clears the avatar's dot.
+fn mark_seen(cx: &mut App) {
+    let state = cx.default_global::<MenuState>();
+    let keys = state
+        .for_you
+        .iter()
+        .map(ForYou::key)
+        .collect::<HashSet<_>>();
+    let text = keys.iter().cloned().collect::<Vec<_>>().join("\n");
+    state.seen = Some(keys);
+    std::fs::write(seen_file(), text).log_err();
+    quick_capture::refresh_avatar(cx);
 }
 
 /// The event the notice is about: the soonest one starting within the lead
@@ -285,8 +351,100 @@ fn notice_event<'a>(
         .or_else(|| live().max_by_key(|event| event.start))
 }
 
+/// What the card beside the avatar is about.
+#[derive(Debug, Clone)]
+enum NoticeKind {
+    Meeting(Arc<CalendarEvent>),
+    /// Just out of a meeting with time to spare, and the to-do to spend it on.
+    Free {
+        key: String,
+        until: Option<DateTime<Local>>,
+        todo: String,
+    },
+    /// The day's meetings are over.
+    WrapUp {
+        key: String,
+    },
+}
+
+impl NoticeKind {
+    fn key(&self) -> String {
+        match self {
+            Self::Meeting(event) => notice_key(event),
+            Self::Free { key, .. } | Self::WrapUp { key } => key.clone(),
+        }
+    }
+}
+
+/// A meeting comes first; otherwise free time, if there is a to-do for it;
+/// otherwise the end-of-day wrap-up.
+fn pick_notice(
+    events: &[CalendarEvent],
+    top_today: Option<&str>,
+    now: DateTime<Local>,
+    dismissed: &HashSet<String>,
+) -> Option<NoticeKind> {
+    if let Some(event) = notice_event(events, now, dismissed) {
+        return Some(NoticeKind::Meeting(Arc::new(event.clone())));
+    }
+    if let Some(todo) = top_today
+        && let Some((key, until)) = avatar_help::free_time(events, now)
+        && !dismissed.contains(&key)
+    {
+        return Some(NoticeKind::Free {
+            key,
+            until,
+            todo: todo.to_owned(),
+        });
+    }
+    avatar_help::wrap_up(events, now)
+        .filter(|key| !dismissed.contains(key))
+        .map(|key| NoticeKind::WrapUp { key })
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct NoticeActions {
+    /// The call link, for Join.
+    join: Option<String>,
+    /// The meeting matches a folder in the brain, for Prep.
+    prep: bool,
+}
+
+fn notice_actions(kind: &NoticeKind, cx: &App) -> NoticeActions {
+    let NoticeKind::Meeting(event) = kind else {
+        return NoticeActions::default();
+    };
+    NoticeActions {
+        join: avatar_help::meeting_link(event),
+        prep: crate::prep::state(cx)
+            .and_then(|state| {
+                state
+                    .read(cx)
+                    .banner()
+                    .map(|banner| banner.event_id == event.id)
+            })
+            .unwrap_or(false),
+    }
+}
+
+fn notice_size(kind: &NoticeKind, actions: &NoticeActions) -> Size<Pixels> {
+    let buttons = match kind {
+        NoticeKind::Meeting(_) => actions.join.is_some() || actions.prep,
+        NoticeKind::Free { .. } | NoticeKind::WrapUp { .. } => true,
+    };
+    Size {
+        width: NOTICE_WIDTH,
+        height: if buttons {
+            NOTICE_HEIGHT_WITH_BUTTONS
+        } else {
+            NOTICE_HEIGHT
+        },
+    }
+}
+
 /// Shows, updates, moves or removes the notice so it matches the calendar and
-/// sits beside the avatar. It is hidden while the menu is open.
+/// sits beside the avatar. It is hidden while the menu is open. The avatar
+/// glances at a card when it appears.
 pub fn sync_notice(cx: &mut App) {
     let windows = cx.windows();
     let notice = windows
@@ -300,10 +458,17 @@ pub fn sync_notice(cx: &mut App) {
         .avatar
         .and_then(|avatar| avatar(cx));
     let state = cx.default_global::<MenuState>();
-    let event = (!menu_open)
-        .then(|| notice_event(&state.events, Local::now(), &state.dismissed).cloned())
+    let kind = (!menu_open)
+        .then(|| {
+            pick_notice(
+                &state.events,
+                state.top_today.as_deref(),
+                Local::now(),
+                &state.dismissed,
+            )
+        })
         .flatten();
-    let placement = avatar.zip(event).and_then(|(avatar, event)| {
+    let placement = avatar.zip(kind).and_then(|(avatar, kind)| {
         avatar
             .update(cx, |_, window, cx| {
                 (
@@ -312,9 +477,9 @@ pub fn sync_notice(cx: &mut App) {
                 )
             })
             .ok()
-            .map(|(anchor, display)| (avatar, event, anchor, display))
+            .map(|(anchor, display)| (avatar, kind, anchor, display))
     });
-    let Some((avatar, event, anchor, display)) = placement else {
+    let Some((avatar, kind, anchor, display)) = placement else {
         if let Some(notice) = notice {
             notice
                 .update(cx, |_, window, _| window.remove_window())
@@ -322,41 +487,78 @@ pub fn sync_notice(cx: &mut App) {
         }
         return;
     };
-    let (bounds, _) = beside(anchor, NOTICE_SIZE, display, cx);
+    let actions = notice_actions(&kind, cx);
+    let size = notice_size(&kind, &actions);
+    let (bounds, _) = beside(anchor, size, display, cx);
     let offset = bounds.origin - anchor.origin;
-    match notice {
+    let appeared = match notice {
         Some(notice) => {
-            notice
+            let changed = notice
                 .update(cx, |notice, _, cx| {
-                    if notice_key(&notice.event) != notice_key(&event) {
-                        notice.event = Arc::new(event);
+                    let changed = notice.kind.key() != kind.key();
+                    if changed || notice.actions != actions {
+                        notice.kind = kind;
+                        notice.actions = actions;
                         cx.notify();
                     }
+                    changed
                 })
-                .log_err();
-            native::place(avatar, notice.into(), offset, cx);
+                .unwrap_or(false);
+            native::place(avatar, notice.into(), offset, size, cx);
+            changed
         }
         None => {
             let opened = cx
                 .open_window(popup(bounds, false, display), move |window, cx| {
-                    cx.new(|cx| NoticeView::new(event, window, cx))
+                    cx.new(|cx| NoticeView::new(kind, actions, window, cx))
                 })
                 .log_err();
             if let Some(notice) = opened {
-                native::attach(avatar, notice.into(), offset, cx);
+                native::attach(avatar, notice.into(), offset, size, cx);
             }
+            opened.is_some()
         }
+    };
+    if appeared {
+        let dx = f32::from(offset.x + size.width / 2. - anchor.size.width / 2.);
+        let dy = f32::from(offset.y + size.height / 2. - anchor.size.height / 2.);
+        let length = (dx * dx + dy * dy).sqrt().max(1.);
+        quick_capture::react(cx, Reaction::LookAt(dx / length, dy / length));
     }
+}
+
+/// Where the pointer is from the centre of `window`, in points with y
+/// pointing down, wherever it is on screen.
+pub fn cursor_offset(window: AnyWindowHandle, cx: &mut App) -> Option<(f32, f32)> {
+    native::cursor_offset(window, cx)
+}
+
+/// Runs `f` in the main Brainz window, brought to the front.
+fn in_workspace(cx: &mut App, f: impl FnOnce(&mut Window, &mut App)) {
+    let Some(workspace) = cx
+        .windows()
+        .into_iter()
+        .find_map(|window| window.downcast::<workspace::MultiWorkspace>())
+    else {
+        return;
+    };
+    cx.activate(true);
+    workspace
+        .update(cx, |_, window, cx| {
+            window.activate_window();
+            f(window, cx);
+        })
+        .log_err();
 }
 
 #[cfg(target_os = "macos")]
 mod native {
     use cocoa::{
-        base::{id, nil},
-        foundation::{NSPoint, NSRect},
+        base::{YES, id, nil},
+        foundation::{NSPoint, NSRect, NSSize},
     };
-    use gpui::{AnyWindowHandle, App, Pixels, Point};
-    use objc::{msg_send, sel, sel_impl};
+    use gpui::{AnyWindowHandle, App, Pixels, Point, Size};
+    use objc::{class, msg_send, sel, sel_impl};
     use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
 
     const NS_WINDOW_ABOVE: i64 = 1;
@@ -383,6 +585,7 @@ mod native {
         parent: AnyWindowHandle,
         child: AnyWindowHandle,
         offset: Point<Pixels>,
+        size: Size<Pixels>,
         cx: &mut App,
     ) {
         let (Some(parent_window), Some(child_window)) =
@@ -395,15 +598,17 @@ mod native {
             let _: () =
                 msg_send![parent_window, addChildWindow: child_window ordered: NS_WINDOW_ABOVE];
         }
-        place(parent, child, offset, cx);
+        place(parent, child, offset, size, cx);
     }
 
-    /// Puts `child` at `offset` from `parent`'s top-left corner. Works in
-    /// AppKit's global, bottom-up coordinates, so it holds on any display.
+    /// Puts `child` at `offset` from `parent`'s top-left corner at `size`.
+    /// Works in AppKit's global, bottom-up coordinates, so it holds on any
+    /// display.
     pub(super) fn place(
         parent: AnyWindowHandle,
         child: AnyWindowHandle,
         offset: Point<Pixels>,
+        size: Size<Pixels>,
         cx: &mut App,
     ) {
         let (Some(parent), Some(child)) = (ns_window(parent, cx), ns_window(child, cx)) else {
@@ -413,25 +618,61 @@ mod native {
         unsafe {
             let frame: NSRect = msg_send![parent, frame];
             let current: NSRect = msg_send![child, frame];
-            let origin = NSPoint::new(
-                frame.origin.x + f64::from(offset.x),
-                frame.origin.y + frame.size.height - f64::from(offset.y) - current.size.height,
+            let (width, height) = (f64::from(size.width), f64::from(size.height));
+            let target = NSRect::new(
+                NSPoint::new(
+                    frame.origin.x + f64::from(offset.x),
+                    frame.origin.y + frame.size.height - f64::from(offset.y) - height,
+                ),
+                NSSize::new(width, height),
             );
-            if (origin.x - current.origin.x).abs() > 0.5
-                || (origin.y - current.origin.y).abs() > 0.5
-            {
-                let _: () = msg_send![child, setFrameOrigin: origin];
+            let moved = (target.origin.x - current.origin.x).abs() > 0.5
+                || (target.origin.y - current.origin.y).abs() > 0.5
+                || (target.size.width - current.size.width).abs() > 0.5
+                || (target.size.height - current.size.height).abs() > 0.5;
+            if moved {
+                let _: () = msg_send![child, setFrame: target display: YES];
             }
+        }
+    }
+
+    pub(super) fn cursor_offset(window: AnyWindowHandle, cx: &mut App) -> Option<(f32, f32)> {
+        let window = ns_window(window, cx)?;
+        // SAFETY: the window is live; mouseLocation is a class method.
+        unsafe {
+            let frame: NSRect = msg_send![window, frame];
+            let mouse: NSPoint = msg_send![class!(NSEvent), mouseLocation];
+            Some((
+                (mouse.x - (frame.origin.x + frame.size.width / 2.)) as f32,
+                ((frame.origin.y + frame.size.height / 2.) - mouse.y) as f32,
+            ))
         }
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 mod native {
-    use gpui::{AnyWindowHandle, App, Pixels, Point};
+    use gpui::{AnyWindowHandle, App, Pixels, Point, Size};
 
-    pub(super) fn attach(_: AnyWindowHandle, _: AnyWindowHandle, _: Point<Pixels>, _: &mut App) {}
-    pub(super) fn place(_: AnyWindowHandle, _: AnyWindowHandle, _: Point<Pixels>, _: &mut App) {}
+    pub(super) fn attach(
+        _: AnyWindowHandle,
+        _: AnyWindowHandle,
+        _: Point<Pixels>,
+        _: Size<Pixels>,
+        _: &mut App,
+    ) {
+    }
+    pub(super) fn place(
+        _: AnyWindowHandle,
+        _: AnyWindowHandle,
+        _: Point<Pixels>,
+        _: Size<Pixels>,
+        _: &mut App,
+    ) {
+    }
+    pub(super) fn cursor_offset(_: AnyWindowHandle, _: &mut App) -> Option<(f32, f32)> {
+        None
+    }
 }
 
 fn store_events(state: LoadState, events: Vec<CalendarEvent>, cx: &mut App) {
@@ -535,6 +776,7 @@ pub fn toggle(anchor: Bounds<Pixels>, display: Option<DisplayId>, cx: &mut App) 
             let state = cx.default_global::<MenuState>();
             let events = state.events.clone();
             let needs_permission = state.needs_permission;
+            let for_you = state.for_you.clone();
             let (bounds, above) = beside(
                 anchor,
                 Size {
@@ -546,7 +788,16 @@ pub fn toggle(anchor: Bounds<Pixels>, display: Option<DisplayId>, cx: &mut App) 
             );
             cx.open_window(popup(bounds, true, display), move |window, cx| {
                 let view = cx.new(|cx| {
-                    MenuView::new(brain, events, captures, above, needs_permission, window, cx)
+                    MenuView::new(
+                        brain,
+                        events,
+                        captures,
+                        for_you,
+                        above,
+                        needs_permission,
+                        window,
+                        cx,
+                    )
                 });
                 let focus = view.read(cx).focus_handle(cx);
                 window.focus(&focus, cx);
@@ -555,6 +806,9 @@ pub fn toggle(anchor: Bounds<Pixels>, display: Option<DisplayId>, cx: &mut App) 
             })
             .log_err();
             sync_notice(cx);
+            mark_seen(cx);
+            // The avatar looks up (or down) at the menu as it opens.
+            quick_capture::react(cx, Reaction::LookAt(-0.35, if above { -1. } else { 1. }));
         });
     })
     .detach();
@@ -571,6 +825,7 @@ pub struct MenuView {
     editor: Option<Entity<Editor>>,
     events: Vec<CalendarEvent>,
     captures: Vec<Capture>,
+    for_you: Vec<ForYou>,
     /// Whether the menu sits above the avatar, and so grows upward from it.
     above: bool,
     needs_permission: bool,
@@ -586,6 +841,7 @@ impl MenuView {
         brain: Option<PathBuf>,
         events: Vec<CalendarEvent>,
         captures: Vec<Capture>,
+        for_you: Vec<ForYou>,
         above: bool,
         needs_permission: bool,
         window: &mut Window,
@@ -609,6 +865,7 @@ impl MenuView {
             editor,
             events,
             captures,
+            for_you,
             above,
             needs_permission,
             copied: None,
@@ -629,7 +886,10 @@ impl MenuView {
             return;
         }
         match crate::quick_capture::save_capture(brain, &text) {
-            Ok(()) => window.remove_window(),
+            Ok(()) => {
+                window.remove_window();
+                cx.defer(|cx| quick_capture::react(cx, Reaction::Wink));
+            }
             Err(error) => {
                 self.error = Some(format!("Couldn't save to Inbox: {error:#}"));
                 cx.notify();
@@ -663,20 +923,31 @@ impl MenuView {
 
     /// Brings a Brainz window forward on its Calendar tab and closes the menu.
     fn open_calendar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let workspace = cx
-            .windows()
-            .into_iter()
-            .find_map(|window| window.downcast::<workspace::MultiWorkspace>());
-        if let Some(workspace) = workspace {
-            cx.activate(true);
-            workspace
-                .update(cx, |_, window, cx| {
-                    window.activate_window();
-                    window.dispatch_action(Box::new(crate::OpenCalendar), cx);
-                })
-                .log_err();
-        }
+        in_workspace(cx, |window, cx| {
+            window.dispatch_action(Box::new(crate::OpenCalendar), cx)
+        });
         window.remove_window();
+    }
+
+    /// Adds a "For you" item under Today, or drops it.
+    fn resolve_for_you(&mut self, index: usize, add: bool, cx: &mut Context<Self>) {
+        let Some(brain) = self.brain.clone() else {
+            return;
+        };
+        if index >= self.for_you.len() {
+            return;
+        }
+        let item = self.for_you.remove(index);
+        let key = item.key();
+        cx.default_global::<MenuState>()
+            .for_you
+            .retain(|other| other.key() != key);
+        if add {
+            quick_capture::react(cx, Reaction::Cheer);
+        }
+        cx.notify();
+        cx.background_spawn(async move { avatar_help::resolve(&brain, &item, add) })
+            .detach_and_log_err(cx);
     }
 
     fn copy(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -890,6 +1161,68 @@ impl Render for MenuView {
                         .gap_3()
                         .child(Icon::new(IconName::Pencil).color(Color::Accent))
                         .child(div().flex_1().child(editor)),
+                )
+            })
+            .when(!self.for_you.is_empty(), |this| {
+                this.child(section("For you")).children(
+                    self.for_you
+                        .iter()
+                        .take(FOR_YOU_LIMIT)
+                        .enumerate()
+                        .map(|(index, item)| {
+                            h_flex()
+                                .id(("brainz-menu-for-you", index))
+                                .h(px(38.))
+                                .px_1()
+                                .gap_2()
+                                .rounded_md()
+                                .hover(|this| this.bg(colors.element_hover))
+                                .child(
+                                    Icon::new(IconName::Sparkle)
+                                        .size(IconSize::Small)
+                                        .color(Color::Accent),
+                                )
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(
+                                            Label::new(item.title.clone())
+                                                .size(LabelSize::Small)
+                                                .truncate(),
+                                        )
+                                        .child(
+                                            Label::new(item.label())
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Muted),
+                                        ),
+                                )
+                                .child(
+                                    IconButton::new(
+                                        ("brainz-menu-for-you-add", index),
+                                        IconName::Plus,
+                                    )
+                                    .icon_size(IconSize::Small)
+                                    .tooltip(ui::Tooltip::text("Add to Today"))
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| this.resolve_for_you(index, true, cx),
+                                    )),
+                                )
+                                .child(
+                                    IconButton::new(
+                                        ("brainz-menu-for-you-drop", index),
+                                        IconName::Close,
+                                    )
+                                    .icon_size(IconSize::Small)
+                                    .icon_color(Color::Muted)
+                                    .tooltip(ui::Tooltip::text("Dismiss"))
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.resolve_for_you(index, false, cx)
+                                        },
+                                    )),
+                                )
+                        }),
                 )
             })
             .when(nothing_to_show, |this| {
@@ -1148,28 +1481,34 @@ impl Render for MenuView {
     }
 }
 
-/// The heads-up kept beside the avatar for the next event. Only its dismiss
-/// button closes it for good, and only for that event.
+/// The card kept beside the avatar: the next meeting, free time after one,
+/// or the end-of-day wrap-up. Only its dismiss button closes it for good,
+/// and only for that one card.
 pub struct NoticeView {
-    event: Arc<CalendarEvent>,
+    kind: NoticeKind,
+    actions: NoticeActions,
     _transparency: gpui::Subscription,
     _tick: gpui::Task<()>,
 }
 
 impl NoticeView {
-    fn new(event: CalendarEvent, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        kind: NoticeKind,
+        actions: NoticeActions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
-            event: Arc::new(event),
+            kind,
+            actions,
             _transparency: keep_transparent(window, cx),
             _tick: cx.spawn(async move |this, cx| {
                 loop {
                     cx.background_executor().timer(Duration::from_secs(1)).await;
                     let ticked = this.update(cx, |notice: &mut NoticeView, cx| {
-                        let key = notice_key(&notice.event);
-                        if urgency(&notice.event, Local::now()) == Urgency::Now
-                            && cx.default_global::<MenuState>().chimed.insert(key)
-                        {
-                            crate::quick_capture::alert_avatar(cx);
+                        if let NoticeKind::Meeting(event) = &notice.kind {
+                            let event = event.clone();
+                            notice_tick(&event, Local::now(), cx);
                         }
                         cx.notify();
                     });
@@ -1184,8 +1523,56 @@ impl NoticeView {
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.default_global::<MenuState>()
             .dismissed
-            .insert(notice_key(&self.event));
+            .insert(self.kind.key());
         window.remove_window();
+    }
+
+    fn join(&mut self, cx: &mut Context<Self>) {
+        if let Some(link) = &self.actions.join {
+            cx.open_url(link);
+        }
+    }
+
+    fn prep(&mut self, cx: &mut Context<Self>) {
+        in_workspace(cx, |window, cx| {
+            if let Some(state) = crate::prep::state(cx) {
+                state.update(cx, |state, cx| state.open_for_event(window, cx));
+            }
+        });
+    }
+
+    fn open_todo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        in_workspace(cx, |window, cx| {
+            window.dispatch_action(Box::new(crate::todo::OpenTodo), cx)
+        });
+        self.dismiss(window, cx);
+    }
+
+    fn wrap_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        in_workspace(cx, |window, cx| {
+            window.dispatch_action(
+                Box::new(crate::prep::OpenClaudePrefilled {
+                    text: WRAP_UP_PROMPT.to_owned(),
+                }),
+                cx,
+            )
+        });
+        self.dismiss(window, cx);
+    }
+}
+
+/// Once a second while a meeting card is up: chime a minute before, and
+/// greet you as it starts.
+fn notice_tick(event: &CalendarEvent, now: DateTime<Local>, cx: &mut App) {
+    let key = notice_key(event);
+    let state = cx.default_global::<MenuState>();
+    if urgency(event, now) == Urgency::Now && state.chimed.insert(key.clone()) {
+        quick_capture::alert_avatar(cx);
+        return;
+    }
+    let started = (now - event.start).num_seconds();
+    if (0..30).contains(&started) && state.greeted.insert(key) {
+        quick_capture::react(cx, Reaction::Greet);
     }
 }
 
@@ -1212,7 +1599,10 @@ impl Render for NoticeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors();
         let now = Local::now();
-        let urgency = urgency(&self.event, now);
+        let urgency = match &self.kind {
+            NoticeKind::Meeting(event) => urgency(event, now),
+            _ => Urgency::Calm,
+        };
         let tint = match urgency {
             Urgency::Calm => None,
             Urgency::Soon => Some(cx.theme().status().warning),
@@ -1223,37 +1613,97 @@ impl Render for NoticeView {
             Urgency::Soon => Color::Warning,
             Urgency::Now => Color::Error,
         };
+        let (icon, title, detail): (IconName, SharedString, SharedString) = match &self.kind {
+            NoticeKind::Meeting(event) => (
+                IconName::BrainzCalendar,
+                event.title.clone(),
+                countdown_label(event, now).into(),
+            ),
+            NoticeKind::Free { until, todo, .. } => (
+                IconName::BrainzCheckboxEmpty,
+                match until {
+                    Some(until) => format!("Free until {}", until.format("%-I:%M %p")),
+                    None => "Free for the rest of the day".to_owned(),
+                }
+                .into(),
+                format!("Next up: {todo}").into(),
+            ),
+            NoticeKind::WrapUp { .. } => (
+                IconName::Sparkle,
+                "That was the last meeting today".into(),
+                "Wrap up the day and plan tomorrow".into(),
+            ),
+        };
+        let mut buttons = Vec::new();
+        match &self.kind {
+            NoticeKind::Meeting(_) => {
+                if self.actions.join.is_some() {
+                    buttons.push(
+                        Button::new("brainz-notice-join", "Join")
+                            .style(ButtonStyle::Filled)
+                            .size(ButtonSize::Compact)
+                            .on_click(cx.listener(|this, _, _, cx| this.join(cx))),
+                    );
+                }
+                if self.actions.prep {
+                    buttons.push(
+                        Button::new("brainz-notice-prep", "Prep")
+                            .style(ButtonStyle::Subtle)
+                            .size(ButtonSize::Compact)
+                            .tooltip(ui::Tooltip::text("Open the prep note or the folder"))
+                            .on_click(cx.listener(|this, _, _, cx| this.prep(cx))),
+                    );
+                }
+            }
+            NoticeKind::Free { .. } => buttons.push(
+                Button::new("brainz-notice-todo", "Open To-Do")
+                    .style(ButtonStyle::Filled)
+                    .size(ButtonSize::Compact)
+                    .on_click(cx.listener(|this, _, window, cx| this.open_todo(window, cx))),
+            ),
+            NoticeKind::WrapUp { .. } => buttons.push(
+                Button::new("brainz-notice-wrap", "Wrap up")
+                    .style(ButtonStyle::Filled)
+                    .size(ButtonSize::Compact)
+                    .tooltip(ui::Tooltip::text(
+                        "Open Claude with a wrap-up request, ready to send",
+                    ))
+                    .on_click(cx.listener(|this, _, window, cx| this.wrap_up(window, cx))),
+            ),
+        }
         let surface = colors.elevated_surface_background;
-        let notice = h_flex()
+        let notice = v_flex()
             .id("brainz-event-notice")
             .size_full()
+            .justify_center()
             .pl_2p5()
             .pr_5()
-            .gap_2()
+            .gap_1p5()
             .rounded_lg()
             .border_1()
             .border_color(tint.unwrap_or(colors.text_accent))
             .bg(surface)
             .child(
-                Icon::new(IconName::BrainzCalendar)
-                    .size(IconSize::Small)
-                    .color(icon_color),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(Icon::new(icon).size(IconSize::Small).color(icon_color))
                     .child(
-                        Label::new(self.event.title.clone())
-                            .size(LabelSize::Small)
-                            .truncate(),
-                    )
-                    .child(
-                        Label::new(countdown_label(&self.event, now))
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Label::new(title).size(LabelSize::Small).truncate())
+                            .child(
+                                Label::new(detail)
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted)
+                                    .truncate(),
+                            ),
                     ),
-            );
+            )
+            .when(!buttons.is_empty(), |this| {
+                this.child(h_flex().pl(px(22.)).gap_1().children(buttons))
+            });
         let dismiss = div()
             .id("brainz-event-notice-dismiss")
             .absolute()
@@ -1423,6 +1873,25 @@ mod tests {
         assert_eq!(pick(at(8, 55), &dismissed), None);
         assert_eq!(pick(at(9, 25), &dismissed), Some("second".into()));
         assert_eq!(pick(at(10, 5), &dismissed), None);
+    }
+
+    #[test]
+    fn a_meeting_beats_free_time_which_needs_a_to_do() {
+        let standup = event("standup", at(9, 0), 30, false);
+        let review = event("review", at(11, 0), 30, false);
+        let events = vec![standup, review];
+        let dismissed = HashSet::new();
+        let kind = |now, todo| pick_notice(&events, todo, now, &dismissed).map(|kind| kind.key());
+        // Just out of standup with the review well off: free time, if there
+        // is something to do.
+        assert!(
+            kind(at(9, 35), Some("Write the brief")).is_some_and(|key| key.starts_with("free@"))
+        );
+        assert_eq!(kind(at(9, 35), None), None);
+        // The review's notice wins once it is close.
+        assert!(
+            kind(at(10, 52), Some("Write the brief")).is_some_and(|key| key.starts_with("review@"))
+        );
     }
 
     #[test]

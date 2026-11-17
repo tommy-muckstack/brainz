@@ -45,7 +45,7 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Board writes run on background threads; each is a read-modify-write of
 /// the whole file, so two quick edits must not interleave.
-static BOARD_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static BOARD_LOCK: Mutex<()> = Mutex::new(());
 
 const STALE_BOARD: &str = "the to-do list changed underneath; refresh and try again";
 
@@ -355,10 +355,10 @@ pub(crate) fn suggestions_relative(board: &str) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct Suggestion {
+pub(crate) struct Suggestion {
     /// The trimmed line, so Add and Delete remove exactly this one.
-    raw: String,
-    title: String,
+    pub(crate) raw: String,
+    pub(crate) title: String,
 }
 
 fn parse_suggestions(text: &str) -> Vec<Suggestion> {
@@ -374,7 +374,7 @@ fn parse_suggestions(text: &str) -> Vec<Suggestion> {
         .collect()
 }
 
-fn load_suggestions(path: &Path) -> Vec<Suggestion> {
+pub(crate) fn load_suggestions(path: &Path) -> Vec<Suggestion> {
     match std::fs::read_to_string(path) {
         Ok(text) => parse_suggestions(&text),
         Err(error) => {
@@ -389,7 +389,7 @@ fn load_suggestions(path: &Path) -> Vec<Suggestion> {
     }
 }
 
-fn remove_suggestion(text: &str, raw: &str) -> Result<String> {
+pub(crate) fn remove_suggestion(text: &str, raw: &str) -> Result<String> {
     let mut lines = text.lines().collect::<Vec<_>>();
     let index = lines
         .iter()
@@ -1155,6 +1155,9 @@ impl TodoView {
     }
 
     fn toggle(&mut self, item: &TodoItem, cx: &mut Context<Self>) {
+        if !item.done {
+            crate::quick_capture::react(cx, crate::quick_capture::Reaction::Cheer);
+        }
         let line = item.line;
         let raw = item.raw.clone();
         self.edit_board(move |text| toggle_line(text, line, &raw), cx);

@@ -1,6 +1,7 @@
 //! Brainz: a Calendar tab that shows the next seven days, read through the
 //! bundled `brainz-calendar` helper (a small EventKit program).
 
+mod avatar_help;
 pub mod backup;
 pub mod brain_config;
 pub mod brain_match;

@@ -104,6 +104,37 @@ pub fn alert_avatar(cx: &mut gpui::App) {
 #[cfg(not(target_os = "macos"))]
 pub fn alert_avatar(_: &mut gpui::App) {}
 
+/// A moment the avatar reacts to with its face.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Reaction {
+    /// Glances towards something, each axis from -1 to 1 (negative x is
+    /// left, negative y is up), as when a card appears beside it.
+    LookAt(f32, f32),
+    /// Looks straight at you with raised brows, as a meeting starts.
+    Greet,
+    /// A happy squint and a little hop, as a to-do is added or done.
+    Cheer,
+    /// A quick wink, as a capture is saved.
+    Wink,
+}
+
+#[cfg(target_os = "macos")]
+pub fn react(cx: &mut gpui::App, reaction: Reaction) {
+    native::react(cx, reaction);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn react(_: &mut gpui::App, _: Reaction) {}
+
+/// Redraws the avatar, e.g. when its "for you" dot should change.
+#[cfg(target_os = "macos")]
+pub fn refresh_avatar(cx: &mut gpui::App) {
+    native::refresh_avatar(cx);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn refresh_avatar(_: &mut gpui::App) {}
+
 /// Shows or hides the floating avatar and remembers the choice.
 #[cfg(target_os = "macos")]
 pub fn toggle_avatar(cx: &mut gpui::App) {
@@ -434,6 +465,9 @@ mod native {
                     _moved: cx.observe_window_bounds(window, |_, _, cx| {
                         cx.defer(crate::capture_menu::sync_notice)
                     }),
+                    reaction: None,
+                    cursor: None,
+                    _cursor: follow_cursor(window.window_handle(), cx),
                 })
             },
         )
@@ -460,6 +494,95 @@ mod native {
                     .log_err();
             }
         }
+    }
+
+    pub(super) fn react(cx: &mut App, reaction: super::Reaction) {
+        for window in cx.windows() {
+            if let Some(avatar) = window.downcast::<AvatarView>() {
+                avatar
+                    .update(cx, |avatar, _, cx| {
+                        avatar.reaction = Some((reaction, Instant::now()));
+                        cx.notify();
+                    })
+                    .log_err();
+            }
+        }
+    }
+
+    pub(super) fn refresh_avatar(cx: &mut App) {
+        for window in cx.windows() {
+            if let Some(avatar) = window.downcast::<AvatarView>() {
+                avatar.update(cx, |_, _, cx| cx.notify()).log_err();
+            }
+        }
+    }
+
+    /// The pointer within this distance of the avatar draws its eyes.
+    const CURSOR_REACH: f32 = 360.;
+    /// At this distance and beyond the eyes go as far as they can.
+    const CURSOR_FULL: f32 = 140.;
+
+    /// Where the eyes should look for a pointer this far from the avatar's
+    /// centre, in points (y down); none when it is too far or right on it.
+    pub(super) fn cursor_look(dx: f32, dy: f32) -> Option<(f32, f32)> {
+        let distance = (dx * dx + dy * dy).sqrt();
+        if !(12.0..CURSOR_REACH).contains(&distance) {
+            return None;
+        }
+        let reach = (distance / CURSOR_FULL).min(1.);
+        Some((dx / distance * reach, dy / distance * reach))
+    }
+
+    fn follow_cursor(
+        window: gpui::AnyWindowHandle,
+        cx: &mut Context<AvatarView>,
+    ) -> gpui::Task<()> {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                let offset = cx.update(|cx| crate::capture_menu::cursor_offset(window, cx));
+                let target = offset.and_then(|(dx, dy)| cursor_look(dx, dy));
+                let updated = this.update(cx, |avatar, cx| {
+                    let moved = match (avatar.cursor, target) {
+                        (Some(a), Some(b)) => (a.0 - b.0).abs() + (a.1 - b.1).abs() > 0.04,
+                        (None, None) => false,
+                        _ => true,
+                    };
+                    if moved {
+                        avatar.cursor = target;
+                        cx.notify();
+                    }
+                });
+                if updated.is_err() {
+                    break;
+                }
+            }
+        })
+    }
+
+    /// How strongly `reaction` shows `elapsed` seconds after it began, and
+    /// whether it is over.
+    fn reaction_weight(reaction: super::Reaction, elapsed: f32) -> f32 {
+        use super::Reaction::*;
+        match reaction {
+            LookAt(..) => hold(elapsed, 0., 2.4, 0.25),
+            Greet => hold(elapsed, 0., 1.8, 0.25),
+            Cheer => hold(elapsed, 0., 1.3, 0.2),
+            Wink => hold(elapsed, 0., 0.8, 0.12),
+        }
+    }
+
+    fn lerp(from: f32, to: f32, amount: f32) -> f32 {
+        from + (to - from) * amount
+    }
+
+    /// Late at night the avatar is a little sleepy.
+    fn sleepy() -> bool {
+        use chrono::Timelike as _;
+        let hour = chrono::Local::now().hour();
+        hour >= 22 || hour < 6
     }
 
     fn avatar_window(cx: &mut App) -> Option<gpui::AnyWindowHandle> {
@@ -496,7 +619,7 @@ mod native {
             .iter()
             .map(|blink| ((time - blink).abs() / (BLINK_SECONDS / 2.)).min(1.))
             .fold(1., f32::min);
-        blink.min(1. - squint(time) * 0.45)
+        blink
     }
 
     fn squint(time: f32) -> f32 {
@@ -622,6 +745,10 @@ mod native {
         palette_open: bool,
         _transparency: gpui::Subscription,
         _moved: gpui::Subscription,
+        reaction: Option<(super::Reaction, Instant)>,
+        /// Where the eyes follow the pointer when it is close, like `look`.
+        cursor: Option<(f32, f32)>,
+        _cursor: gpui::Task<()>,
     }
 
     impl AvatarView {
@@ -679,6 +806,11 @@ mod native {
             let width = px(78.);
             let height = px(65.);
             let born = self.born;
+            let reaction = self.reaction;
+            let cursor = self.cursor;
+            let sleepy = sleepy();
+            let has_news = crate::capture_menu::has_unseen(cx);
+            let news_color = cx.theme().colors().text_accent;
             let character = div()
                 .id("brainz-avatar")
                 .relative()
@@ -704,8 +836,7 @@ mod native {
                         // A turning solid keeps its depth edge-on; the face
                         // rides round the curve, squeezing towards the edge
                         // and fading out before the back comes round.
-                        let silhouette =
-                            pose.turn.abs() + pose.side.abs() * AVATAR_DEPTH;
+                        let silhouette = pose.turn.abs() + pose.side.abs() * AVATAR_DEPTH;
                         let (stretch_x, stretch_y) =
                             (1. + 0.14 * pose.squash, 1. - 0.14 * pose.squash);
                         let (scale_x, scale_y) = if pose.spin {
@@ -736,12 +867,45 @@ mod native {
                         let front = if pose.turn < 0. { shade } else { color };
                         let bob = (time / 7.5 * std::f32::consts::TAU).sin() * 0.8;
                         // Keep the feet planted while squashing, then lift.
-                        let planted = (1. - stretch_y) * 65. / 2. - pose.hop;
-                        let (look_x, look_y) = look(time);
+                        let (mut look_x, mut look_y) = look(time);
+                        if let Some((x, y)) = cursor {
+                            look_x = lerp(look_x, x, 0.85);
+                            look_y = lerp(look_y, y, 0.85);
+                        }
+                        let (mut left_brow, mut right_brow) = brow_lift(time);
+                        let mut squinting = squint(time);
+                        let mut winking = wink(time);
+                        let mut cheer_hop = 0.;
+                        if let Some((reaction, began)) = reaction {
+                            let elapsed = began.elapsed().as_secs_f32();
+                            let weight = reaction_weight(reaction, elapsed);
+                            let (target, brows, squint_to) = match reaction {
+                                super::Reaction::LookAt(x, y) => (Some((x, y)), 0.35, 0.),
+                                super::Reaction::Greet => (Some((0., 0.)), 1., 0.5),
+                                super::Reaction::Cheer => (None, 0.8, 1.),
+                                super::Reaction::Wink => (None, 0., 0.),
+                            };
+                            if let Some((x, y)) = target {
+                                look_x = lerp(look_x, x, weight);
+                                look_y = lerp(look_y, y, weight);
+                            }
+                            left_brow = left_brow.max(brows * weight);
+                            right_brow = right_brow.max(brows * weight);
+                            squinting = squinting.max(squint_to * weight);
+                            if reaction == super::Reaction::Wink {
+                                winking = winking.max(weight);
+                                right_brow = right_brow.max(weight * 0.8);
+                                left_brow = left_brow.min(1. - weight * 1.6);
+                            }
+                            if reaction == super::Reaction::Cheer && elapsed < 1.3 {
+                                cheer_hop = (elapsed / 1.3 * std::f32::consts::PI).sin() * 7.;
+                            }
+                        }
                         let look = look_x * LOOK_X;
                         let look_y = look_y * LOOK_Y;
-                        let open = eye_openness(time);
-                        let (left_brow, right_brow) = brow_lift(time);
+                        let drowsy = if sleepy { 0.72 } else { 1. };
+                        let open = eye_openness(time).min(1. - squinting * 0.45) * drowsy;
+                        let planted = (1. - stretch_y) * 65. / 2. - pose.hop - cheer_hop;
                         let top = AVATAR_HOP + 4. + bob + planted;
                         let middle_x = 3. + 39.;
                         let middle_y = top + 32.5;
@@ -791,10 +955,9 @@ mod native {
                                     .path(path)
                                     .absolute()
                                     .left(px(3. + slide_x + look * 0.6 * turn_x))
-                                    .top(px(
-                                        top + slide_y
-                                            + (look_y * 0.5 - lift * BROW_LIFT) * turn_y,
-                                    ))
+                                    .top(px(top
+                                        + slide_y
+                                        + (look_y * 0.5 - lift * BROW_LIFT) * turn_y))
                                     .w(width)
                                     .h(height)
                                     .text_color(ink)
@@ -805,24 +968,45 @@ mod native {
                             };
                             this.child(brow("icons/brainz/avatar-brow-left.svg", left_brow))
                                 .child(brow("icons/brainz/avatar-brow-right.svg", right_brow))
-                                .child(eye(45., open.min(1. - wink(time))))
+                                .child(eye(45., open.min(1. - winking)))
                                 .child(eye(75., open))
                         })
                     },
                 );
             let alerts = self.alerts;
             // Always wrapped, so an alert never restarts the idle routine.
-            let character = div().relative().child(character).with_animation(
-                ("brainz-avatar-alert", alerts),
-                Animation::new(AVATAR_SHAKE),
-                move |this, delta| {
-                    if alerts == 0 {
-                        return this;
-                    }
-                    let shake = (delta * std::f32::consts::TAU * 5.).sin() * 4. * (1. - delta);
-                    this.left(px(shake))
-                },
-            );
+            // A dot when the menu holds something new for you.
+            let news_dot = div()
+                .absolute()
+                .top(px(AVATAR_HOP + 8.))
+                .right(px(10.))
+                .size(px(11.))
+                .rounded_full()
+                .border_2()
+                .border_color(color)
+                .bg(news_color)
+                .with_animation(
+                    "brainz-avatar-news",
+                    Animation::new(Duration::from_millis(2600))
+                        .repeat()
+                        .with_easing(gpui::pulsating_between(0.55, 1.)),
+                    |dot, delta| dot.opacity(delta),
+                );
+            let character = div()
+                .relative()
+                .child(character)
+                .when(has_news, |this| this.child(news_dot))
+                .with_animation(
+                    ("brainz-avatar-alert", alerts),
+                    Animation::new(AVATAR_SHAKE),
+                    move |this, delta| {
+                        if alerts == 0 {
+                            return this;
+                        }
+                        let shake = (delta * std::f32::consts::TAU * 5.).sin() * 4. * (1. - delta);
+                        this.left(px(shake))
+                    },
+                );
             v_flex()
                 .id("brainz-avatar-window")
                 .size_full()
@@ -897,7 +1081,10 @@ mod native {
                 return;
             }
             match super::save_capture(&self.brain, &text) {
-                Ok(()) => window.remove_window(),
+                Ok(()) => {
+                    window.remove_window();
+                    cx.defer(|cx| super::react(cx, super::Reaction::Wink));
+                }
                 Err(error) => {
                     self.error = Some(format!("Couldn't save to Inbox: {error:#}"));
                     cx.notify();
@@ -981,6 +1168,18 @@ mod tests {
         assert!(x > 0.6 && y < -0.6, "{x} {y}");
         assert!(look(13.4).0 < -0.9 && look(14.4).0 > 0.9);
         assert!(look(17.8).0 > 0.99);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn eyes_follow_a_nearby_pointer_only() {
+        use native::cursor_look;
+        assert_eq!(cursor_look(0., 0.), None);
+        assert_eq!(cursor_look(1000., 0.), None);
+        let (x, y) = cursor_look(-200., 0.).expect("close enough to look");
+        assert!(x < -0.99 && y.abs() < 1e-6);
+        let (x, y) = cursor_look(0., 70.).expect("close enough to look");
+        assert!(x.abs() < 1e-6 && (y - 0.5).abs() < 1e-6);
     }
 
     use chrono::TimeZone as _;

@@ -255,6 +255,19 @@ impl PrepState {
         }
     }
 
+    /// Opens the prep note when the meeting has one, else its folder.
+    pub(crate) fn open_for_event(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .banner
+            .as_ref()
+            .is_some_and(|banner| banner.prep_file.is_some())
+        {
+            self.open_prep(window, cx);
+        } else {
+            self.open_folder(window, cx);
+        }
+    }
+
     fn open_prep(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(repo), Some(banner), Some(workspace)) = (
             self.repo.clone(),
