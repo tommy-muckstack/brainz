@@ -38,10 +38,8 @@ const MENU_OPEN: Duration = Duration::from_millis(180);
 /// How far the panel travels as it slides out of the avatar.
 const MENU_SLIDE: f32 = 28.;
 const TILE_WIDTH: Pixels = px(136.);
-const TILE_HEIGHT: Pixels = px(62.);
 /// A tile's padding on each side; the title scrolls within what is left.
 const TILE_PADDING: Pixels = px(8.);
-const TILE_TITLE_SIZE: Pixels = px(12.);
 /// How fast a title too long for its tile scrolls past, in pixels a second.
 const TITLE_SCROLL_SPEED: f32 = 28.;
 /// A long title rests this long at each end before scrolling back.
@@ -1067,11 +1065,16 @@ fn tile_title(
     let font = theme_settings::ThemeSettings::get_global(cx)
         .ui_font
         .clone();
+    // The same size as the tile's other lines, so it follows the UI font
+    // size instead of outgrowing the tile.
+    let font_size = TextSize::XSmall.rems(cx).to_pixels(window.rem_size());
+    // Room for emoji, which stand taller than letters.
+    let line_height = (font_size * 1.45).round();
     let width = window
         .text_system()
         .shape_line(
             title.clone(),
-            TILE_TITLE_SIZE,
+            font_size,
             &[gpui::TextRun {
                 len: title.len(),
                 font,
@@ -1085,12 +1088,12 @@ fn tile_title(
         .width;
     let label = div()
         .flex_none()
-        .text_size(TILE_TITLE_SIZE)
-        .line_height(px(16.))
+        .text_size(font_size)
+        .line_height(line_height)
         .text_color(color)
         .whitespace_nowrap()
         .child(title);
-    let frame = div().w_full().h(px(16.)).overflow_hidden();
+    let frame = div().w_full().h(line_height).overflow_hidden();
     let room = TILE_WIDTH - TILE_PADDING * 2. - px(2.);
     if width <= room {
         return frame.child(label).into_any_element();
@@ -1301,6 +1304,7 @@ impl Render for MenuView {
                 })
                 .when(!self.needs_permission && !coming.is_empty(), |this| {
                     let today = Local::now().date_naive();
+                    let happening_color = cx.theme().status().warning;
                     let mut day = String::new();
                     this.child(
                         h_flex()
@@ -1316,6 +1320,10 @@ impl Render for MenuView {
                                     }
                                     let starts_today =
                                         !event.all_day && event.start.date_naive() <= today;
+                                    // A meeting under way is outlined in yellow.
+                                    let happening = !event.all_day
+                                        && event.start <= now
+                                        && now < event.end;
                                     let when = if starts_today {
                                         starts_label(&event, now)
                                     } else {
@@ -1325,12 +1333,15 @@ impl Render for MenuView {
                                         .id(("brainz-menu-event", index))
                                         .flex_none()
                                         .w(TILE_WIDTH)
-                                        .h(TILE_HEIGHT)
                                         .p(TILE_PADDING)
                                         .gap_px()
                                         .rounded_lg()
                                         .border_1()
-                                        .border_color(colors.border_variant)
+                                        .border_color(if happening {
+                                            happening_color
+                                        } else {
+                                            colors.border_variant
+                                        })
                                         .bg(colors.element_background)
                                         .cursor_pointer()
                                         .hover(|this| this.bg(colors.element_hover))
