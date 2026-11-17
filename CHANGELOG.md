@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 0.1.73 (2026-11-17)
+
+### Added
+
+- Avatar: the meeting heads-up has a Join button when the invite has a video link, and Prep when the meeting matches a folder in your notes.
+- Avatar: right after a meeting, when the next one is at least half an hour away, a card shows how long you're free and your top to-do for Today.
+- Avatar: after the day's last meeting, a Wrap up card opens Claude with a wrap-up request ready to send.
+- Avatar: a dot appears when there are new suggested to-dos or My Man tasks. They show first in the avatar's menu, where you can add them to Today or dismiss them.
+
+### Changed
+
+- Avatar: its spin and flip look 3D. It crouches, jumps, turns in the air and lands with a squash, and its face slides round as it turns.
+- Avatar: its eyes follow your pointer when it's close. It glances at each card as it appears, greets you as a meeting starts, winks when you save a capture, cheers when you add or check off a to-do, and gets sleepy late at night.
+
+### Fixed
+
+- The − on the heads-up only shows while you hover over it, instead of staying on after the pointer leaves.
+
 ## 0.1.72 (2026-11-17)
 
 ### Changed
