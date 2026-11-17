@@ -427,7 +427,8 @@ fn notice_actions(kind: &NoticeKind, cx: &App) -> NoticeActions {
 
 fn notice_size(kind: &NoticeKind, actions: &NoticeActions) -> Size<Pixels> {
     let buttons = match kind {
-        NoticeKind::Meeting(_) => actions.join.is_some() || actions.prep,
+        // The card itself joins the call, so only Prep needs a button.
+        NoticeKind::Meeting(_) => actions.prep,
         NoticeKind::Free { .. } | NoticeKind::WrapUp { .. } => true,
     };
     Size {
@@ -1537,9 +1538,14 @@ impl NoticeView {
         window.remove_window();
     }
 
-    fn join(&mut self, cx: &mut Context<Self>) {
-        if let Some(link) = &self.actions.join {
-            cx.open_url(link);
+    /// A click on a meeting card joins its call, or opens the Calendar tab
+    /// when the invite has no call link.
+    fn open_meeting(&mut self, cx: &mut Context<Self>) {
+        match &self.actions.join {
+            Some(link) => cx.open_url(link),
+            None => in_workspace(cx, |window, cx| {
+                window.dispatch_action(Box::new(crate::OpenCalendar), cx)
+            }),
         }
     }
 
@@ -1647,21 +1653,17 @@ impl Render for NoticeView {
         let mut buttons = Vec::new();
         match &self.kind {
             NoticeKind::Meeting(_) => {
-                if self.actions.join.is_some() {
-                    buttons.push(
-                        Button::new("brainz-notice-join", "Join")
-                            .style(ButtonStyle::Filled)
-                            .size(ButtonSize::Compact)
-                            .on_click(cx.listener(|this, _, _, cx| this.join(cx))),
-                    );
-                }
                 if self.actions.prep {
                     buttons.push(
                         Button::new("brainz-notice-prep", "Prep")
                             .style(ButtonStyle::Subtle)
                             .size(ButtonSize::Compact)
                             .tooltip(ui::Tooltip::text("Open the prep note or the folder"))
-                            .on_click(cx.listener(|this, _, _, cx| this.prep(cx))),
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                // Not a click on the card, which would join.
+                                cx.stop_propagation();
+                                this.prep(cx)
+                            })),
                     );
                 }
             }
@@ -1693,6 +1695,17 @@ impl Render for NoticeView {
             .border_1()
             .border_color(tint.unwrap_or(colors.text_accent))
             .bg(surface)
+            .when(matches!(self.kind, NoticeKind::Meeting(_)), |this| {
+                let tip = if self.actions.join.is_some() {
+                    "Join the call"
+                } else {
+                    "Open Calendar"
+                };
+                this.cursor_pointer()
+                    .hover(|this| this.bg(colors.element_hover))
+                    .tooltip(ui::Tooltip::text(tip))
+                    .on_click(cx.listener(|this, _, _, cx| this.open_meeting(cx)))
+            })
             .child(
                 h_flex()
                     .w_full()
