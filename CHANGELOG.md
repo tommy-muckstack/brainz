@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.1.72 (2026-11-17)
+
+### Changed
+
+- Avatar: the calendar heads-up now stays attached to the avatar and moves with it when you drag it, even to another screen. It hides while the avatar's menu is open and comes back after. Only the − dismisses it, and only for that event; the next meeting still gets its own.
+- Avatar: during a meeting the heads-up stays until it ends, stops pulsing a minute in, and reads "started". The chime plays once per meeting.
+- Avatar menu: calendar tiles are shorter, with a smaller one-line title that slowly scrolls sideways when it is too long to fit.
+- Avatar: livelier face. It blinks more often, glances further (left, right, up, down and a full sweep), raises one brow at a time, winks and squints happily.
+
 ## 0.1.71 (2026-11-16)
 
 ### Changed
