@@ -307,7 +307,8 @@ mod native {
 
     const AVATAR_WINDOW: Size<Pixels> = Size {
         width: px(96.),
-        height: px(106.),
+        // Room above the character for its jump.
+        height: px(118.),
     };
     const AVATAR_MARGIN: Pixels = px(28.);
     const AVATAR_SHAKE: Duration = Duration::from_millis(1400);
@@ -539,11 +540,46 @@ mod native {
         (left, right)
     }
 
-    /// Sideways glance at `time`: negative looks left, positive right.
+    /// The body's pose during a trick. A plain idle pose has `turn` 1,
+    /// `side` 0 and no hop or squash.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub(super) struct Pose {
+        /// Cosine of the turn: 1 faces you, -1 shows the back.
+        pub turn: f32,
+        /// Sine of the turn, which way the front is swinging.
+        pub side: f32,
+        /// A spin about the upright axis, else a forward flip.
+        pub spin: bool,
+        /// Height of the jump in points.
+        pub hop: f32,
+        /// Positive squashes the body wide and short, negative stretches it.
+        pub squash: f32,
+    }
+
+    const REST: Pose = Pose {
+        turn: 1.,
+        side: 0.,
+        spin: true,
+        hop: 0.,
+        squash: 0.,
+    };
+    /// How tall the jump is, in points; the window leaves this much room.
+    const AVATAR_HOP: f32 = 12.;
+    /// How deep the cloud is front to back, as a share of its width, so it
+    /// never turns paper-thin edge-on.
+    const AVATAR_DEPTH: f32 = 0.42;
+    /// How far the face slides around the head as it turns, in points.
+    const FACE_TRAVEL: f32 = 15.;
+    /// How far the darker side shows past the front as it turns, in points.
+    const SIDE_DEPTH: f32 = 6.;
+
     /// Once a minute the avatar does a trick, alternating a spin about its
-    /// upright axis with a forward flip. Returns the horizontal and vertical
-    /// scale of the body; a negative value means its back is showing.
-    pub(super) fn trick(elapsed: f32) -> (f32, f32) {
+    /// upright axis with a forward flip: it crouches, jumps, turns all the
+    /// way round in the air, and squashes as it lands.
+    pub(super) fn trick(elapsed: f32) -> Pose {
+        use std::f32::consts::{PI, TAU};
+        const CROUCH: f32 = 0.16;
+        const LAND: f32 = 0.86;
         let period = AVATAR_TRICK_EVERY.as_secs_f32();
         let length = AVATAR_TRICK.as_secs_f32();
         let cycle = elapsed % (period * 2.);
@@ -554,11 +590,25 @@ mod native {
         };
         let progress = (cycle - start) / length;
         if !(0.0..1.0).contains(&progress) {
-            return (1., 1.);
+            return REST;
         }
-        let eased = 0.5 - (progress * std::f32::consts::PI).cos() / 2.;
-        let turn = (eased * std::f32::consts::TAU).cos();
-        if spin { (turn, 1.) } else { (1., turn) }
+        let air = ((progress - CROUCH) / (LAND - CROUCH)).clamp(0., 1.);
+        let eased = 0.5 - (air * PI).cos() / 2.;
+        let angle = eased * TAU;
+        let squash = if progress < CROUCH {
+            (progress / CROUCH * PI).sin()
+        } else if progress > LAND {
+            (((progress - LAND) / (1. - LAND)) * PI).sin() * 0.8
+        } else {
+            -(air * PI).sin() * 0.35
+        };
+        Pose {
+            turn: angle.cos(),
+            side: angle.sin(),
+            spin,
+            hop: (air * PI).sin() * AVATAR_HOP,
+            squash,
+        }
     }
 
     /// The floating character that opens the menu from any app.
@@ -633,7 +683,7 @@ mod native {
                 .id("brainz-avatar")
                 .relative()
                 .w(px(84.))
-                .h(px(74.))
+                .h(px(74. + AVATAR_HOP))
                 .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::press))
                 .on_mouse_move(cx.listener(Self::drag))
@@ -650,27 +700,60 @@ mod native {
                     Animation::new(AVATAR_LOOP).repeat(),
                     move |this, delta| {
                         let time = delta * AVATAR_LOOP.as_secs_f32();
-                        let (turn_x, turn_y) = trick(born.elapsed().as_secs_f32());
-                        // The face is on the front only; it rides the turn.
-                        let facing = turn_x > 0. && turn_y > 0.;
-                        let body_scale = Transformation::scale(size(
-                            turn_x.abs().max(0.02),
-                            turn_y.abs().max(0.02),
-                        ));
+                        let pose = trick(born.elapsed().as_secs_f32());
+                        // A turning solid keeps its depth edge-on; the face
+                        // rides round the curve, squeezing towards the edge
+                        // and fading out before the back comes round.
+                        let silhouette =
+                            pose.turn.abs() + pose.side.abs() * AVATAR_DEPTH;
+                        let (stretch_x, stretch_y) =
+                            (1. + 0.14 * pose.squash, 1. - 0.14 * pose.squash);
+                        let (scale_x, scale_y) = if pose.spin {
+                            (silhouette * stretch_x, stretch_y)
+                        } else {
+                            (stretch_x, silhouette * stretch_y)
+                        };
+                        let body_scale = Transformation::scale(size(scale_x, scale_y));
+                        let (turn_x, turn_y) = if pose.spin {
+                            (pose.turn.max(0.) * stretch_x, stretch_y)
+                        } else {
+                            (stretch_x, pose.turn.max(0.) * stretch_y)
+                        };
+                        let (slide_x, slide_y) = if pose.spin {
+                            (pose.side * FACE_TRAVEL, 0.)
+                        } else {
+                            (0., -pose.side * FACE_TRAVEL * 0.8)
+                        };
+                        let (side_x, side_y) = if pose.spin {
+                            (-pose.side * SIDE_DEPTH, 0.)
+                        } else {
+                            (0., pose.side * SIDE_DEPTH)
+                        };
+                        let facing = pose.turn > 0.08;
+                        let face_alpha = ((pose.turn - 0.08) / 0.3).clamp(0., 1.);
+                        let ink = ink.opacity(face_alpha);
+                        // The back is a touch darker than the front.
+                        let front = if pose.turn < 0. { shade } else { color };
                         let bob = (time / 7.5 * std::f32::consts::TAU).sin() * 0.8;
+                        // Keep the feet planted while squashing, then lift.
+                        let planted = (1. - stretch_y) * 65. / 2. - pose.hop;
                         let (look_x, look_y) = look(time);
                         let look = look_x * LOOK_X;
                         let look_y = look_y * LOOK_Y;
                         let open = eye_openness(time);
                         let (left_brow, right_brow) = brow_lift(time);
-                        let top = 4. + bob;
+                        let top = AVATAR_HOP + 4. + bob + planted;
                         let middle_x = 3. + 39.;
                         let middle_y = top + 32.5;
                         let eye = |center: f32, open: f32| {
                             let eye_height = (13. * open).max(1.5) * turn_y;
                             let eye_width = 6. * turn_x;
-                            let x = middle_x + (3. + center * 0.65 + look - middle_x) * turn_x;
-                            let y = middle_y + (top + 62. * 0.65 + look_y - middle_y) * turn_y;
+                            let x = middle_x
+                                + slide_x
+                                + (3. + center * 0.65 + look - middle_x) * turn_x;
+                            let y = middle_y
+                                + slide_y
+                                + (top + 62. * 0.65 + look_y - middle_y) * turn_y;
                             div()
                                 .absolute()
                                 .left(px(x - eye_width / 2.))
@@ -684,8 +767,8 @@ mod native {
                             svg()
                                 .path("icons/brainz/avatar-body.svg")
                                 .absolute()
-                                .left(px(3.))
-                                .top(px(top + 3.))
+                                .left(px(3. + side_x))
+                                .top(px(top + 3. + side_y))
                                 .w(width)
                                 .h(height)
                                 .text_color(shade)
@@ -699,7 +782,7 @@ mod native {
                                 .top(px(top))
                                 .w(width)
                                 .h(height)
-                                .text_color(color)
+                                .text_color(front)
                                 .with_transformation(body_scale),
                         )
                         .when(facing, |this| {
@@ -707,12 +790,18 @@ mod native {
                                 svg()
                                     .path(path)
                                     .absolute()
-                                    .left(px(3. + look * 0.6 * turn_x))
-                                    .top(px(top + (look_y * 0.5 - lift * BROW_LIFT) * turn_y))
+                                    .left(px(3. + slide_x + look * 0.6 * turn_x))
+                                    .top(px(
+                                        top + slide_y
+                                            + (look_y * 0.5 - lift * BROW_LIFT) * turn_y,
+                                    ))
                                     .w(width)
                                     .h(height)
                                     .text_color(ink)
-                                    .with_transformation(body_scale)
+                                    .with_transformation(Transformation::scale(size(
+                                        turn_x.max(0.02),
+                                        turn_y.max(0.02),
+                                    )))
                             };
                             this.child(brow("icons/brainz/avatar-brow-left.svg", left_brow))
                                 .child(brow("icons/brainz/avatar-brow-right.svg", right_brow))
@@ -870,12 +959,16 @@ mod tests {
     #[test]
     fn avatar_spins_then_flips_once_a_minute() {
         use native::trick;
-        assert_eq!(trick(10.), (1., 1.));
-        let (turn_x, turn_y) = trick(59.35);
-        assert!(turn_x < -0.9 && turn_y == 1., "{turn_x} {turn_y}");
-        let (turn_x, turn_y) = trick(119.35);
-        assert!(turn_x == 1. && turn_y < -0.9, "{turn_x} {turn_y}");
-        assert_eq!(trick(121.), (1., 1.));
+        let rest = trick(10.);
+        assert!(rest.turn == 1. && rest.hop == 0. && rest.squash == 0.);
+        // Mid-spin: back showing, high in the air.
+        let spin = trick(59.35);
+        assert!(spin.spin && spin.turn < -0.9 && spin.hop > 11., "{spin:?}");
+        // The crouch squashes before the jump.
+        assert!(trick(58.8).squash > 0.5);
+        let flip = trick(119.35);
+        assert!(!flip.spin && flip.turn < -0.9, "{flip:?}");
+        assert_eq!(trick(121.), trick(10.));
     }
 
     #[cfg(target_os = "macos")]
