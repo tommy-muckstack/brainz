@@ -204,7 +204,7 @@ mod native {
             }
         })
         .detach();
-        crate::capture_menu::init(avatar_bounds, cx);
+        crate::capture_menu::init(avatar_window, cx);
         let (sender, receiver) = smol::channel::bounded(1);
         if PRESSED.set(sender).is_err() {
             return;
@@ -316,9 +316,15 @@ mod native {
     const ALERT_SOUND: &str = "/System/Library/Sounds/Glass.aiff";
     /// Movement past this turns a press on the avatar into a drag.
     const AVATAR_DRAG_DISTANCE: Pixels = px(4.);
-    /// One pass through the idle routine. It is mostly stillness: a blink
-    /// every eight seconds or so, and one glance, brow lift or wink between.
-    const AVATAR_LOOP: Duration = Duration::from_secs(45);
+    /// One pass through the idle routine: a blink every four seconds or so,
+    /// with glances around the room, brow lifts, a wink and a happy squint
+    /// in between.
+    const AVATAR_LOOP: Duration = Duration::from_secs(32);
+    /// How far the eyes travel at a full glance, in points.
+    const LOOK_X: f32 = 6.;
+    const LOOK_Y: f32 = 3.5;
+    /// How far a fully raised eyebrow lifts, in points.
+    const BROW_LIFT: f32 = 4.;
     const AVATAR_COLORS: &[(&str, u32)] = ui::BRAINZ_TAB_COLORS;
     const AVATAR_DEFAULT_COLOR: &str = "White";
     const AVATAR_INK: u32 = 0x2b2b2b;
@@ -421,10 +427,17 @@ mod native {
                     dragged: false,
                     palette_open: false,
                     _transparency: crate::capture_menu::keep_transparent(window, cx),
+                    // The notice is a child window and moves with the avatar;
+                    // this re-places it once the avatar settles, e.g. flipping
+                    // it below the avatar near the top of the screen.
+                    _moved: cx.observe_window_bounds(window, |_, _, cx| {
+                        cx.defer(crate::capture_menu::sync_notice)
+                    }),
                 })
             },
         )
         .log_err();
+        cx.defer(crate::capture_menu::sync_notice);
     }
 
     pub(super) fn alert_avatar(cx: &mut App) {
@@ -448,18 +461,10 @@ mod native {
         }
     }
 
-    fn avatar_bounds(cx: &mut App) -> Option<(Bounds<Pixels>, Option<gpui::DisplayId>)> {
-        cx.windows().into_iter().find_map(|window| {
-            window
-                .downcast::<AvatarView>()?
-                .update(cx, |_, window, cx| {
-                    (
-                        window.bounds(),
-                        window.display(cx).map(|display| display.id()),
-                    )
-                })
-                .ok()
-        })
+    fn avatar_window(cx: &mut App) -> Option<gpui::AnyWindowHandle> {
+        cx.windows()
+            .into_iter()
+            .find(|window| window.downcast::<AvatarView>().is_some())
     }
 
     fn hide_avatar(cx: &mut App) {
@@ -482,26 +487,56 @@ mod native {
     }
 
     /// How open the eyes are at `time` seconds into the loop: 1 is open.
+    /// Includes a double blink and a happy squint at the top of the loop.
     fn eye_openness(time: f32) -> f32 {
-        const BLINKS: [f32; 6] = [4., 13., 21., 21.4, 30., 39.];
-        const BLINK_SECONDS: f32 = 0.16;
-        BLINKS
+        const BLINKS: [f32; 9] = [2.2, 6.5, 10.8, 11.15, 15.6, 19.4, 23.8, 27.6, 30.6];
+        const BLINK_SECONDS: f32 = 0.18;
+        let blink = BLINKS
             .iter()
             .map(|blink| ((time - blink).abs() / (BLINK_SECONDS / 2.)).min(1.))
-            .fold(1., f32::min)
+            .fold(1., f32::min);
+        blink.min(1. - squint(time) * 0.45)
     }
 
-    /// The wink near the end of the loop closes only the left eye.
+    fn squint(time: f32) -> f32 {
+        hold(time, 0.3, 1.6, 0.25)
+    }
+
+    /// The wink closes only the left eye.
     fn wink(time: f32) -> f32 {
-        hold(time, 34.0, 34.45, 0.12)
+        hold(time, 21.0, 21.55, 0.12)
     }
 
-    /// How far the eyebrows are raised at `time`, from 0 to 1: one lift on
-    /// their own, a smaller one with each glance, and one with the wink.
-    fn brow_lift(time: f32) -> f32 {
-        hold(time, 17.0, 17.7, 0.2)
-            .max(glance(time).abs() * 0.5)
-            .max(wink(time))
+    /// Where the eyes look at `time`, each axis from -1 to 1: negative x is
+    /// left, negative y is up. Left, up-right, a sweep from left to right,
+    /// right, a curious look up-left, and a peek down-left.
+    pub(super) fn look(time: f32) -> (f32, f32) {
+        let up_right = hold(time, 8.0, 9.2, 0.3);
+        let curious = hold(time, 24.5, 26.2, 0.35);
+        let peek = hold(time, 28.0, 28.9, 0.3);
+        let x = -hold(time, 4.0, 5.6, 0.3) + up_right * 0.7 - hold(time, 13.0, 13.9, 0.25)
+            + hold(time, 13.7, 14.9, 0.25)
+            + hold(time, 17.0, 18.6, 0.3)
+            - curious * 0.6
+            - peek * 0.5;
+        let y = -up_right * 0.7 - curious * 0.5 + peek * 0.6;
+        (x.clamp(-1., 1.), y)
+    }
+
+    /// How far each eyebrow is raised at `time`, left then right; negative
+    /// lowers it. Both rise in surprise, with each glance and with the
+    /// squint; the right one alone looks skeptical, the left one curious, and
+    /// the winking eye's brow dips while the other lifts.
+    fn brow_lift(time: f32) -> (f32, f32) {
+        let (x, y) = look(time);
+        let both = (hold(time, 10.0, 10.8, 0.2) * 0.9)
+            .max(x.abs() * 0.45)
+            .max(squint(time) * 0.7)
+            - y.max(0.) * 0.4;
+        let wink = wink(time);
+        let left = (both + hold(time, 24.5, 26.2, 0.35) * 0.6) * (1. - wink) - wink * 0.6;
+        let right = (both + hold(time, 19.8, 20.9, 0.25)).max(wink);
+        (left, right)
     }
 
     /// Sideways glance at `time`: negative looks left, positive right.
@@ -526,10 +561,6 @@ mod native {
         if spin { (turn, 1.) } else { (1., turn) }
     }
 
-    fn glance(time: f32) -> f32 {
-        hold(time, 9.0, 10.6, 0.35) * -1. + hold(time, 26.0, 27.5, 0.35)
-    }
-
     /// The floating character that opens the menu from any app.
     pub struct AvatarView {
         /// Bumped for each meeting alert; a new value starts a new shake.
@@ -540,6 +571,7 @@ mod native {
         dragged: bool,
         palette_open: bool,
         _transparency: gpui::Subscription,
+        _moved: gpui::Subscription,
     }
 
     impl AvatarView {
@@ -626,9 +658,11 @@ mod native {
                             turn_y.abs().max(0.02),
                         ));
                         let bob = (time / 7.5 * std::f32::consts::TAU).sin() * 0.8;
-                        let look = glance(time) * 3.5;
+                        let (look_x, look_y) = look(time);
+                        let look = look_x * LOOK_X;
+                        let look_y = look_y * LOOK_Y;
                         let open = eye_openness(time);
-                        let brows = brow_lift(time) * 2.5;
+                        let (left_brow, right_brow) = brow_lift(time);
                         let top = 4. + bob;
                         let middle_x = 3. + 39.;
                         let middle_y = top + 32.5;
@@ -636,7 +670,7 @@ mod native {
                             let eye_height = (13. * open).max(1.5) * turn_y;
                             let eye_width = 6. * turn_x;
                             let x = middle_x + (3. + center * 0.65 + look - middle_x) * turn_x;
-                            let y = middle_y + (top + 62. * 0.65 - middle_y) * turn_y;
+                            let y = middle_y + (top + 62. * 0.65 + look_y - middle_y) * turn_y;
                             div()
                                 .absolute()
                                 .left(px(x - eye_width / 2.))
@@ -669,19 +703,21 @@ mod native {
                                 .with_transformation(body_scale),
                         )
                         .when(facing, |this| {
-                            this.child(
+                            let brow = |path: &'static str, lift: f32| {
                                 svg()
-                                    .path("icons/brainz/avatar-brows.svg")
+                                    .path(path)
                                     .absolute()
                                     .left(px(3. + look * 0.6 * turn_x))
-                                    .top(px(top - brows * turn_y))
+                                    .top(px(top + (look_y * 0.5 - lift * BROW_LIFT) * turn_y))
                                     .w(width)
                                     .h(height)
                                     .text_color(ink)
-                                    .with_transformation(body_scale),
-                            )
-                            .child(eye(45., open.min(1. - wink(time))))
-                            .child(eye(75., open))
+                                    .with_transformation(body_scale)
+                            };
+                            this.child(brow("icons/brainz/avatar-brow-left.svg", left_brow))
+                                .child(brow("icons/brainz/avatar-brow-right.svg", right_brow))
+                                .child(eye(45., open.min(1. - wink(time))))
+                                .child(eye(75., open))
                         })
                     },
                 );
@@ -841,6 +877,19 @@ mod tests {
         assert!(turn_x == 1. && turn_y < -0.9, "{turn_x} {turn_y}");
         assert_eq!(trick(121.), (1., 1.));
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn avatar_looks_around_the_room() {
+        use native::look;
+        assert_eq!(look(3.), (0., 0.));
+        assert!(look(4.8).0 < -0.99);
+        let (x, y) = look(8.6);
+        assert!(x > 0.6 && y < -0.6, "{x} {y}");
+        assert!(look(13.4).0 < -0.9 && look(14.4).0 > 0.9);
+        assert!(look(17.8).0 > 0.99);
+    }
+
     use chrono::TimeZone as _;
 
     fn at(day: u32, hour: u32) -> DateTime<Local> {

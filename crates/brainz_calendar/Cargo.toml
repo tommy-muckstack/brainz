@@ -52,9 +52,13 @@ telemetry.workspace = true
 collections.workspace = true
 project.workspace = true
 ui.workspace = true
+theme_settings.workspace = true
 workspace.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
+cocoa.workspace = true
+objc.workspace = true
+raw-window-handle.workspace = true
 wry = { version = "=0.57.0", default-features = false, features = ["os-webview"] }
 
 [dev-dependencies]

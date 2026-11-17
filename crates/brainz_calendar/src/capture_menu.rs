@@ -1,7 +1,8 @@
 //! Brainz: the menu behind the floating avatar. It holds the quick capture
 //! field, the next calendar events, and the newest My Man screenshots and
-//! recordings ready to copy. It also raises a small notice beside the avatar
-//! shortly before an event starts.
+//! recordings ready to copy. It also keeps a small notice beside the avatar
+//! from shortly before an event until it ends or is dismissed. The notice is a
+//! child of the avatar's window, so it travels with the avatar when dragged.
 
 use std::{
     collections::HashSet,
@@ -14,10 +15,10 @@ use anyhow::{Context as _, Result, anyhow};
 use chrono::{DateTime, Local};
 use editor::Editor;
 use gpui::{
-    Animation, AnimationExt as _, App, AppContext as _, Bounds, ClipboardItem, DisplayId, Entity,
-    FocusHandle, Focusable, Global, Image, ImageFormat, MouseButton, ObjectFit, Pixels, Size,
-    WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, ease_out_quint, img,
-    point, pulsating_between, px,
+    Animation, AnimationExt as _, AnyWindowHandle, App, AppContext as _, Bounds, ClipboardItem,
+    DisplayId, Entity, FocusHandle, Focusable, Global, Hsla, Image, ImageFormat, MouseButton,
+    ObjectFit, Pixels, Size, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
+    ease_out_quint, img, point, pulsating_between, px,
 };
 use ui::prelude::*;
 use util::ResultExt as _;
@@ -32,6 +33,14 @@ const MENU_OPEN: Duration = Duration::from_millis(180);
 /// How far the panel travels as it slides out of the avatar.
 const MENU_SLIDE: f32 = 28.;
 const TILE_WIDTH: Pixels = px(136.);
+const TILE_HEIGHT: Pixels = px(62.);
+/// A tile's padding on each side; the title scrolls within what is left.
+const TILE_PADDING: Pixels = px(8.);
+const TILE_TITLE_SIZE: Pixels = px(12.);
+/// How fast a title too long for its tile scrolls past, in pixels a second.
+const TITLE_SCROLL_SPEED: f32 = 28.;
+/// A long title rests this long at each end before scrolling back.
+const TITLE_SCROLL_REST: f32 = 1.6;
 const NOTICE_SIZE: Size<Pixels> = Size {
     width: px(232.),
     height: px(50.),
@@ -41,7 +50,7 @@ const CAPTURE_LIMIT: usize = 6;
 /// Newest files read per My Man folder; names start with the capture date.
 const CAPTURE_SCAN: usize = 40;
 const CALENDAR_REFRESH: Duration = Duration::from_secs(5 * 60);
-const NOTICE_CHECK: Duration = Duration::from_secs(30);
+const NOTICE_CHECK: Duration = Duration::from_secs(15);
 const NOTICE_LEAD_MINUTES: i64 = 10;
 /// A click on the avatar first closes the open menu by taking focus from it;
 /// within this window the same click must not open it again.
@@ -149,6 +158,9 @@ fn age(captured: DateTime<Local>, now: DateTime<Local>) -> String {
 fn countdown_label(event: &CalendarEvent, now: DateTime<Local>) -> String {
     let seconds = (event.start - now).num_seconds();
     let clock = event.start.format("%-I:%M %p");
+    if seconds <= -60 {
+        return format!("started {clock}");
+    }
     if seconds <= 0 {
         return format!("now · {clock}");
     }
@@ -214,15 +226,21 @@ fn notice_key(event: &CalendarEvent) -> String {
 struct MenuState {
     events: Vec<CalendarEvent>,
     needs_permission: bool,
-    announced: HashSet<String>,
+    /// Events whose notice was dismissed; each later event still gets one.
+    dismissed: HashSet<String>,
+    /// Events the avatar already chimed for, so a notice that is hidden and
+    /// shown again (behind the menu) does not chime twice.
+    chimed: HashSet<String>,
     closed_at: Option<Instant>,
+    avatar: Option<fn(&mut App) -> Option<AnyWindowHandle>>,
 }
 
 impl Global for MenuState {}
 
-/// Keeps the calendar fresh and raises a notice beside `anchor` (the avatar's
-/// bounds, when it is on screen) shortly before each event.
-pub fn init(anchor: fn(&mut App) -> Option<(Bounds<Pixels>, Option<DisplayId>)>, cx: &mut App) {
+/// Keeps the calendar fresh and keeps a notice beside `avatar` (the avatar's
+/// window, when it is on screen) for the event that is next up.
+pub fn init(avatar: fn(&mut App) -> Option<AnyWindowHandle>, cx: &mut App) {
+    cx.default_global::<MenuState>().avatar = Some(avatar);
     cx.spawn(async move |cx| {
         loop {
             let loaded = cx.background_spawn(async { crate::load_events() }).await;
@@ -237,31 +255,183 @@ pub fn init(anchor: fn(&mut App) -> Option<(Bounds<Pixels>, Option<DisplayId>)>,
     cx.spawn(async move |cx| {
         loop {
             cx.background_executor().timer(NOTICE_CHECK).await;
-            cx.update(|cx| {
-                let Some((anchor, display)) = anchor(cx) else {
-                    return;
-                };
-                let now = Local::now();
-                let state = cx.default_global::<MenuState>();
-                let due = state
-                    .events
-                    .iter()
-                    .filter(|event| !event.all_day)
-                    .find(|event| {
-                        let minutes = (event.start - now).num_minutes();
-                        (0..=NOTICE_LEAD_MINUTES).contains(&minutes)
-                            && event.start > now
-                            && !state.announced.contains(&notice_key(event))
-                    })
-                    .cloned();
-                if let Some(event) = due {
-                    state.announced.insert(notice_key(&event));
-                    open_notice(event, anchor, display, cx);
-                }
-            });
+            cx.update(sync_notice);
         }
     })
     .detach();
+    // The menu closing brings the notice back; the avatar closing takes it away.
+    cx.on_window_closed(|cx, _| cx.defer(sync_notice)).detach();
+}
+
+/// The event the notice is about: the soonest one starting within the lead
+/// time, or else the latest one still going. Dismissed events are skipped.
+fn notice_event<'a>(
+    events: &'a [CalendarEvent],
+    now: DateTime<Local>,
+    dismissed: &HashSet<String>,
+) -> Option<&'a CalendarEvent> {
+    let lead = chrono::Duration::minutes(NOTICE_LEAD_MINUTES);
+    let live = || {
+        events.iter().filter(move |event| {
+            !event.all_day
+                && event.end > now
+                && event.start - now <= lead
+                && !dismissed.contains(&notice_key(event))
+        })
+    };
+    live()
+        .filter(|event| event.start > now)
+        .min_by_key(|event| event.start)
+        .or_else(|| live().max_by_key(|event| event.start))
+}
+
+/// Shows, updates, moves or removes the notice so it matches the calendar and
+/// sits beside the avatar. It is hidden while the menu is open.
+pub fn sync_notice(cx: &mut App) {
+    let windows = cx.windows();
+    let notice = windows
+        .iter()
+        .find_map(|window| window.downcast::<NoticeView>());
+    let menu_open = windows
+        .iter()
+        .any(|window| window.downcast::<MenuView>().is_some());
+    let avatar = cx
+        .default_global::<MenuState>()
+        .avatar
+        .and_then(|avatar| avatar(cx));
+    let state = cx.default_global::<MenuState>();
+    let event = (!menu_open)
+        .then(|| notice_event(&state.events, Local::now(), &state.dismissed).cloned())
+        .flatten();
+    let placement = avatar.zip(event).and_then(|(avatar, event)| {
+        avatar
+            .update(cx, |_, window, cx| {
+                (
+                    window.bounds(),
+                    window.display(cx).map(|display| display.id()),
+                )
+            })
+            .ok()
+            .map(|(anchor, display)| (avatar, event, anchor, display))
+    });
+    let Some((avatar, event, anchor, display)) = placement else {
+        if let Some(notice) = notice {
+            notice
+                .update(cx, |_, window, _| window.remove_window())
+                .log_err();
+        }
+        return;
+    };
+    let (bounds, _) = beside(anchor, NOTICE_SIZE, display, cx);
+    let offset = bounds.origin - anchor.origin;
+    match notice {
+        Some(notice) => {
+            notice
+                .update(cx, |notice, _, cx| {
+                    if notice_key(&notice.event) != notice_key(&event) {
+                        notice.event = Arc::new(event);
+                        cx.notify();
+                    }
+                })
+                .log_err();
+            native::place(avatar, notice.into(), offset, cx);
+        }
+        None => {
+            let opened = cx
+                .open_window(popup(bounds, false, display), move |window, cx| {
+                    cx.new(|cx| NoticeView::new(event, window, cx))
+                })
+                .log_err();
+            if let Some(notice) = opened {
+                native::attach(avatar, notice.into(), offset, cx);
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod native {
+    use cocoa::{
+        base::{id, nil},
+        foundation::{NSPoint, NSRect},
+    };
+    use gpui::{AnyWindowHandle, App, Pixels, Point};
+    use objc::{msg_send, sel, sel_impl};
+    use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+
+    const NS_WINDOW_ABOVE: i64 = 1;
+
+    fn ns_window(handle: AnyWindowHandle, cx: &mut App) -> Option<id> {
+        handle
+            .update(cx, |_, window, _| {
+                let RawWindowHandle::AppKit(appkit) = window.window_handle().ok()?.as_raw() else {
+                    return None;
+                };
+                let view = appkit.ns_view.as_ptr() as id;
+                // SAFETY: the view belongs to a live gpui window.
+                let ns_window: id = unsafe { msg_send![view, window] };
+                (ns_window != nil).then_some(ns_window)
+            })
+            .ok()
+            .flatten()
+    }
+
+    /// Makes `child` a child window of `parent`, so AppKit moves it along
+    /// whenever the parent moves, even mid-drag, then places it at `offset`
+    /// from the parent's top-left corner.
+    pub(super) fn attach(
+        parent: AnyWindowHandle,
+        child: AnyWindowHandle,
+        offset: Point<Pixels>,
+        cx: &mut App,
+    ) {
+        let (Some(parent_window), Some(child_window)) =
+            (ns_window(parent, cx), ns_window(child, cx))
+        else {
+            return;
+        };
+        // SAFETY: both windows are live; AppKit retains the child.
+        unsafe {
+            let _: () =
+                msg_send![parent_window, addChildWindow: child_window ordered: NS_WINDOW_ABOVE];
+        }
+        place(parent, child, offset, cx);
+    }
+
+    /// Puts `child` at `offset` from `parent`'s top-left corner. Works in
+    /// AppKit's global, bottom-up coordinates, so it holds on any display.
+    pub(super) fn place(
+        parent: AnyWindowHandle,
+        child: AnyWindowHandle,
+        offset: Point<Pixels>,
+        cx: &mut App,
+    ) {
+        let (Some(parent), Some(child)) = (ns_window(parent, cx), ns_window(child, cx)) else {
+            return;
+        };
+        // SAFETY: both windows are live.
+        unsafe {
+            let frame: NSRect = msg_send![parent, frame];
+            let current: NSRect = msg_send![child, frame];
+            let origin = NSPoint::new(
+                frame.origin.x + f64::from(offset.x),
+                frame.origin.y + frame.size.height - f64::from(offset.y) - current.size.height,
+            );
+            if (origin.x - current.origin.x).abs() > 0.5
+                || (origin.y - current.origin.y).abs() > 0.5
+            {
+                let _: () = msg_send![child, setFrameOrigin: origin];
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+mod native {
+    use gpui::{AnyWindowHandle, App, Pixels, Point};
+
+    pub(super) fn attach(_: AnyWindowHandle, _: AnyWindowHandle, _: Point<Pixels>, _: &mut App) {}
+    pub(super) fn place(_: AnyWindowHandle, _: AnyWindowHandle, _: Point<Pixels>, _: &mut App) {}
 }
 
 fn store_events(state: LoadState, events: Vec<CalendarEvent>, cx: &mut App) {
@@ -384,6 +554,7 @@ pub fn toggle(anchor: Bounds<Pixels>, display: Option<DisplayId>, cx: &mut App) 
                 view
             })
             .log_err();
+            sync_notice(cx);
         });
     })
     .detach();
@@ -595,6 +766,82 @@ impl Focusable for MenuView {
     }
 }
 
+/// Where a long title sits along its scroll at `time` seconds into a cycle,
+/// from 0 (start showing) to 1 (end showing): it rests, glides to the end,
+/// rests, and glides back.
+fn title_scroll(time: f32, glide: f32) -> f32 {
+    let rest = TITLE_SCROLL_REST;
+    let linear = if time < rest {
+        0.
+    } else if time < rest + glide {
+        (time - rest) / glide
+    } else if time < rest * 2. + glide {
+        1.
+    } else {
+        1. - ((time - rest * 2. - glide) / glide).min(1.)
+    };
+    linear * linear * (3. - 2. * linear)
+}
+
+/// A tile's one-line title. One too long for the tile scrolls sideways on
+/// its own, so it can be read without wrapping.
+fn tile_title(
+    index: usize,
+    title: SharedString,
+    color: Hsla,
+    window: &mut Window,
+    cx: &App,
+) -> AnyElement {
+    use settings::Settings as _;
+    let font = theme_settings::ThemeSettings::get_global(cx)
+        .ui_font
+        .clone();
+    let width = window
+        .text_system()
+        .shape_line(
+            title.clone(),
+            TILE_TITLE_SIZE,
+            &[gpui::TextRun {
+                len: title.len(),
+                font,
+                color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        )
+        .width;
+    let label = div()
+        .flex_none()
+        .text_size(TILE_TITLE_SIZE)
+        .line_height(px(16.))
+        .text_color(color)
+        .whitespace_nowrap()
+        .child(title);
+    let frame = div().w_full().h(px(16.)).overflow_hidden();
+    let room = TILE_WIDTH - TILE_PADDING * 2. - px(2.);
+    if width <= room {
+        return frame.child(label).into_any_element();
+    }
+    let travel = f32::from(width - room) + 6.;
+    let glide = (travel / TITLE_SCROLL_SPEED).max(0.6);
+    let cycle = (TITLE_SCROLL_REST + glide) * 2.;
+    frame
+        .child(
+            div()
+                .relative()
+                .w(width + px(4.))
+                .child(label)
+                .with_animation(
+                    ("brainz-menu-event-title", index),
+                    Animation::new(Duration::from_secs_f32(cycle)).repeat(),
+                    move |this, delta| this.left(px(-travel * title_scroll(delta * cycle, glide))),
+                ),
+        )
+        .into_any_element()
+}
+
 fn section(title: &'static str) -> impl IntoElement {
     div()
         .h(px(30.))
@@ -606,7 +853,7 @@ fn section(title: &'static str) -> impl IntoElement {
 }
 
 impl Render for MenuView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = cx.theme().colors();
         let now = Local::now();
         let coming = agenda(&self.events, now);
@@ -745,9 +992,9 @@ impl Render for MenuView {
                                         .id(("brainz-menu-event", index))
                                         .flex_none()
                                         .w(TILE_WIDTH)
-                                        .h(px(84.))
-                                        .p_2()
-                                        .gap_0p5()
+                                        .h(TILE_HEIGHT)
+                                        .p(TILE_PADDING)
+                                        .gap_px()
                                         .rounded_lg()
                                         .border_1()
                                         .border_color(colors.border_variant)
@@ -784,14 +1031,13 @@ impl Render for MenuView {
                                                 .color(Color::Muted)
                                                 .truncate(),
                                         )
-                                        .child(
-                                            div()
-                                                .text_sm()
-                                                .text_color(colors.text)
-                                                .line_height(px(17.))
-                                                .line_clamp(2)
-                                                .child(event.title),
-                                        )
+                                        .child(tile_title(
+                                            index,
+                                            event.title,
+                                            colors.text,
+                                            window,
+                                            cx,
+                                        ))
                                 },
                             )),
                     )
@@ -902,70 +1148,45 @@ impl Render for MenuView {
     }
 }
 
-fn open_notice(
-    event: CalendarEvent,
-    anchor: Bounds<Pixels>,
-    display: Option<DisplayId>,
-    cx: &mut App,
-) {
-    for window in cx.windows() {
-        if let Some(notice) = window.downcast::<NoticeView>() {
-            notice
-                .update(cx, |_, window, _| window.remove_window())
-                .log_err();
-        }
-    }
-    let remaining = (event.start - Local::now())
-        .to_std()
-        .unwrap_or(Duration::ZERO)
-        + Duration::from_secs(60);
-    let (bounds, _) = beside(anchor, NOTICE_SIZE, display, cx);
-    let Some(notice) = cx
-        .open_window(popup(bounds, false, display), move |window, cx| {
-            cx.new(|cx| NoticeView {
-                event: Arc::new(event),
-                alerted: false,
-                _transparency: keep_transparent(window, cx),
-                _tick: cx.spawn(async move |this, cx| {
-                    loop {
-                        cx.background_executor().timer(Duration::from_secs(1)).await;
-                        let ticked = this.update(cx, |notice: &mut NoticeView, cx| {
-                            if !notice.alerted
-                                && urgency(&notice.event, Local::now()) == Urgency::Now
-                            {
-                                notice.alerted = true;
-                                crate::quick_capture::alert_avatar(cx);
-                            }
-                            cx.notify();
-                        });
-                        if ticked.is_err() {
-                            break;
-                        }
-                    }
-                }),
-            })
-        })
-        .log_err()
-    else {
-        return;
-    };
-    cx.spawn(async move |cx| {
-        cx.background_executor().timer(remaining).await;
-        // The notice may already be gone because it was clicked away.
-        notice
-            .update(cx, |_, window, _| window.remove_window())
-            .ok();
-    })
-    .detach();
-}
-
-/// The heads-up shown beside the avatar before an event; a click dismisses it.
+/// The heads-up kept beside the avatar for the next event. Only its dismiss
+/// button closes it for good, and only for that event.
 pub struct NoticeView {
     event: Arc<CalendarEvent>,
-    /// The chime and shake play once, when the notice first turns red.
-    alerted: bool,
     _transparency: gpui::Subscription,
     _tick: gpui::Task<()>,
+}
+
+impl NoticeView {
+    fn new(event: CalendarEvent, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self {
+            event: Arc::new(event),
+            _transparency: keep_transparent(window, cx),
+            _tick: cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(Duration::from_secs(1)).await;
+                    let ticked = this.update(cx, |notice: &mut NoticeView, cx| {
+                        let key = notice_key(&notice.event);
+                        if urgency(&notice.event, Local::now()) == Urgency::Now
+                            && cx.default_global::<MenuState>().chimed.insert(key)
+                        {
+                            crate::quick_capture::alert_avatar(cx);
+                        }
+                        cx.notify();
+                    });
+                    if ticked.is_err() {
+                        break;
+                    }
+                }
+            }),
+        }
+    }
+
+    fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.default_global::<MenuState>()
+            .dismissed
+            .insert(notice_key(&self.event));
+        window.remove_window();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -979,6 +1200,8 @@ enum Urgency {
 
 fn urgency(event: &CalendarEvent, now: DateTime<Local>) -> Urgency {
     match (event.start - now).num_seconds() {
+        // Once a meeting is well under way the notice stops pulsing.
+        ..=-60 => Urgency::Calm,
         ..=60 => Urgency::Now,
         61..=300 => Urgency::Soon,
         _ => Urgency::Calm,
@@ -1048,7 +1271,7 @@ impl Render for NoticeView {
             .visible_on_hover("brainz-event-notice-frame")
             .hover(|this| this.bg(colors.element_hover))
             .tooltip(ui::Tooltip::text("Dismiss"))
-            .on_click(|_, window, _| window.remove_window())
+            .on_click(cx.listener(|this, _, window, cx| this.dismiss(window, cx)))
             .child(
                 Icon::new(IconName::Dash)
                     .size(IconSize::XSmall)
@@ -1183,6 +1406,35 @@ mod tests {
     }
 
     #[test]
+    fn notice_follows_the_next_event_and_skips_dismissed_ones() {
+        let first = event("first", at(9, 0), 30, false);
+        let second = event("second", at(9, 30), 30, false);
+        let events = vec![first.clone(), second];
+        let mut dismissed = HashSet::new();
+        let pick = |now, dismissed: &HashSet<String>| {
+            notice_event(&events, now, dismissed).map(|event| event.id.clone())
+        };
+        assert_eq!(pick(at(8, 45), &dismissed), None);
+        assert_eq!(pick(at(8, 52), &dismissed), Some("first".into()));
+        // Still shown while the first meeting runs, until the next is close.
+        assert_eq!(pick(at(9, 10), &dismissed), Some("first".into()));
+        assert_eq!(pick(at(9, 22), &dismissed), Some("second".into()));
+        dismissed.insert(notice_key(&first));
+        assert_eq!(pick(at(8, 55), &dismissed), None);
+        assert_eq!(pick(at(9, 25), &dismissed), Some("second".into()));
+        assert_eq!(pick(at(10, 5), &dismissed), None);
+    }
+
+    #[test]
+    fn long_titles_rest_then_glide_both_ways() {
+        let rest = TITLE_SCROLL_REST;
+        assert_eq!(title_scroll(0.5, 2.), 0.);
+        assert!((title_scroll(rest + 1., 2.) - 0.5).abs() < 1e-4);
+        assert_eq!(title_scroll(rest + 2.5, 2.), 1.);
+        assert!(title_scroll(rest * 2. + 4., 2.) < 1e-4);
+    }
+
+    #[test]
     fn countdown_ticks_by_the_second() {
         let start = at(9, 10);
         let soon = event("soon", start, 30, false);
@@ -1195,6 +1447,10 @@ mod tests {
             "in 0:05 · 9:10 AM"
         );
         assert_eq!(countdown_label(&soon, start), "now · 9:10 AM");
+        assert_eq!(
+            countdown_label(&soon, start + chrono::Duration::minutes(5)),
+            "started 9:10 AM"
+        );
     }
 
     #[test]
