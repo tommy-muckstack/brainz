@@ -1321,9 +1321,8 @@ impl Render for MenuView {
                                     let starts_today =
                                         !event.all_day && event.start.date_naive() <= today;
                                     // A meeting under way is outlined in yellow.
-                                    let happening = !event.all_day
-                                        && event.start <= now
-                                        && now < event.end;
+                                    let happening =
+                                        !event.all_day && event.start <= now && now < event.end;
                                     let when = if starts_today {
                                         starts_label(&event, now)
                                     } else {
