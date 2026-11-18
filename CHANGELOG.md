@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## 0.1.74 (2026-11-17)
+
+### Added
+
+- Avatar: click the meeting heads-up to join its call. Without a call link, it opens Calendar.
+- Avatar: the menu's "Right now" list suggests what to do next from your schedule, your Today list and what your notes say you owe: prep for a meeting coming up, message someone (people in your next meeting first), or get a to-do done in the time before your next meeting. Prep and Draft open Claude with a request ready to send. "Not now" hides a suggestion for good.
+- Calendar: an event happening now is outlined in yellow.
+
+### Changed
+
+- Avatar: the menu rolls out of the avatar when you open it and rolls back in when it closes.
+- Avatar: "Recent from My Man" shows the newest three captures; scroll for the rest.
+- Avatar: the "For you" list of suggested to-dos and My Man tasks is replaced by "Right now".
+- Avatar: the menu no longer has a Calendar link above the event tiles.
+
+### Fixed
+
+- Calendar: event titles in the avatar menu no longer outgrow their tiles or get cut off.
+- Avatar: the heads-up card fits its text and buttons, including when a meeting card turns into the wrap-up card and with a larger UI font.
+
 ## 0.1.73 (2026-11-17)
 
 ### Added

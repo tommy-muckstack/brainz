@@ -516,13 +516,13 @@ mod tests {
     #[test]
     fn next_steps_fit_the_schedule() {
         let mut review = event("Design review", at(14, 0), 60);
-        review.attendee_names = vec!["Patrick Lee".into(), "Ana Ruiz".into()];
+        review.attendee_names = vec!["Ada Byron".into(), "Grace Hopper".into()];
         let events = vec![event("standup", at(9, 0), 30), review];
         let snapshot = snapshot_with(
             &["Ship the deck"],
             vec![
-                owed("send the contract", Some("Maria"), "2026-11-01"),
-                owed("share the mockups", Some("Patrick"), "2026-11-09"),
+                owed("send the contract", Some("Linus"), "2026-11-01"),
+                owed("share the mockups", Some("Ada"), "2026-11-09"),
             ],
         );
         let none = std::collections::HashSet::new();
@@ -534,17 +534,17 @@ mod tests {
             .iter()
             .map(|step| step.title.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(keys, ["Ship the deck", "Message Patrick", "Message Maria"]);
+        assert_eq!(keys, ["Ship the deck", "Message Ada", "Message Linus"]);
         assert_eq!(steps[0].why, "4h free before Design review");
         assert!(steps[1].why.contains("you see them today"));
         assert!(
-            matches!(&steps[1].action, StepAction::Claude { prompt } if prompt.contains("Slack message to Patrick"))
+            matches!(&steps[1].action, StepAction::Claude { prompt } if prompt.contains("Slack message to Ada"))
         );
 
         // An hour before the meeting, prep comes first.
         let steps = next_steps(&events, &snapshot, at(13, 0), &none);
         assert_eq!(steps[0].title, "Prep for Design review");
-        assert_eq!(steps[0].why, "2:00 PM, in 1h with Patrick and Ana");
+        assert_eq!(steps[0].why, "2:00 PM, in 1h with Ada and Grace");
         assert_eq!(steps[1].title, "Ship the deck");
 
         // Twenty minutes out: prep, then the quick follow-ups.
@@ -555,7 +555,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             keys,
-            ["Prep for Design review", "Message Patrick", "Message Maria"]
+            ["Prep for Design review", "Message Ada", "Message Linus"]
         );
 
         // Dismissed steps make room for the next one.
