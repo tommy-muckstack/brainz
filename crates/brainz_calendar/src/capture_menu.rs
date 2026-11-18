@@ -25,7 +25,7 @@ use util::ResultExt as _;
 
 use crate::{
     CalendarEvent, LoadState,
-    avatar_help::{self, ForYou},
+    avatar_help::{self, NextStep, StepAction},
     myman::MyMan,
     quick_capture::{self, Reaction},
 };
@@ -50,8 +50,6 @@ const NOTICE_HEIGHT: Pixels = px(50.);
 const NOTICE_HEIGHT_WITH_BUTTONS: Pixels = px(84.);
 /// How often the avatar rereads the to-do board and its suggestions.
 const SNAPSHOT_REFRESH: Duration = Duration::from_secs(60);
-/// At most this many "For you" rows in the menu.
-const FOR_YOU_LIMIT: usize = 4;
 const WRAP_UP_PROMPT: &str = "Help me wrap up today. Look at my to-do board, today's calendar, and the notes I changed today. Tell me what got done and what's still open, then suggest my top three for tomorrow.";
 const GAP: Pixels = px(8.);
 const CAPTURE_LIMIT: usize = 6;
@@ -246,9 +244,9 @@ struct MenuState {
     greeted: HashSet<String>,
     closed_at: Option<Instant>,
     avatar: Option<fn(&mut App) -> Option<AnyWindowHandle>>,
-    for_you: Vec<ForYou>,
+    snapshot: avatar_help::Snapshot,
     top_today: Option<String>,
-    /// "For you" items already shown in the menu; read from disk once.
+    /// "Right now" steps already shown in the menu; read from disk once.
     seen: Option<HashSet<String>>,
 }
 
@@ -257,7 +255,15 @@ impl Global for MenuState {}
 /// Keeps the calendar and the to-do board fresh, and keeps a notice beside
 /// `avatar` (the avatar's window, when it is on screen) for what is next.
 pub fn init(avatar: fn(&mut App) -> Option<AnyWindowHandle>, cx: &mut App) {
-    cx.default_global::<MenuState>().avatar = Some(avatar);
+    let state = cx.default_global::<MenuState>();
+    state.avatar = Some(avatar);
+    if let Ok(text) = std::fs::read_to_string(dismissed_steps_file()) {
+        state.dismissed.extend(
+            text.lines()
+                .filter(|key| is_step_key(key))
+                .map(str::to_owned),
+        );
+    }
     cx.spawn(async move |cx| {
         loop {
             let loaded = cx.background_spawn(async { crate::load_events() }).await;
@@ -280,8 +286,8 @@ pub fn init(avatar: fn(&mut App) -> Option<AnyWindowHandle>, cx: &mut App) {
                     .await;
                 cx.update(|cx| {
                     let state = cx.default_global::<MenuState>();
-                    state.for_you = snapshot.for_you;
-                    state.top_today = snapshot.top_today;
+                    state.top_today = snapshot.top_today.clone();
+                    state.snapshot = snapshot;
                     quick_capture::refresh_avatar(cx);
                     sync_notice(cx);
                 });
@@ -301,29 +307,50 @@ pub fn init(avatar: fn(&mut App) -> Option<AnyWindowHandle>, cx: &mut App) {
     cx.on_window_closed(|cx, _| cx.defer(sync_notice)).detach();
 }
 
+/// What the avatar suggests doing now; see [`avatar_help::next_steps`].
+fn next_steps(cx: &mut App) -> Vec<NextStep> {
+    let state = cx.default_global::<MenuState>();
+    avatar_help::next_steps(
+        &state.events,
+        &state.snapshot,
+        Local::now(),
+        &state.dismissed,
+    )
+}
+
+fn dismissed_steps_file() -> PathBuf {
+    paths::data_dir().join("avatar-not-now")
+}
+
+fn is_step_key(key: &str) -> bool {
+    ["prep:", "loop:", "todo:"]
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+}
+
 fn seen_file() -> PathBuf {
     paths::data_dir().join("avatar-seen")
 }
 
 /// Whether the menu holds "For you" items the menu has not shown yet.
 pub fn has_unseen(cx: &mut App) -> bool {
-    let MenuState { seen, for_you, .. } = cx.default_global::<MenuState>();
+    let steps = next_steps(cx);
+    let MenuState { seen, .. } = cx.default_global::<MenuState>();
     let seen = seen.get_or_insert_with(|| {
         std::fs::read_to_string(seen_file())
             .map(|text| text.lines().map(str::to_owned).collect())
             .unwrap_or_default()
     });
-    for_you.iter().any(|item| !seen.contains(&item.key()))
+    steps.iter().any(|step| !seen.contains(&step.key))
 }
 
 /// Remembers everything "For you" as shown, which clears the avatar's dot.
 fn mark_seen(cx: &mut App) {
-    let state = cx.default_global::<MenuState>();
-    let keys = state
-        .for_you
-        .iter()
-        .map(ForYou::key)
+    let keys = next_steps(cx)
+        .into_iter()
+        .map(|step| step.key)
         .collect::<HashSet<_>>();
+    let state = cx.default_global::<MenuState>();
     let text = keys.iter().cloned().collect::<Vec<_>>().join("\n");
     state.seen = Some(keys);
     std::fs::write(seen_file(), text).log_err();
@@ -798,10 +825,10 @@ pub fn toggle(anchor: Bounds<Pixels>, display: Option<DisplayId>, cx: &mut App) 
             })
             .await;
         cx.update(|cx| {
+            let steps = next_steps(cx);
             let state = cx.default_global::<MenuState>();
             let events = state.events.clone();
             let needs_permission = state.needs_permission;
-            let for_you = state.for_you.clone();
             let (bounds, above) = beside(
                 anchor,
                 Size {
@@ -817,7 +844,7 @@ pub fn toggle(anchor: Bounds<Pixels>, display: Option<DisplayId>, cx: &mut App) 
                         brain,
                         events,
                         captures,
-                        for_you,
+                        steps,
                         above,
                         needs_permission,
                         window,
@@ -850,7 +877,7 @@ pub struct MenuView {
     editor: Option<Entity<Editor>>,
     events: Vec<CalendarEvent>,
     captures: Vec<Capture>,
-    for_you: Vec<ForYou>,
+    steps: Vec<NextStep>,
     /// Whether the menu sits above the avatar, and so grows upward from it.
     above: bool,
     needs_permission: bool,
@@ -866,7 +893,7 @@ impl MenuView {
         brain: Option<PathBuf>,
         events: Vec<CalendarEvent>,
         captures: Vec<Capture>,
-        for_you: Vec<ForYou>,
+        steps: Vec<NextStep>,
         above: bool,
         needs_permission: bool,
         window: &mut Window,
@@ -890,7 +917,7 @@ impl MenuView {
             editor,
             events,
             captures,
-            for_you,
+            steps,
             above,
             needs_permission,
             copied: None,
@@ -954,25 +981,68 @@ impl MenuView {
         window.remove_window();
     }
 
-    /// Adds a "For you" item under Today, or drops it.
-    fn resolve_for_you(&mut self, index: usize, add: bool, cx: &mut Context<Self>) {
-        let Some(brain) = self.brain.clone() else {
+    /// Does a "Right now" step: prep, a message drafted with Claude, or the
+    /// to-do board. The menu closes behind it.
+    fn run_step(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(step) = self.steps.get(index).cloned() else {
             return;
         };
-        if index >= self.for_you.len() {
+        let prompt = match step.action {
+            StepAction::Prep { event_id, prompt } => {
+                let has_prep = crate::prep::state(cx).is_some_and(|state| {
+                    state
+                        .read(cx)
+                        .banner()
+                        .is_some_and(|banner| banner.event_id == event_id)
+                });
+                if has_prep {
+                    in_workspace(cx, |window, cx| {
+                        if let Some(state) = crate::prep::state(cx) {
+                            state.update(cx, |state, cx| state.open_for_event(window, cx));
+                        }
+                    });
+                    None
+                } else {
+                    Some(prompt)
+                }
+            }
+            StepAction::Claude { prompt } => Some(prompt),
+            StepAction::OpenTodo => {
+                in_workspace(cx, |window, cx| {
+                    window.dispatch_action(Box::new(crate::todo::OpenTodo), cx)
+                });
+                None
+            }
+        };
+        if let Some(text) = prompt {
+            in_workspace(cx, |window, cx| {
+                window.dispatch_action(Box::new(crate::prep::OpenClaudePrefilled { text }), cx)
+            });
+        }
+        quick_capture::react(cx, Reaction::Cheer);
+        window.remove_window();
+    }
+
+    /// Hides a "Right now" step for the rest of the session.
+    fn dismiss_step(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.steps.len() {
             return;
         }
-        let item = self.for_you.remove(index);
-        let key = item.key();
-        cx.default_global::<MenuState>()
-            .for_you
-            .retain(|other| other.key() != key);
-        if add {
-            quick_capture::react(cx, Reaction::Cheer);
-        }
+        let step = self.steps.remove(index);
+        let state = cx.default_global::<MenuState>();
+        state.dismissed.insert(step.key);
+        // Remembered across restarts, so a stale follow-up stays gone.
+        let text = state
+            .dismissed
+            .iter()
+            .filter(|key| is_step_key(key))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(dismissed_steps_file(), text).log_err();
+        // Fill the gap with the next best step.
+        self.steps = next_steps(cx);
         cx.notify();
-        cx.background_spawn(async move { avatar_help::resolve(&brain, &item, add) })
-            .detach_and_log_err(cx);
     }
 
     fn copy(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -1193,67 +1263,63 @@ impl Render for MenuView {
                         .child(div().flex_1().child(editor)),
                 )
             })
-            .when(!self.for_you.is_empty(), |this| {
-                this.child(section("For you")).children(
-                    self.for_you
-                        .iter()
-                        .take(FOR_YOU_LIMIT)
-                        .enumerate()
-                        .map(|(index, item)| {
-                            h_flex()
-                                .id(("brainz-menu-for-you", index))
-                                .h(px(38.))
-                                .px_1()
-                                .gap_2()
-                                .rounded_md()
-                                .hover(|this| this.bg(colors.element_hover))
-                                .child(
-                                    Icon::new(IconName::Sparkle)
-                                        .size(IconSize::Small)
-                                        .color(Color::Accent),
-                                )
-                                .child(
-                                    v_flex()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .child(
-                                            Label::new(item.title.clone())
-                                                .size(LabelSize::Small)
-                                                .truncate(),
-                                        )
-                                        .child(
-                                            Label::new(item.label())
-                                                .size(LabelSize::XSmall)
-                                                .color(Color::Muted),
-                                        ),
-                                )
-                                .child(
-                                    IconButton::new(
-                                        ("brainz-menu-for-you-add", index),
-                                        IconName::Plus,
+            .when(!self.steps.is_empty(), |this| {
+                this.child(section("Right now"))
+                    .children(self.steps.iter().enumerate().map(|(index, step)| {
+                        let group = SharedString::from(format!("brainz-menu-step-{index}"));
+                        h_flex()
+                            .id(("brainz-menu-step", index))
+                            .group(group.clone())
+                            .py_1()
+                            .px_1()
+                            .gap_2()
+                            .rounded_md()
+                            .hover(|this| this.bg(colors.element_hover))
+                            .child(
+                                Icon::new(match step.action {
+                                    StepAction::Prep { .. } => IconName::BrainzCalendar,
+                                    StepAction::Claude { .. } => IconName::Sparkle,
+                                    StepAction::OpenTodo => IconName::BrainzCheckboxEmpty,
+                                })
+                                .size(IconSize::Small)
+                                .color(Color::Accent),
+                            )
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(
+                                        Label::new(step.title.clone())
+                                            .size(LabelSize::Small)
+                                            .truncate(),
                                     )
-                                    .icon_size(IconSize::Small)
-                                    .tooltip(ui::Tooltip::text("Add to Today"))
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| this.resolve_for_you(index, true, cx),
-                                    )),
-                                )
-                                .child(
-                                    IconButton::new(
-                                        ("brainz-menu-for-you-drop", index),
-                                        IconName::Close,
-                                    )
+                                    .child(
+                                        Label::new(step.why.clone())
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted)
+                                            .truncate(),
+                                    ),
+                            )
+                            .child(
+                                Button::new(("brainz-menu-step-run", index), step.button)
+                                    .style(ButtonStyle::Filled)
+                                    .size(ButtonSize::Compact)
+                                    .label_size(LabelSize::Small)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.run_step(index, window, cx)
+                                    })),
+                            )
+                            .child(
+                                IconButton::new(("brainz-menu-step-drop", index), IconName::Close)
                                     .icon_size(IconSize::Small)
                                     .icon_color(Color::Muted)
-                                    .tooltip(ui::Tooltip::text("Dismiss"))
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            this.resolve_for_you(index, false, cx)
-                                        },
-                                    )),
-                                )
-                        }),
-                )
+                                    .visible_on_hover(group)
+                                    .tooltip(ui::Tooltip::text("Not now"))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.dismiss_step(index, cx)
+                                    })),
+                            )
+                    }))
             })
             .when(nothing_to_show, |this| {
                 this.child(
@@ -1276,30 +1342,7 @@ impl Render for MenuView {
                             Label::new("Coming up")
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
-                        )
-                        .when(!self.needs_permission, |this| {
-                            this.child(
-                                h_flex()
-                                    .id("brainz-menu-open-calendar")
-                                    .gap_1()
-                                    .cursor_pointer()
-                                    .opacity(0.7)
-                                    .hover(|this| this.opacity(1.))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_calendar(window, cx)
-                                    }))
-                                    .child(
-                                        Label::new("Calendar")
-                                            .size(LabelSize::Small)
-                                            .color(Color::Muted),
-                                    )
-                                    .child(
-                                        Icon::new(IconName::ArrowUpRight)
-                                            .size(IconSize::XSmall)
-                                            .color(Color::Muted),
-                                    ),
-                            )
-                        }),
+                        ),
                 )
                 .when(self.needs_permission, |this| {
                     this.child(

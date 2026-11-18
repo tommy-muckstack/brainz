@@ -1,18 +1,17 @@
 //! Brainz: what the avatar offers on its own. Pure pickers for the moments
 //! it speaks up (a free stretch after a meeting, the end of the day), the
-//! meeting link behind Join, and the "For you" items it gathers from the
-//! suggested to-dos and My Man's tasks.
+//! meeting's call link, and the "Right now" steps: what to do next given the
+//! schedule, the Today list and what the notes say is owed.
 
 use std::path::Path;
 
-use anyhow::{Context as _, Result};
 use chrono::{DateTime, Local, Timelike as _};
 
 use crate::{
     CalendarEvent,
     brain_config::BrainConfig,
-    myman::{self, MyManTask},
-    open_loops, todo,
+    themes_signals::{self, OpenLoop},
+    todo,
 };
 
 /// A free stretch shorter than this is not worth a nudge.
@@ -22,118 +21,312 @@ const FREE_SHOWN_MINUTES: i64 = 15;
 /// The wrap-up card shows for this long after the day's last meeting.
 const WRAP_SHOWN_MINUTES: i64 = 90;
 
+/// Prep shows for a meeting starting within this long.
+const PREP_AHEAD_MINUTES: i64 = 180;
+/// A prep this close goes first.
+const PREP_SOON_MINUTES: i64 = 90;
+/// A stretch this long is "a big chunk": a to-do goes ahead of follow-ups.
+const BIG_CHUNK_MINUTES: i64 = 45;
+/// At most this many owed follow-ups are suggested at once.
+const FOLLOW_UP_LIMIT: usize = 2;
+/// At most this many next steps show in the menu.
+pub const NEXT_STEP_LIMIT: usize = 3;
+
+/// What a next step's button does.
 #[derive(Debug, Clone, PartialEq)]
-pub enum ForYouSource {
-    Suggested { raw: String },
-    MyMan(MyManTask),
+pub enum StepAction {
+    /// Opens the meeting's prep note when Brainz has one for it; otherwise
+    /// asks Claude to prep with `prompt`.
+    Prep {
+        event_id: String,
+        prompt: String,
+    },
+    /// Opens Claude with `prompt` ready to send.
+    Claude {
+        prompt: String,
+    },
+    OpenTodo,
 }
 
-/// Something the avatar thinks belongs on the board, waiting for a yes or no.
+/// One thing worth doing now, picked from the schedule, the Today list and
+/// what the notes say is owed.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ForYou {
+pub struct NextStep {
+    pub key: String,
     pub title: String,
-    pub source: ForYouSource,
+    /// Why now: the time it fits in, or who it is for.
+    pub why: String,
+    pub button: &'static str,
+    pub action: StepAction,
 }
 
-impl ForYou {
-    pub fn key(&self) -> String {
-        match &self.source {
-            ForYouSource::Suggested { raw } => format!("s:{raw}"),
-            ForYouSource::MyMan(task) => format!("m:{}", task.key()),
-        }
-    }
-
-    pub fn label(&self) -> &'static str {
-        match self.source {
-            ForYouSource::Suggested { .. } => "Suggested",
-            ForYouSource::MyMan(_) => "From My Man",
-        }
-    }
+/// An open item from the board's Today section.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TodayItem {
+    pub title: String,
+    pub high: bool,
 }
 
 /// What the avatar knows about the brain, read off the main thread.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
-    pub for_you: Vec<ForYou>,
     pub top_today: Option<String>,
+    /// Open Today items, the one to do first first.
+    pub today: Vec<TodayItem>,
+    /// ⏰ lines: what the notes say the owner still owes, oldest first.
+    pub owed: Vec<OpenLoop>,
 }
 
 pub fn snapshot(brain: &Path) -> Snapshot {
     let config = BrainConfig::load(brain);
-    let mut for_you = todo::load_suggestions(&brain.join(todo::suggestions_relative(&config.todo)))
-        .into_iter()
-        .map(|suggestion| ForYou {
-            title: suggestion.title,
-            source: ForYouSource::Suggested {
-                raw: suggestion.raw,
-            },
-        })
-        .collect::<Vec<_>>();
-    if let Some(myman) = myman::MyMan::detect(&config) {
-        for_you.extend(myman::pending_tasks(&myman).into_iter().map(|task| ForYou {
-            title: task.title.clone(),
-            source: ForYouSource::MyMan(task),
-        }));
-    }
-    let top_today = todo::read_board_text(&brain.join(&config.todo))
+    let today = todo::read_board_text(&brain.join(&config.todo))
         .ok()
-        .and_then(|text| top_today(&todo::parse_board(&text)));
-    Snapshot { for_you, top_today }
+        .map(|text| today_items(&todo::parse_board(&text)))
+        .unwrap_or_default();
+    // Read straight from the last signals pass; it is refreshed elsewhere.
+    let owed = std::fs::read_to_string(config.themes_path(brain, themes_signals::SIGNALS_NAME))
+        .ok()
+        .and_then(|text| serde_json::from_str::<themes_signals::Signals>(&text).ok())
+        .map(|signals| {
+            signals
+                .open_loops
+                .into_iter()
+                .filter(OpenLoop::owed_by_owner)
+                .collect()
+        })
+        .unwrap_or_default();
+    Snapshot {
+        top_today: today.first().map(|item| item.title.clone()),
+        today,
+        owed,
+    }
 }
 
-/// The open Today item to do first: highest priority, then board order.
-pub(crate) fn top_today(board: &todo::TodoBoard) -> Option<String> {
-    board
+/// The open Today items in the order to do them: highest priority, then
+/// board order.
+pub(crate) fn today_items(board: &todo::TodoBoard) -> Vec<TodayItem> {
+    let Some(section) = board
         .sections
         .iter()
-        .find(|section| section.name.eq_ignore_ascii_case("today"))?
+        .find(|section| section.name.eq_ignore_ascii_case("today"))
+    else {
+        return Vec::new();
+    };
+    let mut items = section
         .items
         .iter()
         .filter(|item| !item.done)
-        .min_by_key(|item| {
-            let rank = match item.priority {
-                Some(todo::Priority::High) => 0,
-                Some(todo::Priority::Medium) => 1,
-                Some(todo::Priority::Low) => 2,
-                None => 3,
-            };
-            (rank, item.line)
+        .collect::<Vec<_>>();
+    items.sort_by_key(|item| {
+        let rank = match item.priority {
+            Some(todo::Priority::High) => 0,
+            Some(todo::Priority::Medium) => 1,
+            Some(todo::Priority::Low) => 2,
+            None => 3,
+        };
+        (rank, item.line)
+    });
+    items
+        .into_iter()
+        .map(|item| TodayItem {
+            title: item.title.clone(),
+            high: item.priority == Some(todo::Priority::High),
         })
-        .map(|item| item.title.clone())
+        .collect()
 }
 
-/// Puts a "For you" item under Today (or drops it), and takes it off its list.
-pub fn resolve(brain: &Path, item: &ForYou, add: bool) -> Result<()> {
-    let config = BrainConfig::load(brain);
-    let board = brain.join(&config.todo);
-    let add_line = |line: &str| -> Result<()> {
-        let text = todo::read_board_text(&board)?;
-        todo::write_board_text(&board, &open_loops::insert_board_line(&text, line, true))
-    };
-    match &item.source {
-        ForYouSource::Suggested { raw } => {
-            let _serialised = todo::BOARD_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let path = brain.join(todo::suggestions_relative(&config.todo));
-            let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
-            let remaining = todo::remove_suggestion(&text, raw)?;
-            if add {
-                add_line(&format!("- [ ] {}", item.title))?;
-            }
-            todo::write_board_text(&path, &remaining)
-        }
-        ForYouSource::MyMan(task) => {
-            let _serialised = myman::TASK_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if add {
-                add_line(&task.board_line())?;
-            }
-            myman::mark_task_handled(task)
-        }
+/// "45 min", "1h", "1h 20m".
+fn span(minutes: i64) -> String {
+    let minutes = minutes.max(1);
+    match (minutes / 60, minutes % 60) {
+        (0, minutes) => format!("{minutes} min"),
+        (hours, 0) => format!("{hours}h"),
+        (hours, minutes) => format!("{hours}h {minutes}m"),
     }
+}
+
+fn first_names(event: &CalendarEvent) -> Vec<String> {
+    event
+        .attendee_names
+        .iter()
+        .filter_map(|name| name.split_whitespace().next())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn loop_text(open_loop: &OpenLoop) -> String {
+    markdown::markdown_to_plain_text(&open_loop.text)
+        .replace(themes_signals::LOOP_MARKERS, "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_start_matches(['-', '*', ' '])
+        .trim_end_matches(['.', ' '])
+        .to_owned()
+}
+
+/// What to do now, from the schedule, the Today list and what is owed:
+/// prep for a meeting coming up, follow up with someone (the people in the
+/// next meeting first), or get a to-do done in the time before the next one.
+pub fn next_steps(
+    events: &[CalendarEvent],
+    snapshot: &Snapshot,
+    now: DateTime<Local>,
+    dismissed: &std::collections::HashSet<String>,
+) -> Vec<NextStep> {
+    let current = timed_today(events, now).find(|event| event.start <= now && now < event.end);
+    let next = timed_today(events, now)
+        .filter(|event| event.start > now)
+        .min_by_key(|event| event.start);
+    let free_from = current.map_or(now, |event| event.end);
+
+    let prep = next
+        .filter(|event| {
+            (event.start - now).num_minutes() <= PREP_AHEAD_MINUTES
+                && (event.attendees > 1 || !event.attendee_names.is_empty())
+        })
+        .map(|event| {
+            let names = first_names(event);
+            let with = match names.as_slice() {
+                [] => String::new(),
+                [one] => format!(" with {one}"),
+                [one, two] => format!(" with {one} and {two}"),
+                [one, two, rest @ ..] => format!(" with {one}, {two} +{}", rest.len()),
+            };
+            let time = event.start.format("%-I:%M %p");
+            NextStep {
+                key: format!("prep:{}", event.id),
+                title: format!("Prep for {}", event.title),
+                why: format!(
+                    "{time}, in {}{with}",
+                    span((event.start - now).num_minutes())
+                ),
+                button: "Prep",
+                action: StepAction::Prep {
+                    event_id: event.id.clone(),
+                    prompt: format!(
+                        "Help me prep for \"{}\" at {time}{with}. Check my notes for what we last discussed, anything I owe them or they owe me, and give me the three things to raise.",
+                        event.title
+                    ),
+                },
+            }
+        });
+    let prep_soon = prep.as_ref().is_some_and(|_| {
+        next.is_some_and(|event| (event.start - now).num_minutes() <= PREP_SOON_MINUTES)
+    });
+
+    let meeting_names = current
+        .into_iter()
+        .chain(next)
+        .flat_map(first_names)
+        .map(|name| name.to_lowercase())
+        .collect::<Vec<_>>();
+    let seeing = |open_loop: &OpenLoop| {
+        open_loop.counterparty.as_ref().is_some_and(|person| {
+            let first = person.split_whitespace().next().unwrap_or(person);
+            meeting_names.contains(&first.to_lowercase())
+        })
+    };
+    let mut owed = snapshot.owed.iter().collect::<Vec<_>>();
+    // People you are about to see first, then the oldest.
+    owed.sort_by_key(|open_loop| (!seeing(open_loop), open_loop.first_seen.clone()));
+    let today = now.date_naive();
+    let follow_ups = owed
+        .into_iter()
+        .filter(|open_loop| !dismissed.contains(&format!("loop:{}:{}", open_loop.file, open_loop.text)))
+        .take(FOLLOW_UP_LIMIT)
+        .map(|open_loop| {
+            let text = loop_text(open_loop);
+            let age = open_loop.age_days(today);
+            let note = open_loop
+                .file
+                .rsplit('/')
+                .next()
+                .unwrap_or(&open_loop.file)
+                .trim_end_matches(".md")
+                .to_owned();
+            let when = if seeing(open_loop) {
+                "you see them today".to_owned()
+            } else if age == 0 {
+                "from today".to_owned()
+            } else {
+                format!("{age}d old")
+            };
+            let (title, prompt) = match &open_loop.counterparty {
+                Some(person) => (
+                    format!("Message {person}"),
+                    format!(
+                        "Draft a short Slack message to {person} to close this out: \"{text}\". The note \"{}\" has the context, read it first. Keep it casual and under 80 words.",
+                        open_loop.file
+                    ),
+                ),
+                None => (
+                    text.clone(),
+                    format!(
+                        "Help me finish this today: \"{text}\". The note \"{}\" has the context, read it first, then give me the fastest way to close it out.",
+                        open_loop.file
+                    ),
+                ),
+            };
+            let why = match &open_loop.counterparty {
+                Some(_) => format!("{text} · {when} · {note}"),
+                None => format!("You owe this · {when} · {note}"),
+            };
+            NextStep {
+                key: format!("loop:{}:{}", open_loop.file, open_loop.text),
+                title,
+                why,
+                button: "Draft",
+                action: StepAction::Claude { prompt },
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let window = next.map(|event| (event.start - free_from).num_minutes());
+    let to_do = snapshot
+        .today
+        .iter()
+        .find(|item| !dismissed.contains(&format!("todo:{}", item.title)))
+        .map(|item| {
+            let why = match (current, next, window) {
+                (Some(current), _, _) => format!("Next, after {}", current.title),
+                (None, Some(next), Some(window)) => {
+                    format!("{} free before {}", span(window), next.title)
+                }
+                _ if now.hour() >= 17 => "Before you call it a day".to_owned(),
+                _ => "Your calendar is clear".to_owned(),
+            };
+            NextStep {
+                key: format!("todo:{}", item.title),
+                title: item.title.clone(),
+                why: if item.high {
+                    format!("High priority · {why}")
+                } else {
+                    why
+                },
+                button: "Open",
+                action: StepAction::OpenTodo,
+            }
+        });
+    let big_chunk = current.is_none() && window.is_none_or(|window| window >= BIG_CHUNK_MINUTES);
+
+    let prep = prep.filter(|step| !dismissed.contains(&step.key));
+    let mut steps = Vec::new();
+    if prep_soon {
+        steps.extend(prep.clone());
+    }
+    if big_chunk {
+        steps.extend(to_do);
+        steps.extend(follow_ups);
+    } else {
+        steps.extend(follow_ups);
+        steps.extend(to_do);
+    }
+    if !prep_soon {
+        steps.extend(prep);
+    }
+    steps.truncate(NEXT_STEP_LIMIT);
+    steps
 }
 
 const MEETING_HOSTS: &[&str] = &[
@@ -291,6 +484,86 @@ mod tests {
         assert_eq!(
             free_time(&events, at(13, 31)).map(|(_, until)| until),
             Some(None)
+        );
+    }
+
+    fn owed(text: &str, person: Option<&str>, first_seen: &str) -> OpenLoop {
+        OpenLoop {
+            file: "people/notes.md".into(),
+            line: 3,
+            text: format!("- ⏰ {text}"),
+            marker: "⏰".into(),
+            first_seen: first_seen.into(),
+            folder: "people".into(),
+            counterparty: person.map(str::to_owned),
+        }
+    }
+
+    fn snapshot_with(today: &[&str], owed_loops: Vec<OpenLoop>) -> Snapshot {
+        Snapshot {
+            top_today: today.first().map(|title| (*title).to_owned()),
+            today: today
+                .iter()
+                .map(|title| TodayItem {
+                    title: (*title).to_owned(),
+                    high: false,
+                })
+                .collect(),
+            owed: owed_loops,
+        }
+    }
+
+    #[test]
+    fn next_steps_fit_the_schedule() {
+        let mut review = event("Design review", at(14, 0), 60);
+        review.attendee_names = vec!["Patrick Lee".into(), "Ana Ruiz".into()];
+        let events = vec![event("standup", at(9, 0), 30), review];
+        let snapshot = snapshot_with(
+            &["Ship the deck"],
+            vec![
+                owed("send the contract", Some("Maria"), "2026-11-01"),
+                owed("share the mockups", Some("Patrick"), "2026-11-09"),
+            ],
+        );
+        let none = std::collections::HashSet::new();
+
+        // A long free morning: the to-do first, then follow-ups, with the
+        // person you see later today ahead of the older one.
+        let steps = next_steps(&events, &snapshot, at(10, 0), &none);
+        let keys = steps
+            .iter()
+            .map(|step| step.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(keys, ["Ship the deck", "Message Patrick", "Message Maria"]);
+        assert_eq!(steps[0].why, "4h free before Design review");
+        assert!(steps[1].why.contains("you see them today"));
+        assert!(
+            matches!(&steps[1].action, StepAction::Claude { prompt } if prompt.contains("Slack message to Patrick"))
+        );
+
+        // An hour before the meeting, prep comes first.
+        let steps = next_steps(&events, &snapshot, at(13, 0), &none);
+        assert_eq!(steps[0].title, "Prep for Design review");
+        assert_eq!(steps[0].why, "2:00 PM, in 1h with Patrick and Ana");
+        assert_eq!(steps[1].title, "Ship the deck");
+
+        // Twenty minutes out: prep, then the quick follow-ups.
+        let steps = next_steps(&events, &snapshot, at(13, 40), &none);
+        let keys = steps
+            .iter()
+            .map(|step| step.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            ["Prep for Design review", "Message Patrick", "Message Maria"]
+        );
+
+        // Dismissed steps make room for the next one.
+        let dismissed = std::collections::HashSet::from([steps[0].key.clone()]);
+        let steps = next_steps(&events, &snapshot, at(13, 40), &dismissed);
+        assert_eq!(
+            steps.last().map(|step| step.title.as_str()),
+            Some("Ship the deck")
         );
     }
 
