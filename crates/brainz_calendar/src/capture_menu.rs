@@ -55,6 +55,9 @@ const FOR_YOU_LIMIT: usize = 4;
 const WRAP_UP_PROMPT: &str = "Help me wrap up today. Look at my to-do board, today's calendar, and the notes I changed today. Tell me what got done and what's still open, then suggest my top three for tomorrow.";
 const GAP: Pixels = px(8.);
 const CAPTURE_LIMIT: usize = 6;
+/// Recent captures shown at once; the rest of the list scrolls.
+const CAPTURES_VISIBLE: usize = 3;
+const CAPTURE_ROW_HEIGHT: Pixels = px(44.);
 /// Newest files read per My Man folder; names start with the capture date.
 const CAPTURE_SCAN: usize = 40;
 const CALENDAR_REFRESH: Duration = Duration::from_secs(5 * 60);
@@ -425,19 +428,24 @@ fn notice_actions(kind: &NoticeKind, cx: &App) -> NoticeActions {
     }
 }
 
-fn notice_size(kind: &NoticeKind, actions: &NoticeActions) -> Size<Pixels> {
+fn notice_size(kind: &NoticeKind, actions: &NoticeActions, cx: &App) -> Size<Pixels> {
+    use settings::Settings as _;
+    // The text follows the UI font size, so the card grows with it.
+    let scale =
+        (f32::from(theme_settings::ThemeSettings::get_global(cx).ui_font_size(cx)) / 16.).max(1.);
     let buttons = match kind {
         // The card itself joins the call, so only Prep needs a button.
         NoticeKind::Meeting(_) => actions.prep,
         NoticeKind::Free { .. } | NoticeKind::WrapUp { .. } => true,
     };
+    let height = if buttons {
+        NOTICE_HEIGHT_WITH_BUTTONS
+    } else {
+        NOTICE_HEIGHT
+    };
     Size {
-        width: NOTICE_WIDTH,
-        height: if buttons {
-            NOTICE_HEIGHT_WITH_BUTTONS
-        } else {
-            NOTICE_HEIGHT
-        },
+        width: (NOTICE_WIDTH * scale).round(),
+        height: (height * scale).round(),
     }
 }
 
@@ -487,9 +495,27 @@ pub fn sync_notice(cx: &mut App) {
         return;
     };
     let actions = notice_actions(&kind, cx);
-    let size = notice_size(&kind, &actions);
+    let size = notice_size(&kind, &actions, cx);
     let (bounds, _) = beside(anchor, size, display, cx);
     let offset = bounds.origin - anchor.origin;
+    // A notice that needs a new size, say a meeting card turning into the
+    // taller wrap-up card, is reopened: resizing the window in place left
+    // its contents laid out for the old size.
+    let notice = notice.filter(|notice| {
+        let fits = notice
+            .update(cx, |_, window, _| {
+                let current = window.bounds().size;
+                (current.width - size.width).abs() < px(1.)
+                    && (current.height - size.height).abs() < px(1.)
+            })
+            .unwrap_or(false);
+        if !fits {
+            notice
+                .update(cx, |_, window, _| window.remove_window())
+                .log_err();
+        }
+        fits
+    });
     let appeared = match notice {
         Some(notice) => {
             let changed = notice
@@ -1388,82 +1414,93 @@ impl Render for MenuView {
                 })
             })
             .when(!self.captures.is_empty(), |this| {
-                this.child(section("Recent from My Man")).children(
-                    self.captures.iter().enumerate().map(|(index, capture)| {
-                        let copied = self.copied == Some(index);
-                        let group = SharedString::from(format!("brainz-capture-row-{index}"));
-                        let file = capture.file.clone();
-                        let preview = match (&capture.thumbnail, capture.kind) {
-                            (Some(thumbnail), CaptureKind::Screenshot) => img(thumbnail.clone())
-                                .w(px(48.))
-                                .h(px(32.))
-                                .rounded_sm()
-                                .object_fit(ObjectFit::Cover)
-                                .into_any_element(),
-                            _ => div()
-                                .w(px(48.))
-                                .h(px(32.))
-                                .rounded_sm()
-                                .bg(colors.element_background)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    Icon::new(IconName::PlayOutlined)
-                                        .size(IconSize::Small)
-                                        .color(Color::Muted),
-                                )
-                                .into_any_element(),
-                        };
-                        h_flex()
-                            .group(group.clone())
-                            .h(px(44.))
-                            .px_1()
-                            .gap_3()
-                            .rounded_md()
-                            .hover(|this| this.bg(colors.element_hover))
-                            .child(preview)
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .overflow_hidden()
-                                    .child(Label::new(capture.title.clone()).truncate()),
-                            )
-                            .child(if copied {
-                                Label::new("Copied")
-                                    .size(LabelSize::Small)
-                                    .color(Color::Success)
-                            } else {
-                                Label::new(age(capture.captured, now))
-                                    .size(LabelSize::Small)
-                                    .color(Color::Muted)
-                            })
-                            .child(
-                                h_flex()
-                                    .gap_0p5()
-                                    .visible_on_hover(group)
+                this.child(section("Recent from My Man")).child(
+                    // The newest few show; the rest scroll into view.
+                    v_flex()
+                        .id("brainz-captures")
+                        .flex_none()
+                        .max_h(CAPTURE_ROW_HEIGHT * CAPTURES_VISIBLE as f32)
+                        .overflow_y_scroll()
+                        .children(self.captures.iter().enumerate().map(|(index, capture)| {
+                            let copied = self.copied == Some(index);
+                            let group = SharedString::from(format!("brainz-capture-row-{index}"));
+                            let file = capture.file.clone();
+                            let preview = match (&capture.thumbnail, capture.kind) {
+                                (Some(thumbnail), CaptureKind::Screenshot) => {
+                                    img(thumbnail.clone())
+                                        .w(px(48.))
+                                        .h(px(32.))
+                                        .rounded_sm()
+                                        .object_fit(ObjectFit::Cover)
+                                        .into_any_element()
+                                }
+                                _ => div()
+                                    .w(px(48.))
+                                    .h(px(32.))
+                                    .rounded_sm()
+                                    .bg(colors.element_background)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
                                     .child(
-                                        IconButton::new(
-                                            ("brainz-capture-copy", index),
-                                            IconName::Copy,
-                                        )
-                                        .icon_size(IconSize::Small)
-                                        .tooltip(ui::Tooltip::text("Copy to clipboard"))
-                                        .on_click(
-                                            cx.listener(move |this, _, _, cx| this.copy(index, cx)),
-                                        ),
+                                        Icon::new(IconName::PlayOutlined)
+                                            .size(IconSize::Small)
+                                            .color(Color::Muted),
                                     )
-                                    .child(
-                                        IconButton::new(
-                                            ("brainz-capture-reveal", index),
-                                            IconName::FolderOpen,
+                                    .into_any_element(),
+                            };
+                            h_flex()
+                                .group(group.clone())
+                                .flex_none()
+                                .h(CAPTURE_ROW_HEIGHT)
+                                .px_1()
+                                .gap_3()
+                                .rounded_md()
+                                .hover(|this| this.bg(colors.element_hover))
+                                .child(preview)
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .overflow_hidden()
+                                        .child(Label::new(capture.title.clone()).truncate()),
+                                )
+                                .child(if copied {
+                                    Label::new("Copied")
+                                        .size(LabelSize::Small)
+                                        .color(Color::Success)
+                                } else {
+                                    Label::new(age(capture.captured, now))
+                                        .size(LabelSize::Small)
+                                        .color(Color::Muted)
+                                })
+                                .child(
+                                    h_flex()
+                                        .gap_0p5()
+                                        .visible_on_hover(group)
+                                        .child(
+                                            IconButton::new(
+                                                ("brainz-capture-copy", index),
+                                                IconName::Copy,
+                                            )
+                                            .icon_size(IconSize::Small)
+                                            .tooltip(ui::Tooltip::text("Copy to clipboard"))
+                                            .on_click(
+                                                cx.listener(move |this, _, _, cx| {
+                                                    this.copy(index, cx)
+                                                }),
+                                            ),
                                         )
-                                        .icon_size(IconSize::Small)
-                                        .tooltip(ui::Tooltip::text("Show in Finder"))
-                                        .on_click(move |_, _, cx| cx.reveal_path(&file)),
-                                    ),
-                            )
-                    }),
+                                        .child(
+                                            IconButton::new(
+                                                ("brainz-capture-reveal", index),
+                                                IconName::FolderOpen,
+                                            )
+                                            .icon_size(IconSize::Small)
+                                            .tooltip(ui::Tooltip::text("Show in Finder"))
+                                            .on_click(move |_, _, cx| cx.reveal_path(&file)),
+                                        ),
+                                )
+                        })),
                 )
             })
             .when_some(self.error.clone(), |this, error| {
@@ -1658,6 +1695,7 @@ impl Render for NoticeView {
                         Button::new("brainz-notice-prep", "Prep")
                             .style(ButtonStyle::Subtle)
                             .size(ButtonSize::Compact)
+                            .label_size(LabelSize::Small)
                             .tooltip(ui::Tooltip::text("Open the prep note or the folder"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 // Not a click on the card, which would join.
@@ -1671,12 +1709,14 @@ impl Render for NoticeView {
                 Button::new("brainz-notice-todo", "Open To-Do")
                     .style(ButtonStyle::Filled)
                     .size(ButtonSize::Compact)
+                    .label_size(LabelSize::Small)
                     .on_click(cx.listener(|this, _, window, cx| this.open_todo(window, cx))),
             ),
             NoticeKind::WrapUp { .. } => buttons.push(
                 Button::new("brainz-notice-wrap", "Wrap up")
                     .style(ButtonStyle::Filled)
                     .size(ButtonSize::Compact)
+                    .label_size(LabelSize::Small)
                     .tooltip(ui::Tooltip::text(
                         "Open Claude with a wrap-up request, ready to send",
                     ))
