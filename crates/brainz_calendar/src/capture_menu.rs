@@ -5,8 +5,10 @@
 //! child of the avatar's window, so it travels with the avatar when dragged.
 
 use std::{
+    cell::Cell,
     collections::HashSet,
     path::{Path, PathBuf},
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -18,7 +20,7 @@ use gpui::{
     Animation, AnimationExt as _, AnyWindowHandle, App, AppContext as _, Bounds, ClipboardItem,
     DisplayId, Entity, FocusHandle, Focusable, Global, Hsla, Image, ImageFormat, MouseButton,
     ObjectFit, Pixels, Size, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
-    ease_out_quint, img, point, pulsating_between, px,
+    img, point, pulsating_between, px,
 };
 use ui::prelude::*;
 use util::ResultExt as _;
@@ -34,9 +36,11 @@ const MENU_WIDTH: Pixels = px(340.);
 /// The menu's window is this tall and see-through; the panel inside it hugs
 /// the edge nearest the avatar, so it can grow without the window moving.
 const MENU_HEIGHT: Pixels = px(560.);
-const MENU_OPEN: Duration = Duration::from_millis(180);
-/// How far the panel travels as it slides out of the avatar.
-const MENU_SLIDE: f32 = 28.;
+/// The menu rolls out of the avatar over this long, and back in on close.
+const MENU_OPEN: Duration = Duration::from_millis(280);
+const MENU_CLOSE: Duration = Duration::from_millis(170);
+/// How far the panel drifts toward the avatar as it rolls in and out.
+const MENU_SLIDE: f32 = 10.;
 const TILE_WIDTH: Pixels = px(136.);
 /// A tile's padding on each side; the title scrolls within what is left.
 const TILE_PADDING: Pixels = px(8.);
@@ -803,7 +807,7 @@ pub fn toggle(anchor: Bounds<Pixels>, display: Option<DisplayId>, cx: &mut App) 
         .find_map(|window| window.downcast::<MenuView>())
     {
         existing
-            .update(cx, |_, window, _| window.remove_window())
+            .update(cx, |menu, window, cx| menu.close(window, cx))
             .log_err();
         return;
     }
@@ -884,6 +888,11 @@ pub struct MenuView {
     copied: Option<usize>,
     error: Option<String>,
     focus_handle: FocusHandle,
+    /// Set once the menu starts rolling back into the avatar.
+    closing: bool,
+    /// The panel's natural height, measured each frame, which the roll-out
+    /// reveals.
+    panel_height: Rc<Cell<Pixels>>,
     _activation: gpui::Subscription,
     _transparency: gpui::Subscription,
 }
@@ -906,10 +915,10 @@ impl MenuView {
                 editor
             })
         });
-        let activation = cx.observe_window_activation(window, |_, window, cx| {
+        let activation = cx.observe_window_activation(window, |this, window, cx| {
             if !window.is_window_active() {
                 cx.default_global::<MenuState>().closed_at = Some(Instant::now());
-                window.remove_window();
+                this.close(window, cx);
             }
         });
         Self {
@@ -923,9 +932,25 @@ impl MenuView {
             copied: None,
             error: None,
             focus_handle: cx.focus_handle(),
+            closing: false,
+            panel_height: Rc::new(Cell::new(Pixels::ZERO)),
             _activation: activation,
             _transparency: keep_transparent(window, cx),
         }
+    }
+
+    /// Rolls the panel back into the avatar, then closes the window.
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closing {
+            return;
+        }
+        self.closing = true;
+        cx.notify();
+        cx.spawn_in(window, async move |_, cx| {
+            cx.background_executor().timer(MENU_CLOSE).await;
+            cx.update(|window, _| window.remove_window()).log_err();
+        })
+        .detach();
     }
 
     fn confirm(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
@@ -934,12 +959,12 @@ impl MenuView {
         };
         let text = editor.read(cx).text(cx);
         if text.trim().is_empty() {
-            window.remove_window();
+            self.close(window, cx);
             return;
         }
         match crate::quick_capture::save_capture(brain, &text) {
             Ok(()) => {
-                window.remove_window();
+                self.close(window, cx);
                 cx.defer(|cx| quick_capture::react(cx, Reaction::Wink));
             }
             Err(error) => {
@@ -1020,7 +1045,7 @@ impl MenuView {
             });
         }
         quick_capture::react(cx, Reaction::Cheer);
-        window.remove_window();
+        self.close(window, cx);
     }
 
     /// Hides a "Right now" step for the rest of the session.
@@ -1235,18 +1260,19 @@ impl Render for MenuView {
             .key_context("BrainzQuickCapture")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::confirm))
-            .on_action(cx.listener(|_, _: &menu::Cancel, window, _| window.remove_window()))
+            .on_action(cx.listener(|this, _: &menu::Cancel, window, cx| this.close(window, cx)))
             // Escape in the text field is the editor's Cancel, which it
             // passes on when it has nothing of its own to cancel.
             .on_action(
-                cx.listener(|_, _: &editor::actions::Cancel, window, _| window.remove_window()),
+                cx.listener(|this, _: &editor::actions::Cancel, window, cx| this.close(window, cx)),
             )
             // A press on the panel must not reach the see-through backdrop,
             // which closes the menu.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .relative()
             .w_full()
-            .max_h_full()
+            .flex_none()
+            .max_h(MENU_HEIGHT - px(8.))
             .overflow_hidden()
             .p_3()
             .rounded_xl()
@@ -1549,6 +1575,58 @@ impl Render for MenuView {
             .when_some(self.error.clone(), |this, error| {
                 this.child(Label::new(error).size(LabelSize::Small).color(Color::Error))
             });
+        // The panel sits in a clip that grows from the avatar's side, so the
+        // menu rolls out of the avatar like a dropdown and rolls back in.
+        let measured = self.panel_height.clone();
+        let clip = div()
+            .flex()
+            .flex_col()
+            .relative()
+            .flex_none()
+            .w_full()
+            .overflow_hidden()
+            .when(above, |this| this.justify_end())
+            .on_children_prepainted(move |bounds, window, _| {
+                let height = bounds
+                    .first()
+                    .map_or(Pixels::ZERO, |bounds| bounds.size.height);
+                if (measured.get() - height).abs() > px(0.5) {
+                    measured.set(height);
+                    window.refresh();
+                }
+            })
+            .child(panel);
+        let height = self.panel_height.clone();
+        let roll = move |clip: Div, shown: f32| {
+            let full = height.get();
+            // Drifts in from the avatar's side as it unrolls.
+            let drift = (1. - shown) * MENU_SLIDE;
+            clip.h(full * shown)
+                .opacity((shown * 1.6).min(1.))
+                .top(px(if above { drift } else { -drift }))
+        };
+        let clip = if self.closing {
+            clip.with_animation(
+                "brainz-menu-close",
+                Animation::new(MENU_CLOSE).with_easing(|t: f32| t * t),
+                move |clip, delta| roll(clip, 1. - delta),
+            )
+            .into_any_element()
+        } else {
+            clip.with_animation(
+                "brainz-menu-open",
+                Animation::new(MENU_OPEN).with_easing(|t: f32| 1. - (1. - t).powi(3)),
+                move |clip, delta| {
+                    if delta >= 1. {
+                        // Open: the panel takes whatever height it needs.
+                        clip
+                    } else {
+                        roll(clip, delta)
+                    }
+                },
+            )
+            .into_any_element()
+        };
         div()
             .size_full()
             .flex()
@@ -1556,19 +1634,9 @@ impl Render for MenuView {
             .when(above, |this| this.justify_end())
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|_, _, window, _| window.remove_window()),
+                cx.listener(|this, _, window, cx| this.close(window, cx)),
             )
-            .child(panel.with_animation(
-                "brainz-menu-open",
-                Animation::new(MENU_OPEN).with_easing(ease_out_quint()),
-                move |panel, delta| {
-                    // Starts tucked toward the avatar and slides out of it.
-                    let offset = (1. - delta) * MENU_SLIDE;
-                    panel
-                        .opacity(delta)
-                        .top(px(if above { offset } else { -offset }))
-                },
-            ))
+            .child(clip)
     }
 }
 
