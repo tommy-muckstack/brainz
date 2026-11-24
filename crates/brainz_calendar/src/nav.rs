@@ -152,19 +152,21 @@ pub fn render(workspace: &WeakEntity<Workspace>, cx: &mut App) -> gpui::AnyEleme
         .into_any_element()
 }
 
-/// The small heading between the navigation and the file tree.
-pub fn render_tree_heading(cx: &mut App) -> gpui::AnyElement {
-    let _ = cx;
-    div()
+/// The small heading between the navigation and the file tree. `end` sits
+/// at the right, for the hide/show toggle.
+pub fn render_tree_heading(end: Option<gpui::AnyElement>) -> gpui::AnyElement {
+    h_flex()
         .w_full()
         .pl(px(17.))
         .pr(px(9.))
         .pt_3()
         .pb_1()
+        .justify_between()
         .child(
             Label::new("Notes")
                 .size(LabelSize::Small)
                 .color(Color::Placeholder),
         )
+        .children(end)
         .into_any_element()
 }

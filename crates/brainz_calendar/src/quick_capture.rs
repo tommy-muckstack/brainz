@@ -574,6 +574,43 @@ mod native {
         }
     }
 
+    /// A small unplanned beat the avatar may play once per idle loop, so it
+    /// does not repeat the same script every time round.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub(super) enum IdleBeat {
+        /// A little bounce on the spot.
+        Hop,
+        /// A quick wobble, squashing side to side.
+        Wiggle,
+        /// A glance off to one side with a raised brow.
+        Glance,
+    }
+
+    /// Picks this loop's beat, or none. Two loops in three get one, and the
+    /// beat itself rotates, so the avatar fidgets "here and there".
+    pub(super) fn idle_beat(cycle: u64) -> Option<IdleBeat> {
+        let mixed = cycle
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .rotate_left(29)
+            .wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        match (mixed >> 32) % 6 {
+            0 => Some(IdleBeat::Hop),
+            1 => Some(IdleBeat::Wiggle),
+            2 => Some(IdleBeat::Glance),
+            _ => None,
+        }
+    }
+
+    /// How strongly `beat` is playing at `time` (0 to 1) within the loop.
+    /// Each beat sits in a quiet stretch, clear of blinks and the other looks.
+    pub(super) fn beat_strength(beat: IdleBeat, time: f32) -> f32 {
+        match beat {
+            IdleBeat::Hop => hold(time, 22.0, 23.2, 0.2),
+            IdleBeat::Wiggle => hold(time, 16.2, 17.4, 0.2),
+            IdleBeat::Glance => hold(time, 29.6, 31.0, 0.25),
+        }
+    }
+
     fn lerp(from: f32, to: f32, amount: f32) -> f32 {
         from + (to - from) * amount
     }
@@ -832,7 +869,17 @@ mod native {
                     Animation::new(AVATAR_LOOP).repeat(),
                     move |this, delta| {
                         let time = delta * AVATAR_LOOP.as_secs_f32();
-                        let pose = trick(born.elapsed().as_secs_f32());
+                        let mut pose = trick(born.elapsed().as_secs_f32());
+                        let cycle =
+                            (born.elapsed().as_secs_f32() / AVATAR_LOOP.as_secs_f32()) as u64;
+                        let beat = idle_beat(cycle);
+                        let beat_amount = beat.map_or(0., |beat| beat_strength(beat, time));
+                        if let Some(IdleBeat::Hop) = beat {
+                            pose.hop += beat_amount * AVATAR_HOP * 0.7;
+                        }
+                        if let Some(IdleBeat::Wiggle) = beat {
+                            pose.squash += (time * 9.).sin() * beat_amount * 0.45;
+                        }
                         // A turning solid keeps its depth edge-on; the face
                         // rides round the curve, squeezing towards the edge
                         // and fading out before the back comes round.
@@ -873,6 +920,13 @@ mod native {
                             look_y = lerp(look_y, y, 0.85);
                         }
                         let (mut left_brow, mut right_brow) = brow_lift(time);
+                        if let Some(IdleBeat::Glance) = beat {
+                            // Glance towards the side this cycle picks, and
+                            // lift the brow that goes with it.
+                            let side = if cycle.is_multiple_of(2) { -1. } else { 1. };
+                            look_x = (look_x + side * beat_amount * 0.8).clamp(-1., 1.);
+                            right_brow += beat_amount * 0.5;
+                        }
                         let mut squinting = squint(time);
                         let mut winking = wink(time);
                         let mut cheer_hop = 0.;
@@ -1171,6 +1225,19 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
+    #[test]
+    fn idle_beats_are_occasional_and_vary() {
+        use native::{IdleBeat, beat_strength, idle_beat};
+        let beats: Vec<_> = (0..60).map(idle_beat).collect();
+        let quiet = beats.iter().filter(|beat| beat.is_none()).count();
+        assert!(quiet > 0 && quiet < beats.len() / 2, "{quiet} quiet loops");
+        assert!(beats.contains(&Some(IdleBeat::Hop)));
+        assert!(beats.contains(&Some(IdleBeat::Wiggle)));
+        assert!(beats.contains(&Some(IdleBeat::Glance)));
+        assert_eq!(beat_strength(IdleBeat::Hop, 0.), 0.);
+        assert!(beat_strength(IdleBeat::Wiggle, 16.8) > 0.99);
+    }
+
     #[test]
     fn eyes_follow_a_nearby_pointer_only() {
         use native::cursor_look;

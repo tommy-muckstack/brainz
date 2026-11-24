@@ -18,6 +18,7 @@ pub mod mcp;
 pub mod memory_share;
 pub mod myman;
 pub mod nav;
+pub mod sidebar_hide;
 pub mod new_note;
 pub mod note_history;
 pub mod ocr;

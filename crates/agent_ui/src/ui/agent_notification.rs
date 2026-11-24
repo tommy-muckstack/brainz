@@ -1,7 +1,7 @@
 use gpui::{
-    App, Context, EventEmitter, IntoElement, PlatformDisplay, Size, Window,
-    WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowKind, WindowOptions,
-    linear_color_stop, linear_gradient, point,
+    Animation, AnimationExt, App, Context, EventEmitter, IntoElement, PlatformDisplay, Size,
+    Window, WindowBackgroundAppearance, WindowBounds, WindowDecorations, WindowKind, WindowOptions,
+    linear_color_stop, linear_gradient, point, relative,
 };
 use release_channel::ReleaseChannel;
 use std::{rc::Rc, time::Duration};
@@ -15,7 +15,12 @@ pub struct AgentNotification {
     /// Brainz: offers a "Yes" button that approves the waiting tool call
     /// without switching to the conversation.
     can_allow: bool,
+    /// Brainz: set when the popup auto-dismisses; drives the progress bar.
+    auto_dismiss_after: Option<Duration>,
 }
+
+/// How long a routine popup stays on screen before it dismisses itself.
+const AUTO_DISMISS_AFTER: Duration = Duration::from_secs(4);
 
 impl AgentNotification {
     pub fn new(
@@ -30,6 +35,7 @@ impl AgentNotification {
             icon,
             project_name: project_name.map(|name| name.into()),
             can_allow: false,
+            auto_dismiss_after: None,
         }
     }
 
@@ -38,10 +44,11 @@ impl AgentNotification {
         self
     }
 
-    pub fn auto_dismiss(self, requires_response: bool, cx: &mut Context<Self>) -> Self {
+    pub fn auto_dismiss(mut self, requires_response: bool, cx: &mut Context<Self>) -> Self {
         if !requires_response && !self.can_allow {
+            self.auto_dismiss_after = Some(AUTO_DISMISS_AFTER);
             cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(Duration::from_secs(5)).await;
+                cx.background_executor().timer(AUTO_DISMISS_AFTER).await;
                 if let Some(this) = this.upgrade() {
                     this.update(cx, |this, cx| this.dismiss(cx));
                 }
@@ -105,7 +112,7 @@ mod tests {
     use std::cell::Cell;
 
     #[gpui::test]
-    fn routine_notification_expires_after_five_seconds(cx: &mut TestAppContext) {
+    fn routine_notification_expires_after_four_seconds(cx: &mut TestAppContext) {
         let dismissed = Rc::new(Cell::new(false));
         let notification = cx.new(|cx| {
             AgentNotification::new("Done", None, IconName::Check, None::<SharedString>)
@@ -122,7 +129,7 @@ mod tests {
             })
         });
         cx.run_until_parked();
-        cx.executor().advance_clock(Duration::from_secs(4));
+        cx.executor().advance_clock(Duration::from_secs(3));
         cx.run_until_parked();
         assert!(!dismissed.get());
         cx.executor().advance_clock(Duration::from_secs(1));
@@ -191,8 +198,13 @@ impl Render for AgentNotification {
                 ))
         };
 
+        let accent = cx.theme().colors().text_accent;
+        let auto_dismiss_after = self.auto_dismiss_after;
+
         h_flex()
             .id("agent-notification")
+            .relative()
+            .overflow_hidden()
             .size_full()
             .p_3()
             .gap_4()
@@ -313,6 +325,24 @@ impl Render for AgentNotification {
                             })),
                     )
                 }
+            })
+            // Brainz: a thin bar along the bottom drains over the auto-dismiss
+            // delay, so it is clear how long the popup has left.
+            .when_some(auto_dismiss_after, |this, duration| {
+                this.child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .h(px(2.))
+                        .w_full()
+                        .bg(accent)
+                        .with_animation(
+                            "agent-notification-progress",
+                            Animation::new(duration),
+                            |bar, delta| bar.w(relative(1. - delta)),
+                        ),
+                )
             })
     }
 }

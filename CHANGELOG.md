@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.1.75 (2026-11-23)
+
+### Added
+
+- Notes: hide items from the sidebar you don't need. Right-click a file or folder and choose "Hide from Sidebar"; hiding a folder hides what's inside it. The eye icon in the Notes heading shows or hides them again. This is per Mac and never touches the brain.
+- Avatar: now and then the avatar fidgets on its own, with a little hop, a wobble or a glance to one side.
+
+### Changed
+
+- Notifications: routine popups close after 4 seconds, with a thin bar along the bottom that drains as they go.
+- Themes: people are no longer listed as themes of their own. They still appear in the people column of the themes they belong to.
+
 ## 0.1.74 (2026-11-17)
 
 ### Added

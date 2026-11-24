@@ -148,6 +148,8 @@ pub struct ProjectPanel {
     _brainz_sync_subscription: Option<Subscription>,
     _brainz_prep_subscription: Option<Subscription>,
     _brainz_mcp_subscription: Option<Subscription>,
+    /// Brainz: reveals items hidden from the Notes tree.
+    brainz_show_all: bool,
     _brainz_decay_subscription: Option<Subscription>,
     rendered_entries_len: usize,
     folded_directory_drag_target: Option<FoldedDirectoryDragTarget>,
@@ -906,6 +908,7 @@ impl ProjectPanel {
                 _brainz_sync_subscription: None,
                 _brainz_prep_subscription: None,
                 _brainz_mcp_subscription: None,
+                brainz_show_all: brainz_calendar::sidebar_hide::show_all(),
                 _brainz_decay_subscription: None,
                 fs: workspace.app_state().fs.clone(),
                 focus_handle,
@@ -1142,6 +1145,26 @@ impl ProjectPanel {
                 .is_some_and(|context_menu| context_menu.menu.focus_handle(cx).is_focused(window))
     }
 
+    /// Brainz: hides an entry (and everything in it) from the Notes tree.
+    fn brainz_hide_entry(
+        &mut self,
+        root: &Path,
+        relative: &RelPath,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        brainz_calendar::sidebar_hide::hide(root, &relative.as_unix_str());
+        self.update_visible_entries(None, false, false, window, cx);
+    }
+
+    /// Brainz: flips between hiding hidden items and showing them.
+    fn brainz_toggle_show_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.brainz_show_all = !self.brainz_show_all;
+        brainz_calendar::sidebar_hide::set_show_all(self.brainz_show_all);
+        self.update_visible_entries(None, false, false, window, cx);
+        cx.notify();
+    }
+
     fn deploy_context_menu(
         &mut self,
         placement: ContextMenuPlacement,
@@ -1165,6 +1188,10 @@ impl ProjectPanel {
         if let Some((worktree, entry)) = self.selected_sub_entry(cx) {
             let auto_fold_dirs = ProjectPanelSettings::get_global(cx).auto_fold_dirs;
             let worktree = worktree.read(cx);
+            // Brainz: what "Hide from Sidebar" needs for this entry.
+            let panel = cx.weak_entity();
+            let root = worktree.abs_path();
+            let relative = entry.path.clone();
             let is_root = Some(entry) == worktree.root_entry();
             let is_dir = entry.is_dir();
             let is_foldable = auto_fold_dirs && self.is_foldable(entry, worktree);
@@ -1330,6 +1357,24 @@ impl ProjectPanel {
                             })
                             .when(!is_root && !is_collab, |menu| {
                                 menu.action("Trash", Box::new(Trash { skip_prompt: false }))
+                            })
+                            .when(!is_root && !is_collab, |menu| {
+                                let panel = panel.clone();
+                                let root = root.clone();
+                                let relative = relative.clone();
+                                menu.separator().entry(
+                                    "Hide from Sidebar",
+                                    None,
+                                    move |window, cx| {
+                                        panel
+                                            .update(cx, |this, cx| {
+                                                this.brainz_hide_entry(
+                                                    &root, &relative, window, cx,
+                                                );
+                                            })
+                                            .ok();
+                                    },
+                                )
                             })
                             .when(!is_root, |menu| {
                                 menu.action("Delete", Box::new(Delete { skip_prompt: false }))
@@ -4609,12 +4654,19 @@ impl ProjectPanel {
             .collect();
         let hide_root = settings.hide_root && visible_worktrees.len() == 1;
         let hide_hidden = settings.hide_hidden;
+        let brainz_show_all = self.brainz_show_all;
 
         let visible_entries_task = cx.spawn_in(window, async move |this, cx| {
             let new_state = cx
                 .background_spawn(async move {
                     for worktree_snapshot in visible_worktrees {
                         let worktree_id = worktree_snapshot.id();
+                        // Brainz: items the user hid from the tree.
+                        let brainz_hidden = if brainz_show_all {
+                            Default::default()
+                        } else {
+                            brainz_calendar::sidebar_hide::hidden_in(&worktree_snapshot.abs_path())
+                        };
 
                         let mut new_entry_parent_id = None;
                         let mut new_entry_kind = EntryKind::Dir;
@@ -4708,6 +4760,10 @@ impl ProjectPanel {
                             if (!hide_gitignore || !entry.is_ignored)
                                 && (!hide_hidden || !entry.is_hidden)
                                 && !brainz_is_config_file(&entry.path)
+                                && !brainz_calendar::sidebar_hide::is_hidden(
+                                    &brainz_hidden,
+                                    &entry.path.as_unix_str(),
+                                )
                             {
                                 visible_worktree_entries.push(entry.to_owned());
                             }
@@ -7440,7 +7496,28 @@ impl Render for ProjectPanel {
             cx,
         );
         let brainz_nav = brainz_calendar::nav::render(&self.workspace, cx);
-        let brainz_tree_heading = brainz_calendar::nav::render_tree_heading(cx);
+        let brainz_show_all = self.brainz_show_all;
+        let brainz_tree_heading = brainz_calendar::nav::render_tree_heading(Some(
+            IconButton::new(
+                "brainz-toggle-hidden",
+                if brainz_show_all {
+                    IconName::EyeOff
+                } else {
+                    IconName::Eye
+                },
+            )
+            .icon_size(IconSize::XSmall)
+            .icon_color(Color::Muted)
+            .tooltip(Tooltip::text(if brainz_show_all {
+                "Hide items again"
+            } else {
+                "Show hidden items"
+            }))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.brainz_toggle_show_all(window, cx);
+            }))
+            .into_any_element(),
+        ));
         if self._brainz_decay_subscription.is_none()
             && let Some(state) = brainz_calendar::status_decay::state(cx)
         {

@@ -1406,8 +1406,9 @@ pub fn run_pass(repo: &Path) -> Result<Signals> {
             if is_noise_source(&files, &config.themes.noise_dirs) {
                 return false;
             }
-            // A person met once belongs in another theme's people column.
-            if agg.category == ThemeCategory::People && agg.weeks.len() < MIN_WEEKS {
+            // People are shown inside the themes they appear in, never as a
+            // theme of their own; only a pinned person still gets a row.
+            if agg.category == ThemeCategory::People {
                 return false;
             }
             true
