@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Avatar menu: recordings from My Man show up in the list again, alongside screenshots. Screenshots were crowding them out.
+
 ## 0.1.79 (2026-11-25)
 
 ### Changed

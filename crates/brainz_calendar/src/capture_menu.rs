@@ -143,16 +143,22 @@ fn folder_captures(folder: &Path, kind: CaptureKind) -> Vec<Capture> {
         .collect()
 }
 
-/// The newest screenshots and recordings My Man still has files for.
+/// The newest screenshots and recordings My Man still has files for. Each
+/// kind is capped on its own, so the far more numerous screenshots cannot
+/// push recordings out of the list.
 fn recent_captures(myman: &MyMan) -> Vec<Capture> {
-    let mut captures = folder_captures(&myman.join("screenshots"), CaptureKind::Screenshot);
-    captures.extend(folder_captures(
-        &myman.join("recordings"),
-        CaptureKind::Recording,
-    ));
-    captures.retain(|capture| capture.file.is_file());
+    let mut captures = Vec::new();
+    for (folder, kind) in [
+        ("screenshots", CaptureKind::Screenshot),
+        ("recordings", CaptureKind::Recording),
+    ] {
+        let mut of_kind = folder_captures(&myman.join(folder), kind);
+        of_kind.retain(|capture| capture.file.is_file());
+        of_kind.sort_by_key(|capture| std::cmp::Reverse(capture.captured));
+        of_kind.truncate(CAPTURE_LIMIT);
+        captures.extend(of_kind);
+    }
     captures.sort_by_key(|capture| std::cmp::Reverse(capture.captured));
-    captures.truncate(CAPTURE_LIMIT);
     captures
 }
 
