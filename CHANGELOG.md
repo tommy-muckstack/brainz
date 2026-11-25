@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- Avatar: a little arm pops stickies in and out. A new sticky or a duplicate puffs in as its window opens, and a deleted one puffs out before its window closes.
+- Stickies: type [] for a checkbox and click its box to tick it off. A checked line greys out and is struck through, and clicking again unticks it. Enter continues a bullet or checkbox onto the next line.
+
+### Fixed
+
+- Stickies: Enter now starts a new line in a note.
+
 ## 0.1.77 (2026-11-25)
 
 ### Changed

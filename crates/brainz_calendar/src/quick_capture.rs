@@ -116,7 +116,19 @@ pub enum Reaction {
     Cheer,
     /// A quick wink, as a capture is saved.
     Wink,
+    /// The arm reaches out and a puff marks a sticky popping in.
+    PopIn,
+    /// The arm reaches out and a puff marks a sticky going away.
+    PopOut,
 }
+
+/// How long the arm takes to reach out to a sticky. A new sticky's window opens
+/// as the puff lands, right after this.
+pub const ARM_REACH: std::time::Duration = std::time::Duration::from_millis(350);
+/// How long the puff plays once the arm is out.
+pub const ARM_PUFF: std::time::Duration = std::time::Duration::from_millis(300);
+/// How long the arm takes to draw back after the puff.
+pub const ARM_RETRACT: std::time::Duration = std::time::Duration::from_millis(250);
 
 #[cfg(target_os = "macos")]
 pub fn react(cx: &mut gpui::App, reaction: Reaction) {
@@ -596,7 +608,34 @@ mod native {
             Greet => hold(elapsed, 0., 1.8, 0.25),
             Cheer => hold(elapsed, 0., 1.3, 0.2),
             Wink => hold(elapsed, 0., 0.8, 0.12),
+            PopIn | PopOut => arm_reach(elapsed),
         }
+    }
+
+    /// How far the arm has reached out `elapsed` seconds into a pop: it eases
+    /// out to reach the note, holds while the puff plays, then draws back.
+    pub(super) fn arm_reach(elapsed: f32) -> f32 {
+        let reach = super::ARM_REACH.as_secs_f32();
+        let puffed = reach + super::ARM_PUFF.as_secs_f32();
+        let done = puffed + super::ARM_RETRACT.as_secs_f32();
+        if elapsed <= 0. || elapsed >= done {
+            0.
+        } else if elapsed < reach {
+            1. - (1. - elapsed / reach).powi(3)
+        } else if elapsed < puffed {
+            1.
+        } else {
+            1. - (elapsed - puffed) / super::ARM_RETRACT.as_secs_f32()
+        }
+    }
+
+    /// Where the puff is through its life, 0 to 1, or none outside it.
+    pub(super) fn puff_progress(elapsed: f32) -> Option<f32> {
+        let reach = super::ARM_REACH.as_secs_f32();
+        let puffed = reach + super::ARM_PUFF.as_secs_f32();
+        (reach..puffed)
+            .contains(&elapsed)
+            .then(|| (elapsed - reach) / super::ARM_PUFF.as_secs_f32())
     }
 
     /// A small unplanned beat the avatar may play once per idle loop, so it
@@ -957,6 +996,8 @@ mod native {
                         let mut squinting = squint(time);
                         let mut winking = wink(time);
                         let mut cheer_hop = 0.;
+                        let mut arm = 0.;
+                        let mut puff = None;
                         if let Some((reaction, began)) = reaction {
                             let elapsed = began.elapsed().as_secs_f32();
                             let weight = reaction_weight(reaction, elapsed);
@@ -965,6 +1006,7 @@ mod native {
                                 super::Reaction::Greet => (Some((0., 0.)), 1., 0.5),
                                 super::Reaction::Cheer => (None, 0.8, 1.),
                                 super::Reaction::Wink => (None, 0., 0.),
+                                super::Reaction::PopIn | super::Reaction::PopOut => (None, 0.6, 0.),
                             };
                             if let Some((x, y)) = target {
                                 look_x = lerp(look_x, x, weight);
@@ -980,6 +1022,10 @@ mod native {
                             }
                             if reaction == super::Reaction::Cheer && elapsed < 1.3 {
                                 cheer_hop = (elapsed / 1.3 * std::f32::consts::PI).sin() * 7.;
+                            }
+                            if matches!(reaction, super::Reaction::PopIn | super::Reaction::PopOut) {
+                                arm = arm_reach(elapsed);
+                                puff = puff_progress(elapsed);
                             }
                         }
                         let look = look_x * LOOK_X;
@@ -1051,6 +1097,48 @@ mod native {
                                 .child(brow("icons/brainz/avatar-brow-right.svg", right_brow))
                                 .child(eye(45., open.min(1. - winking)))
                                 .child(eye(75., open))
+                        })
+                        // The arm: out from the side of the body, a hand at
+                        // its end, and a puff that spreads and fades there.
+                        .when(arm > 0., |this| {
+                            let length = 7. * arm;
+                            let hand_x = 80. + length;
+                            let hand_y = top + 24.5;
+                            this.child(
+                                div()
+                                    .absolute()
+                                    .left(px(76.))
+                                    .top(px(hand_y - 2.5))
+                                    .w(px(4. + length))
+                                    .h(px(5.))
+                                    .rounded_full()
+                                    .bg(front),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(px(hand_x - 3.5))
+                                    .top(px(hand_y - 3.5))
+                                    .size(px(7.))
+                                    .rounded_full()
+                                    .bg(front),
+                            )
+                        })
+                        .when_some(puff, |this, progress| {
+                            // The character sits 6 px into a 96 px window, so
+                            // the puff must stay inside 8 px of the body's edge.
+                            let size = 5. + 3. * progress;
+                            let (center_x, center_y) = (86., top + 24.5);
+                            this.child(
+                                div()
+                                    .absolute()
+                                    .left(px(center_x - size / 2.))
+                                    .top(px(center_y - size / 2.))
+                                    .size(px(size))
+                                    .rounded_full()
+                                    .border_2()
+                                    .border_color(ink.opacity(1. - progress)),
+                            )
                         })
                     },
                 );
@@ -1222,6 +1310,32 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn arm_reaches_out_puffs_then_draws_back() {
+        use native::{arm_reach, puff_progress};
+        let reach = ARM_REACH.as_secs_f32();
+        let puffed = reach + ARM_PUFF.as_secs_f32();
+        let done = puffed + ARM_RETRACT.as_secs_f32();
+        // At rest before and after the pop.
+        assert_eq!(arm_reach(0.), 0.);
+        assert_eq!(arm_reach(done), 0.);
+        // Out by the time the reach ends, and held through the puff.
+        assert!((arm_reach(reach) - 1.).abs() < 1e-6);
+        assert_eq!(arm_reach(reach + ARM_PUFF.as_secs_f32() / 2.), 1.);
+        // Drawing back is gradual, not a snap.
+        let drawing_back = arm_reach(puffed + ARM_RETRACT.as_secs_f32() / 2.);
+        assert!(drawing_back > 0. && drawing_back < 1.);
+        // Reaching out never goes backwards.
+        let steps: Vec<f32> = (0..=40).map(|step| arm_reach(step as f32 / 100.)).collect();
+        assert!(steps.windows(2).all(|pair| pair[1] >= pair[0]));
+        // The puff plays only between the reach and the end of the puff.
+        assert_eq!(puff_progress(reach - 0.01), None);
+        assert!(puff_progress(reach).unwrap().abs() < 1e-6);
+        assert!((puff_progress(reach + ARM_PUFF.as_secs_f32() / 2.).unwrap() - 0.5).abs() < 1e-4);
+        assert_eq!(puff_progress(puffed), None);
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

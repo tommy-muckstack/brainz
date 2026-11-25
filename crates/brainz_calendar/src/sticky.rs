@@ -62,6 +62,12 @@ fn save(saved: &Saved) {
 
 pub fn init(cx: &mut App) {
     cx.set_global(Stickies { saved: load() });
+    // The note's editor is auto-height, which has no plain Enter binding of its own.
+    cx.bind_keys([gpui::KeyBinding::new(
+        "enter",
+        editor::actions::Newline,
+        Some("BrainzSticky > Editor"),
+    )]);
 }
 
 /// Every sticky, in the order they were made.
@@ -79,7 +85,8 @@ fn mutate<R>(cx: &mut App, change: impl FnOnce(&mut Saved) -> R) -> R {
     result
 }
 
-/// Makes a new sticky near the top of the primary screen, shown at once.
+/// Makes a new sticky near the top of the primary screen. The avatar's arm
+/// pops it in, and the window opens once the puff lands.
 pub fn add(cx: &mut App) {
     let (x, y) = cx
         .primary_display()
@@ -104,7 +111,17 @@ pub fn add(cx: &mut App) {
             height: DEFAULT_SIZE.1,
         });
     });
-    cx.defer(sync);
+    crate::quick_capture::react(cx, crate::quick_capture::Reaction::PopIn);
+    sync_after(cx, crate::quick_capture::ARM_REACH);
+}
+
+/// Runs `sync` once `delay` has passed, so windows open or close on the puff.
+fn sync_after(cx: &mut App, delay: std::time::Duration) {
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(delay).await;
+        cx.update(sync);
+    })
+    .detach();
 }
 
 /// Copies a sticky's text into a new note just beside it.
@@ -122,13 +139,18 @@ pub fn duplicate(id: u64, cx: &mut App) {
             ..original
         });
     });
-    cx.defer(sync);
+    crate::quick_capture::react(cx, crate::quick_capture::Reaction::PopIn);
+    sync_after(cx, crate::quick_capture::ARM_REACH);
 }
 
 /// Throws a sticky away, text and all.
 pub fn delete(id: u64, cx: &mut App) {
     mutate(cx, |saved| saved.stickies.retain(|sticky| sticky.id != id));
-    cx.defer(sync);
+    crate::quick_capture::react(cx, crate::quick_capture::Reaction::PopOut);
+    sync_after(
+        cx,
+        crate::quick_capture::ARM_REACH + crate::quick_capture::ARM_PUFF,
+    );
 }
 
 /// Shows or hides one sticky. A hidden sticky keeps its text and place.
@@ -181,6 +203,11 @@ pub fn refresh(cx: &mut App) {
 }
 
 const BULLET: &str = "• ";
+const BOX: &str = "☐ ";
+const CHECKED: &str = "☑ ";
+/// Lines that carry their marker onto the next line when Enter is pressed,
+/// with the marker the new line starts with.
+const CONTINUED_MARKERS: [(&str, &str); 3] = [(BULLET, BULLET), (BOX, BOX), (CHECKED, BOX)];
 
 /// The byte offset where `new` gained one newline over `old`, if that is all
 /// that changed. Typing the newline is the only way the text grows that way.
@@ -198,10 +225,11 @@ fn inserted_newline(old: &str, new: &str) -> Option<usize> {
     (new.as_bytes().get(prefix) == Some(&b'\n') && rest_matches).then_some(prefix)
 }
 
-/// Edits that turn typed "- " or "* " at the start of a line into a round
-/// bullet, and carry a bullet onto the next line when Enter is pressed after
-/// one. Pressing Enter on an empty bullet ends the list instead.
-/// Each edit is `(start, end, replacement)` in byte offsets of `new`.
+/// Edits that turn typed "- " or "* " into a round bullet, "[]" or "[ ]" into
+/// an open checkbox and "[x]" into a checked one, and carry a bullet or
+/// checkbox onto the next line when Enter is pressed after one. Enter on an
+/// empty item ends the list instead. Each edit is `(start, end, replacement)`
+/// in byte offsets of `new`.
 fn bullet_edits(old: &str, new: &str) -> Vec<(usize, usize, &'static str)> {
     let mut edits = Vec::new();
     let mut line_start = 0;
@@ -209,24 +237,72 @@ fn bullet_edits(old: &str, new: &str) -> Vec<(usize, usize, &'static str)> {
         if line.starts_with("- ") || line.starts_with("* ") {
             edits.push((line_start, line_start + 1, "•"));
         }
+        for (token, replacement) in [
+            ("[ ]", BOX),
+            ("[]", BOX),
+            ("[x]", CHECKED),
+            ("[X]", CHECKED),
+        ] {
+            if let Some(index) = line.find(token) {
+                // The space that follows a typed box is part of the box.
+                let mut end = index + token.len();
+                if line[end..].starts_with(' ') {
+                    end += 1;
+                }
+                edits.push((line_start + index, line_start + end, replacement));
+                break;
+            }
+        }
         line_start += line.len() + 1;
     }
     if let Some(newline) = inserted_newline(old, new) {
-        let before = &new[..newline];
-        let previous_start = before.rfind('\n').map_or(0, |index| index + 1);
+        let previous_start = new[..newline].rfind('\n').map_or(0, |index| index + 1);
         let previous = &new[previous_start..newline];
-        if previous == BULLET {
-            edits.push((previous_start, newline, ""));
-        } else if previous.starts_with(BULLET) {
-            edits.push((newline + 1, newline + 1, BULLET));
+        match CONTINUED_MARKERS
+            .iter()
+            .find(|(marker, _)| previous.starts_with(marker))
+        {
+            Some((marker, next)) if previous == *marker => {
+                edits.push((previous_start, newline, ""));
+            }
+            Some((_, next)) => edits.push((newline + 1, newline + 1, next)),
+            None => {}
         }
     }
     edits
 }
 
+/// The byte offset of each checkbox that starts a line, and whether it is checked.
+fn checkboxes(text: &str) -> Vec<(usize, bool)> {
+    let mut boxes = Vec::new();
+    let mut line_start = 0;
+    for line in text.split('\n') {
+        if line.starts_with(BOX) {
+            boxes.push((line_start, false));
+        } else if line.starts_with(CHECKED) {
+            boxes.push((line_start, true));
+        }
+        line_start += line.len() + 1;
+    }
+    boxes
+}
+
+/// The byte range of every checked line, so its text can be struck through.
+fn checked_lines(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut lines = Vec::new();
+    let mut line_start = 0;
+    for line in text.split('\n') {
+        if line.starts_with(CHECKED) {
+            lines.push(line_start..line_start + line.len());
+        }
+        line_start += line.len() + 1;
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
-    use super::bullet_edits;
+    use super::{bullet_edits, checkboxes, checked_lines};
 
     #[test]
     fn dash_and_star_become_bullets_only_at_the_start_of_a_line() {
@@ -237,8 +313,20 @@ mod tests {
     }
 
     #[test]
+    fn typed_boxes_become_checkboxes_and_absorb_their_space() {
+        assert_eq!(bullet_edits("", "[] buy milk"), vec![(0, 3, "☐ ")]);
+        assert_eq!(bullet_edits("", "[ ]x"), vec![(0, 3, "☐ ")]);
+        assert_eq!(bullet_edits("", "[x] done"), vec![(0, 4, "☑ ")]);
+    }
+
+    #[test]
     fn enter_after_a_bullet_starts_the_next_bullet() {
         assert_eq!(bullet_edits("• a", "• a\n"), vec![(6, 6, "• ")]);
+    }
+
+    #[test]
+    fn enter_after_a_checkbox_starts_an_open_checkbox() {
+        assert_eq!(bullet_edits("☑ a", "☑ a\n"), vec![(6, 6, "☐ ")]);
     }
 
     #[test]
@@ -250,6 +338,13 @@ mod tests {
     fn ordinary_typing_changes_nothing() {
         assert_eq!(bullet_edits("ab", "abc"), vec![]);
         assert_eq!(bullet_edits("plain", "plain\n"), vec![]);
+    }
+
+    #[test]
+    fn checkboxes_and_checked_lines_are_found_by_line() {
+        let text = "☐ open\nnote\n☑ done";
+        assert_eq!(checkboxes(text), vec![(0, false), (14, true)]);
+        assert_eq!(checked_lines(text), vec![14..22]);
     }
 }
 
@@ -266,6 +361,14 @@ mod windows {
     use ui::prelude::*;
     use util::ResultExt as _;
 
+    use std::{
+        cell::Cell,
+        rc::Rc,
+    };
+
+    use editor::{MultiBufferOffset, display_map::HighlightKey};
+    use gpui::{HighlightStyle, StrikethroughStyle};
+
     use super::{Sticky, bullet_edits};
 
     /// How far the pointer must travel with the button down before a press
@@ -279,6 +382,9 @@ mod windows {
         width: px(140.),
         height: px(90.),
     };
+    /// The area around a checkbox's first character that counts as a click on it.
+    const BOX_HIT_WIDTH: f32 = 22.;
+    const BOX_HIT_HEIGHT: f32 = 24.;
     const INK: u32 = 0x2b2b2b;
     /// Ink for a body too dark for [`INK`].
     const LIGHT_INK: u32 = 0xf3f0e8;
@@ -345,10 +451,46 @@ mod windows {
         .log_err();
     }
 
+    /// The ink for the note's text on the avatar's colour.
+    fn ink() -> Hsla {
+        let color: Hsla = rgb(crate::quick_capture::avatar_swatch()).into();
+        rgb(if color.l < 0.3 { LIGHT_INK } else { INK }).into()
+    }
+
+    /// Greys out and strikes through each checked line.
+    fn strike_checked(editor: &mut Editor, cx: &mut Context<Editor>) {
+        let text = editor.text(cx);
+        let buffer = editor.buffer().read(cx).snapshot(cx);
+        let ranges = super::checked_lines(&text)
+            .into_iter()
+            .map(|range| {
+                buffer.anchor_before(MultiBufferOffset(range.start))
+                    ..buffer.anchor_before(MultiBufferOffset(range.end))
+            })
+            .collect::<Vec<_>>();
+        let faded = ink().opacity(0.5);
+        editor.clear_highlights(HighlightKey::Editor, cx);
+        editor.highlight_text(
+            HighlightKey::Editor,
+            ranges,
+            HighlightStyle {
+                color: Some(faded),
+                strikethrough: Some(StrikethroughStyle {
+                    thickness: px(1.),
+                    color: Some(faded),
+                }),
+                ..Default::default()
+            },
+            cx,
+        );
+    }
+
     /// One sticky note: a grip to drag by, the text, and a corner to resize.
     pub struct StickyView {
         id: u64,
         editor: Entity<Editor>,
+        /// Where the editor was last painted, so a click can be matched to a box.
+        editor_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
         grip_pressed_at: Option<Point<Pixels>>,
         /// The text as of the last edit, to tell an Enter from other typing.
         last_text: String,
@@ -388,24 +530,24 @@ mod windows {
                         let previous = std::mem::replace(&mut this.last_text, text.clone());
                         super::set_text(id, text.clone(), cx);
                         let edits = bullet_edits(&previous, &text);
-                        if edits.is_empty() {
-                            return;
-                        }
                         // Deferred: the edit raises BufferEdited itself, and
                         // this event is still inside the editor's update.
                         let editor = editor.clone();
                         cx.defer(move |cx| {
                             editor.update(cx, |editor, cx| {
-                                editor.edit(
-                                    edits.into_iter().rev().map(|(start, end, replacement)| {
-                                        (
-                                            editor::MultiBufferOffset(start)
-                                                ..editor::MultiBufferOffset(end),
-                                            replacement,
-                                        )
-                                    }),
-                                    cx,
-                                );
+                                if !edits.is_empty() {
+                                    editor.edit(
+                                        edits.into_iter().rev().map(|(start, end, replacement)| {
+                                            (
+                                                editor::MultiBufferOffset(start)
+                                                    ..editor::MultiBufferOffset(end),
+                                                replacement,
+                                            )
+                                        }),
+                                        cx,
+                                    );
+                                }
+                                strike_checked(editor, cx);
                             });
                         });
                     }
@@ -423,15 +565,54 @@ mod windows {
                     cx,
                 );
             });
+            let styled = editor.clone();
+            cx.defer(move |cx| styled.update(cx, |editor, cx| strike_checked(editor, cx)));
             Self {
                 id,
                 editor,
+                editor_bounds: Rc::new(Cell::new(None)),
                 grip_pressed_at: None,
                 last_text: sticky.text.clone(),
                 resize_from: None,
                 _edits: edits,
                 _moved: moved,
             }
+        }
+
+        /// A click on a checkbox's box ticks or unticks it.
+        fn toggle_checkbox(
+            &mut self,
+            event: &MouseDownEvent,
+            window: &mut Window,
+            cx: &mut Context<Self>,
+        ) {
+            let Some(bounds) = self.editor_bounds.get() else {
+                return;
+            };
+            let local = event.position - bounds.origin;
+            let text = self.editor.read(cx).text(cx);
+            let boxes = super::checkboxes(&text);
+            self.editor.update(cx, |editor, cx| {
+                let snapshot = editor.snapshot(window, cx);
+                let buffer = editor.buffer().read(cx).snapshot(cx);
+                let clicked = boxes.into_iter().find_map(|(offset, checked)| {
+                    let anchor = buffer.anchor_before(MultiBufferOffset(offset));
+                    let point = editor.to_pixel_point(anchor, &snapshot, window, cx)?;
+                    Bounds::new(point, size(px(BOX_HIT_WIDTH), px(BOX_HIT_HEIGHT)))
+                        .contains(&local)
+                        .then_some((offset, checked))
+                });
+                if let Some((offset, checked)) = clicked {
+                    let glyph = if checked { "☐" } else { "☑" };
+                    editor.edit(
+                        [(
+                            MultiBufferOffset(offset)..MultiBufferOffset(offset + "☐".len()),
+                            glyph,
+                        )],
+                        cx,
+                    );
+                }
+            });
         }
 
         fn grip_press(&mut self, event: &MouseDownEvent, _: &mut Window, _: &mut Context<Self>) {
@@ -521,7 +702,9 @@ mod windows {
                     cx.listener(|this, _, _, _| this.resize_from = None),
                 );
 
+            let editor_bounds = self.editor_bounds.clone();
             v_flex()
+                .key_context("BrainzSticky")
                 .size_full()
                 .relative()
                 .bg(color)
@@ -532,12 +715,18 @@ mod windows {
                 .child(grip)
                 .child(
                     div()
+                        .on_children_prepainted(move |bounds, _, _| {
+                            if let Some(editor) = bounds.first() {
+                                editor_bounds.set(Some(*editor));
+                            }
+                        })
                         .id(("brainz-sticky-body", self.id))
                         .flex_1()
                         .min_h_0()
                         .px_3()
                         .pb_3()
                         .overflow_y_scroll()
+                        .on_mouse_down(MouseButton::Left, cx.listener(Self::toggle_checkbox))
                         .child(self.editor.clone()),
                 )
                 .child(resize)
