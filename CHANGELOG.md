@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.79 (2026-11-25)
+
 ### Changed
 
 - Avatar menu: the Stickies section is tidier. "+" in its heading makes a new sticky, each sticky is one row with its title, and duplicate and delete show when you hover over it. The eye button shows or hides a sticky, and hidden ones are greyed out.
