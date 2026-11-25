@@ -1253,6 +1253,8 @@ impl Render for MenuView {
         let colors = cx.theme().colors();
         let now = Local::now();
         let coming = agenda(&self.events, now);
+        let stickies = crate::sticky::list(cx);
+        let no_stickies = stickies.is_empty();
         let above = self.above;
         let nothing_to_show =
             self.editor.is_none() && self.events.is_empty() && self.captures.is_empty();
@@ -1572,15 +1574,34 @@ impl Render for MenuView {
                         })),
                 )
             })
-            .child(section("Stickies"))
             .child(
-                Button::new("brainz-sticky-new", "New sticky")
-                    .label_size(LabelSize::Small)
-                    .on_click(cx.listener(|_, _, _, cx| crate::sticky::add(cx))),
+                h_flex()
+                    .h(px(30.))
+                    .px_1()
+                    .justify_between()
+                    .items_end()
+                    .pb_1()
+                    .child(Label::new("Stickies").size(LabelSize::Small).color(Color::Muted))
+                    .child(
+                        IconButton::new("brainz-sticky-new", IconName::Plus)
+                            .icon_size(IconSize::Small)
+                            .tooltip(ui::Tooltip::text("New sticky"))
+                            .on_click(cx.listener(|_, _, _, cx| crate::sticky::add(cx))),
+                    ),
             )
-            .children(crate::sticky::list(cx).into_iter().map(|sticky| {
+            .when(no_stickies, |this| {
+                this.child(
+                    div().px_2().py_1().child(
+                        Label::new("No stickies yet. Pin a note over your screen with +.")
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    ),
+                )
+            })
+            .children(stickies.into_iter().map(|sticky| {
                 let id = sticky.id;
                 let shown = sticky.shown;
+                let group = SharedString::from(format!("brainz-sticky-row-{id}"));
                 let title = sticky
                     .text
                     .lines()
@@ -1588,39 +1609,53 @@ impl Render for MenuView {
                     .find(|line| !line.is_empty())
                     .unwrap_or("Empty sticky")
                     .to_owned();
+                let title_color = if shown { Color::Default } else { Color::Muted };
                 h_flex()
-                    .gap_1()
+                    .id(("brainz-sticky-row", id))
+                    .group(group.clone())
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .hover(|style| style.bg(cx.theme().colors().element_hover))
                     .child(
                         Label::new(title)
                             .size(LabelSize::Small)
+                            .color(title_color)
                             .truncate()
                             .flex_1(),
                     )
                     .child(
-                        Button::new(
+                        h_flex()
+                            .gap_0p5()
+                            .visible_on_hover(group)
+                            .child(
+                                IconButton::new(("brainz-sticky-copy", id), IconName::Copy)
+                                    .icon_size(IconSize::Small)
+                                    .tooltip(ui::Tooltip::text("Duplicate"))
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        crate::sticky::duplicate(id, cx)
+                                    })),
+                            )
+                            .child(
+                                IconButton::new(("brainz-sticky-remove", id), IconName::Trash)
+                                    .icon_size(IconSize::Small)
+                                    .tooltip(ui::Tooltip::text("Delete"))
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        crate::sticky::delete(id, cx)
+                                    })),
+                            ),
+                    )
+                    .child(
+                        IconButton::new(
                             ("brainz-sticky-toggle", id),
-                            if shown { "Hide" } else { "Show" },
+                            if shown { IconName::Eye } else { IconName::EyeOff },
                         )
-                        .label_size(LabelSize::Small)
+                        .icon_size(IconSize::Small)
+                        .tooltip(ui::Tooltip::text(if shown { "Hide" } else { "Show" }))
                         .on_click(cx.listener(move |_, _, _, cx| {
                             crate::sticky::set_shown(id, !shown, cx)
                         })),
-                    )
-                    .child(
-                        IconButton::new(("brainz-sticky-copy", id), IconName::Copy)
-                            .icon_size(IconSize::Small)
-                            .tooltip(ui::Tooltip::text("Duplicate"))
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                crate::sticky::duplicate(id, cx)
-                            })),
-                    )
-                    .child(
-                        IconButton::new(("brainz-sticky-remove", id), IconName::Close)
-                            .icon_size(IconSize::Small)
-                            .tooltip(ui::Tooltip::text("Delete"))
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                crate::sticky::delete(id, cx)
-                            })),
                     )
             }))
             .when_some(self.error.clone(), |this, error| {
