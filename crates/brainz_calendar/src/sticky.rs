@@ -180,22 +180,105 @@ pub fn refresh(cx: &mut App) {
     let _ = cx;
 }
 
+const BULLET: &str = "• ";
+
+/// The byte offset where `new` gained one newline over `old`, if that is all
+/// that changed. Typing the newline is the only way the text grows that way.
+fn inserted_newline(old: &str, new: &str) -> Option<usize> {
+    if new.len() != old.len() + 1 {
+        return None;
+    }
+    let prefix = old
+        .as_bytes()
+        .iter()
+        .zip(new.as_bytes())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let rest_matches = old.as_bytes()[prefix..] == new.as_bytes()[prefix + 1..];
+    (new.as_bytes().get(prefix) == Some(&b'\n') && rest_matches).then_some(prefix)
+}
+
+/// Edits that turn typed "- " or "* " at the start of a line into a round
+/// bullet, and carry a bullet onto the next line when Enter is pressed after
+/// one. Pressing Enter on an empty bullet ends the list instead.
+/// Each edit is `(start, end, replacement)` in byte offsets of `new`.
+fn bullet_edits(old: &str, new: &str) -> Vec<(usize, usize, &'static str)> {
+    let mut edits = Vec::new();
+    let mut line_start = 0;
+    for line in new.split('\n') {
+        if line.starts_with("- ") || line.starts_with("* ") {
+            edits.push((line_start, line_start + 1, "•"));
+        }
+        line_start += line.len() + 1;
+    }
+    if let Some(newline) = inserted_newline(old, new) {
+        let before = &new[..newline];
+        let previous_start = before.rfind('\n').map_or(0, |index| index + 1);
+        let previous = &new[previous_start..newline];
+        if previous == BULLET {
+            edits.push((previous_start, newline, ""));
+        } else if previous.starts_with(BULLET) {
+            edits.push((newline + 1, newline + 1, BULLET));
+        }
+    }
+    edits
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bullet_edits;
+
+    #[test]
+    fn dash_and_star_become_bullets_only_at_the_start_of_a_line() {
+        assert_eq!(
+            bullet_edits("", "- a\n* b\nc - d"),
+            vec![(0, 1, "•"), (4, 5, "•")]
+        );
+    }
+
+    #[test]
+    fn enter_after_a_bullet_starts_the_next_bullet() {
+        assert_eq!(bullet_edits("• a", "• a\n"), vec![(6, 6, "• ")]);
+    }
+
+    #[test]
+    fn enter_on_an_empty_bullet_ends_the_list() {
+        assert_eq!(bullet_edits("• a\n• ", "• a\n• \n"), vec![(6, 10, "")]);
+    }
+
+    #[test]
+    fn ordinary_typing_changes_nothing() {
+        assert_eq!(bullet_edits("ab", "abc"), vec![]);
+        assert_eq!(bullet_edits("plain", "plain\n"), vec![]);
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod windows {
     use editor::{Editor, EditorEvent};
     use gpui::{
-        AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, Hsla, MouseButton,
-        MouseDownEvent, MouseMoveEvent, Pixels, Point, Subscription, Window, WindowBackgroundAppearance,
-        WindowBounds, WindowKind, WindowOptions, point, px, rgb, size,
+        AnyWindowHandle, App, AppContext as _, Bounds, Context, CursorStyle, Entity, Hsla,
+        MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, Size, Subscription,
+        TextStyleRefinement, Window, WindowBackgroundAppearance, WindowBounds, WindowKind,
+        WindowOptions, point, px, rgb, size,
     };
+    use settings::Settings as _;
     use ui::prelude::*;
     use util::ResultExt as _;
 
-    use super::Sticky;
+    use super::{Sticky, bullet_edits};
 
     /// How far the pointer must travel with the button down before a press
-    /// on the header becomes a drag.
+    /// on the grip becomes a drag.
     const DRAG_DISTANCE: f32 = 4.;
+    /// The strip along the top that drags the note; the text never sits there.
+    const GRIP_HEIGHT: f32 = 14.;
+    /// The square in the bottom-right corner that resizes the note.
+    const RESIZE_HANDLE: f32 = 16.;
+    const MINIMUM_SIZE: Size<Pixels> = Size {
+        width: px(140.),
+        height: px(90.),
+    };
     const INK: u32 = 0x2b2b2b;
     /// Ink for a body too dark for [`INK`].
     const LIGHT_INK: u32 = 0xf3f0e8;
@@ -254,7 +337,7 @@ mod windows {
                 kind: WindowKind::PopUp,
                 is_movable: true,
                 display_id: display,
-                window_background: WindowBackgroundAppearance::Opaque,
+                window_background: WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
             move |window, cx| cx.new(|cx| StickyView::new(sticky, window, cx)),
@@ -262,11 +345,14 @@ mod windows {
         .log_err();
     }
 
-    /// One sticky note: a header to drag by and buttons, then the text.
+    /// One sticky note: a grip to drag by, the text, and a corner to resize.
     pub struct StickyView {
         id: u64,
         editor: Entity<Editor>,
-        pressed_at: Option<Point<Pixels>>,
+        grip_pressed_at: Option<Point<Pixels>>,
+        /// The text as of the last edit, to tell an Enter from other typing.
+        last_text: String,
+        resize_from: Option<(Point<Pixels>, Size<Pixels>)>,
         _edits: Subscription,
         _moved: Subscription,
     }
@@ -275,7 +361,20 @@ mod windows {
         fn new(sticky: Sticky, window: &mut Window, cx: &mut Context<Self>) -> Self {
             let id = sticky.id;
             let editor = cx.new(|cx| {
-                let mut editor = Editor::multi_line(window, cx);
+                // Auto-height keeps the background see-through and the text
+                // soft-wrapped, with no gutter, line numbers or scrollbars.
+                let mut editor = Editor::auto_height_unbounded(1, window, cx);
+                editor.set_show_gutter(false, cx);
+                editor.set_show_line_numbers(false, cx);
+                editor.set_show_vertical_scrollbar(false, cx);
+                editor.set_show_horizontal_scrollbar(false, cx);
+                editor.set_show_indent_guides(false, cx);
+                editor.set_show_git_diff_gutter(false, cx);
+                editor.set_show_code_actions(false, cx);
+                editor.set_show_runnables(false, cx);
+                editor.set_show_breakpoints(false, cx);
+                editor.set_show_wrap_guides(false, cx);
+                editor.set_soft_wrap();
                 editor.set_placeholder_text("Write a note…", window, cx);
                 editor.set_text(sticky.text.as_str(), window, cx);
                 editor
@@ -283,10 +382,32 @@ mod windows {
             let edits = cx.subscribe_in(
                 &editor,
                 window,
-                move |_, editor, event: &EditorEvent, _, cx| {
+                move |this, editor, event: &EditorEvent, _, cx| {
                     if matches!(event, EditorEvent::BufferEdited) {
                         let text = editor.read(cx).text(cx);
-                        super::set_text(id, text, cx);
+                        let previous = std::mem::replace(&mut this.last_text, text.clone());
+                        super::set_text(id, text.clone(), cx);
+                        let edits = bullet_edits(&previous, &text);
+                        if edits.is_empty() {
+                            return;
+                        }
+                        // Deferred: the edit raises BufferEdited itself, and
+                        // this event is still inside the editor's update.
+                        let editor = editor.clone();
+                        cx.defer(move |cx| {
+                            editor.update(cx, |editor, cx| {
+                                editor.edit(
+                                    edits.into_iter().rev().map(|(start, end, replacement)| {
+                                        (
+                                            editor::MultiBufferOffset(start)
+                                                ..editor::MultiBufferOffset(end),
+                                            replacement,
+                                        )
+                                    }),
+                                    cx,
+                                );
+                            });
+                        });
                     }
                 },
             );
@@ -305,18 +426,20 @@ mod windows {
             Self {
                 id,
                 editor,
-                pressed_at: None,
+                grip_pressed_at: None,
+                last_text: sticky.text.clone(),
+                resize_from: None,
                 _edits: edits,
                 _moved: moved,
             }
         }
 
-        fn press(&mut self, event: &MouseDownEvent, _: &mut Window, _: &mut Context<Self>) {
-            self.pressed_at = Some(event.position);
+        fn grip_press(&mut self, event: &MouseDownEvent, _: &mut Window, _: &mut Context<Self>) {
+            self.grip_pressed_at = Some(event.position);
         }
 
-        fn drag(&mut self, event: &MouseMoveEvent, window: &mut Window, _: &mut Context<Self>) {
-            let Some(pressed_at) = self.pressed_at else {
+        fn grip_drag(&mut self, event: &MouseMoveEvent, window: &mut Window, _: &mut Context<Self>) {
+            let Some(pressed_at) = self.grip_pressed_at else {
                 return;
             };
             if event.pressed_button != Some(MouseButton::Left) {
@@ -324,9 +447,30 @@ mod windows {
             }
             let moved = event.position - pressed_at;
             if moved.x.abs() > px(DRAG_DISTANCE) || moved.y.abs() > px(DRAG_DISTANCE) {
-                self.pressed_at = None;
+                self.grip_pressed_at = None;
                 window.start_window_move();
             }
+        }
+
+        fn resize_press(&mut self, event: &MouseDownEvent, window: &mut Window, _: &mut Context<Self>) {
+            self.resize_from = Some((event.position, window.bounds().size));
+        }
+
+        /// gpui has no native resize on macOS, so the note is resized here as
+        /// the corner is dragged.
+        fn resize_drag(&mut self, event: &MouseMoveEvent, window: &mut Window, _: &mut Context<Self>) {
+            let Some((pressed_at, start_size)) = self.resize_from else {
+                return;
+            };
+            if event.pressed_button != Some(MouseButton::Left) {
+                self.resize_from = None;
+                return;
+            }
+            let delta = event.position - pressed_at;
+            window.resize(Size {
+                width: (start_size.width + delta.x).max(MINIMUM_SIZE.width),
+                height: (start_size.height + delta.y).max(MINIMUM_SIZE.height),
+            });
         }
     }
 
@@ -338,63 +482,65 @@ mod windows {
             let mut edge = color;
             edge.l = if dark { color.l + 0.12 } else { color.l * 0.82 };
             let ink: Hsla = rgb(if dark { LIGHT_INK } else { INK }).into();
-            let id = self.id;
 
-            let button = |label: &'static str, key: &'static str| {
-                div()
-                    .id((key, id))
-                    .px_1()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .text_color(ink)
-                    .hover(|style| style.bg(ink.opacity(0.12)))
-                    .child(label)
-            };
+            let ui_settings = theme_settings::ThemeSettings::get_global(cx);
+            let font_family = ui_settings.ui_font.family.clone();
+            let font_size = ui_settings.ui_font_size(cx);
+            self.editor.update(cx, |editor, _| {
+                editor.set_text_style_refinement(TextStyleRefinement {
+                    font_family: Some(font_family),
+                    font_size: Some(font_size.into()),
+                    color: Some(ink),
+                    ..Default::default()
+                });
+            });
 
-            let header = h_flex()
-                .id(("brainz-sticky-header", id))
+            let grip = div()
+                .id(("brainz-sticky-grip", self.id))
                 .w_full()
-                .justify_between()
-                .px_2()
-                .py_1()
+                .h(px(GRIP_HEIGHT))
                 .cursor_pointer()
-                .on_mouse_down(MouseButton::Left, cx.listener(Self::press))
-                .on_mouse_move(cx.listener(Self::drag))
+                .on_mouse_down(MouseButton::Left, cx.listener(Self::grip_press))
+                .on_mouse_move(cx.listener(Self::grip_drag))
                 .on_mouse_up(
                     MouseButton::Left,
-                    cx.listener(|this, _, _, _| this.pressed_at = None),
-                )
-                .child(div().text_color(ink).child("Sticky"))
-                .child(
-                    h_flex()
-                        .gap_1()
-                        .child(
-                            button("⧉", "brainz-sticky-copy").on_click(cx.listener(
-                                move |_, _, _, cx| super::duplicate(id, cx),
-                            )),
-                        )
-                        .child(
-                            button("–", "brainz-sticky-hide").on_click(cx.listener(
-                                move |_, _, _, cx| super::set_shown(id, false, cx),
-                            )),
-                        )
-                        .child(
-                            button("✕", "brainz-sticky-delete").on_click(cx.listener(
-                                move |_, _, _, cx| super::delete(id, cx),
-                            )),
-                        ),
+                    cx.listener(|this, _, _, _| this.grip_pressed_at = None),
+                );
+
+            let resize = div()
+                .id(("brainz-sticky-resize", self.id))
+                .absolute()
+                .right_0()
+                .bottom_0()
+                .size(px(RESIZE_HANDLE))
+                .cursor(CursorStyle::ResizeUpLeftDownRight)
+                .on_mouse_down(MouseButton::Left, cx.listener(Self::resize_press))
+                .on_mouse_move(cx.listener(Self::resize_drag))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, _| this.resize_from = None),
                 );
 
             v_flex()
                 .size_full()
+                .relative()
                 .bg(color)
                 .border_1()
                 .border_color(edge)
                 .rounded_md()
                 .shadow_md()
-                .text_color(ink)
-                .child(header)
-                .child(div().flex_1().p_2().child(self.editor.clone()))
+                .child(grip)
+                .child(
+                    div()
+                        .id(("brainz-sticky-body", self.id))
+                        .flex_1()
+                        .min_h_0()
+                        .px_3()
+                        .pb_3()
+                        .overflow_y_scroll()
+                        .child(self.editor.clone()),
+                )
+                .child(resize)
         }
     }
 }

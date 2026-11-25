@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- Stickies are plain text in the interface font on the avatar's colour, with no line numbers or code look. Typing "- " or "* " makes a bullet, Enter carries the bullet onto the next line, and the bottom-right corner resizes a note. The buttons along the top are gone; duplicate, hide and delete are in the avatar menu.
+
 ## 0.1.76 (2026-11-25)
 
 ### Added
