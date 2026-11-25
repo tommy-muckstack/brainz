@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.80 (2026-11-25)
+
 ### Added
 
 - Avatar: when a sticky pops in or out, the avatar dances. It bounces and squashes, waves its arm, and sparkles circle its head.
