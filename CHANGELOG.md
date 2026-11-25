@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- Avatar: when a sticky pops in or out, the avatar dances. It bounces and squashes, waves its arm, and sparkles circle its head.
+
+### Changed
+
+- Stickies use DM Sans, which ships with Brainz, so notes look the same on every Mac whatever UI font is chosen.
+
+### Fixed
+
+- Stickies: Enter starts a new line.
+- Stickies: selecting a whole checkbox line and typing keeps the box.
+
 ### Fixed
 
 - Avatar menu: recordings from My Man show up in the list again, alongside screenshots. Screenshots were crowding them out.

@@ -62,12 +62,6 @@ fn save(saved: &Saved) {
 
 pub fn init(cx: &mut App) {
     cx.set_global(Stickies { saved: load() });
-    // The note's editor is auto-height, which has no plain Enter binding of its own.
-    cx.bind_keys([gpui::KeyBinding::new(
-        "enter",
-        editor::actions::Newline,
-        Some("BrainzSticky > Editor"),
-    )]);
 }
 
 /// Every sticky, in the order they were made.
@@ -255,6 +249,29 @@ fn bullet_edits(old: &str, new: &str) -> Vec<(usize, usize, &'static str)> {
         }
         line_start += line.len() + 1;
     }
+    if old.split('\n').count() == new.split('\n').count() {
+        let old_lines: Vec<&str> = old.split('\n').collect();
+        let mut line_start = 0;
+        for (index, line) in new.split('\n').enumerate() {
+            let marker = old_lines.get(index).and_then(|old_line| {
+                [BOX, CHECKED]
+                    .into_iter()
+                    .find(|marker| old_line.starts_with(marker))
+            });
+            // A line that still starts with a box character, or is being
+            // made into a list or box by the edits above, is left alone.
+            let keeps_box = line.starts_with('☐') || line.starts_with('☑');
+            let is_being_converted =
+                line.contains('[') || line.starts_with("- ") || line.starts_with("* ");
+            if let Some(marker) = marker
+                && !keeps_box
+                && !is_being_converted
+            {
+                edits.push((line_start, line_start, marker));
+            }
+            line_start += line.len() + 1;
+        }
+    }
     if let Some(newline) = inserted_newline(old, new) {
         let previous_start = new[..newline].rfind('\n').map_or(0, |index| index + 1);
         let previous = &new[previous_start..newline];
@@ -341,6 +358,18 @@ mod tests {
     }
 
     #[test]
+    fn typing_over_a_whole_row_keeps_its_box() {
+        assert_eq!(bullet_edits("☐ abc", "x"), vec![(0, 0, "☐ ")]);
+        assert_eq!(bullet_edits("☑ abc\nz", "x\nz"), vec![(0, 0, "☑ ")]);
+    }
+
+    #[test]
+    fn editing_the_text_after_a_box_changes_nothing_extra() {
+        assert_eq!(bullet_edits("☐ abc", "☐ x"), vec![]);
+        assert_eq!(bullet_edits("☐ a", "☐a"), vec![]);
+    }
+
+    #[test]
     fn checkboxes_and_checked_lines_are_found_by_line() {
         let text = "☐ open\nnote\n☑ done";
         assert_eq!(checkboxes(text), vec![(0, false), (14, true)]);
@@ -367,7 +396,7 @@ mod windows {
     };
 
     use editor::{MultiBufferOffset, display_map::HighlightKey};
-    use gpui::{HighlightStyle, StrikethroughStyle};
+    use gpui::{HighlightStyle, KeyDownEvent, SharedString, StrikethroughStyle};
 
     use super::{Sticky, bullet_edits};
 
@@ -665,7 +694,9 @@ mod windows {
             let ink: Hsla = rgb(if dark { LIGHT_INK } else { INK }).into();
 
             let ui_settings = theme_settings::ThemeSettings::get_global(cx);
-            let font_family = ui_settings.ui_font.family.clone();
+            // Bundled with Brainz, so notes look the same on every Mac, whatever
+            // UI font the user picked.
+            let font_family: SharedString = "DM Sans".into();
             let font_size = ui_settings.ui_font_size(cx);
             self.editor.update(cx, |editor, _| {
                 editor.set_text_style_refinement(TextStyleRefinement {
@@ -705,6 +736,12 @@ mod windows {
             let editor_bounds = self.editor_bounds.clone();
             v_flex()
                 .key_context("BrainzSticky")
+                .capture_key_down(|event: &KeyDownEvent, window, cx| {
+                    if event.keystroke.key == "enter" {
+                        window.dispatch_action(Box::new(editor::actions::Newline), cx);
+                        cx.stop_propagation();
+                    }
+                })
                 .size_full()
                 .relative()
                 .bg(color)

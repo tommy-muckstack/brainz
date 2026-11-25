@@ -629,6 +629,35 @@ mod native {
         }
     }
 
+    /// How many bounces the avatar makes while a sticky pops in or out.
+    const DANCE_BEATS: f32 = 2.25;
+    /// How high each dance bounce goes, in points.
+    const DANCE_HOP: f32 = 13.;
+
+    pub(super) fn dance_bounce(elapsed: f32) -> f32 {
+        (elapsed * DANCE_BEATS * std::f32::consts::TAU).sin().abs() * DANCE_HOP
+    }
+
+    pub(super) fn dance_squash(elapsed: f32) -> f32 {
+        (elapsed * DANCE_BEATS * std::f32::consts::TAU).cos() * 0.3
+    }
+
+    /// Three sparkles circling the head, as `(x, y, opacity)` in points from
+    /// the character's top-left. `dance` fades them in and out with the pop.
+    pub(super) fn sparkles(elapsed: f32, dance: f32) -> [(f32, f32, f32); 3] {
+        std::array::from_fn(|index| {
+            let phase = elapsed * std::f32::consts::TAU * 0.9
+                + index as f32 * std::f32::consts::TAU / 3.;
+            let flicker =
+                0.5 + 0.5 * (elapsed * std::f32::consts::TAU * 3. + index as f32 * 2.).sin();
+            (
+                42. + 32. * phase.cos(),
+                32.5 + 24. * phase.sin(),
+                dance * flicker,
+            )
+        })
+    }
+
     /// Where the puff is through its life, 0 to 1, or none outside it.
     pub(super) fn puff_progress(elapsed: f32) -> Option<f32> {
         let reach = super::ARM_REACH.as_secs_f32();
@@ -946,6 +975,17 @@ mod native {
                         if let Some(IdleBeat::Wiggle) = beat {
                             pose.squash += (time * 9.).sin() * beat_amount * 0.45;
                         }
+                        // The avatar dances while a sticky pops in or out.
+                        let mut sparkle_points = [(0., 0., 0.); 3];
+                        if let Some((reaction, began)) = reaction
+                            && matches!(reaction, super::Reaction::PopIn | super::Reaction::PopOut)
+                        {
+                            let elapsed = began.elapsed().as_secs_f32();
+                            let dance = arm_reach(elapsed);
+                            pose.hop += dance_bounce(elapsed) * dance;
+                            pose.squash += dance_squash(elapsed) * dance;
+                            sparkle_points = sparkles(elapsed, dance);
+                        }
                         // A turning solid keeps its depth edge-on; the face
                         // rides round the curve, squeezing towards the edge
                         // and fading out before the back comes round.
@@ -998,6 +1038,7 @@ mod native {
                         let mut cheer_hop = 0.;
                         let mut arm = 0.;
                         let mut puff = None;
+                        let mut wave = 0.;
                         if let Some((reaction, began)) = reaction {
                             let elapsed = began.elapsed().as_secs_f32();
                             let weight = reaction_weight(reaction, elapsed);
@@ -1026,6 +1067,7 @@ mod native {
                             if matches!(reaction, super::Reaction::PopIn | super::Reaction::PopOut) {
                                 arm = arm_reach(elapsed);
                                 puff = puff_progress(elapsed);
+                                wave = (elapsed * DANCE_BEATS * std::f32::consts::TAU).sin();
                             }
                         }
                         let look = look_x * LOOK_X;
@@ -1103,7 +1145,7 @@ mod native {
                         .when(arm > 0., |this| {
                             let length = 7. * arm;
                             let hand_x = 80. + length;
-                            let hand_y = top + 24.5;
+                            let hand_y = top + 24.5 - wave * 3.;
                             this.child(
                                 div()
                                     .absolute()
@@ -1140,6 +1182,15 @@ mod native {
                                     .border_color(ink.opacity(1. - progress)),
                             )
                         })
+                        .children(sparkle_points.into_iter().map(|(x, y, opacity)| {
+                            div()
+                                .absolute()
+                                .left(px(x - 1.5))
+                                .top(px(top + y - 1.5))
+                                .size(px(3.))
+                                .rounded_full()
+                                .bg(ink.opacity(opacity))
+                        }))
                     },
                 );
             let alerts = self.alerts;
@@ -1335,6 +1386,26 @@ mod tests {
         assert!(puff_progress(reach).unwrap().abs() < 1e-6);
         assert!((puff_progress(reach + ARM_PUFF.as_secs_f32() / 2.).unwrap() - 0.5).abs() < 1e-4);
         assert_eq!(puff_progress(puffed), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn avatar_dances_only_while_a_sticky_pops() {
+        use native::{dance_bounce, dance_squash, sparkles};
+        let pop = (ARM_REACH + ARM_PUFF + ARM_RETRACT).as_secs_f32();
+        // Still at the start of a pop, then bouncing within its height.
+        assert_eq!(dance_bounce(0.), 0.);
+        assert!((0..=20).all(|step| {
+            let bounce = dance_bounce(pop * step as f32 / 20.);
+            (0. ..=13.).contains(&bounce)
+        }));
+        assert!(dance_squash(0.).abs() <= 0.3 + 1e-6);
+        // Sparkles stay within the character and vanish when the dance does.
+        for (x, y, opacity) in sparkles(0.4, 1.) {
+            assert!((0. ..=84.).contains(&x) && (0. ..=74.).contains(&y));
+            assert!((0. ..=1.).contains(&opacity));
+        }
+        assert!(sparkles(0.4, 0.).iter().all(|(_, _, opacity)| *opacity == 0.));
     }
 
     #[cfg(target_os = "macos")]
