@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.78 (2026-11-25)
+
 ### Added
 
 - Avatar: a little arm pops stickies in and out. A new sticky or a duplicate puffs in as its window opens, and a deleted one puffs out before its window closes.
