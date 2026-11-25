@@ -135,6 +135,18 @@ pub fn refresh_avatar(cx: &mut gpui::App) {
 #[cfg(not(target_os = "macos"))]
 pub fn refresh_avatar(_: &mut gpui::App) {}
 
+/// The colour the avatar is drawn in, as RGB, for things that match it.
+#[cfg(target_os = "macos")]
+pub fn avatar_swatch() -> u32 {
+    native::avatar_swatch()
+}
+
+/// Whether the avatar is on screen right now.
+#[cfg(target_os = "macos")]
+pub fn avatar_showing(cx: &gpui::App) -> bool {
+    native::avatar_showing(cx)
+}
+
 /// Shows or hides the floating avatar and remembers the choice.
 #[cfg(target_os = "macos")]
 pub fn toggle_avatar(cx: &mut gpui::App) {
@@ -404,6 +416,18 @@ mod native {
             .unwrap_or(0)
     }
 
+    pub(super) fn avatar_swatch() -> u32 {
+        AVATAR_COLORS
+            .get(avatar_color_index())
+            .map_or(AVATAR_LIGHT_INK, |(_, color)| *color)
+    }
+
+    pub(super) fn avatar_showing(cx: &App) -> bool {
+        cx.windows()
+            .into_iter()
+            .any(|window| window.downcast::<AvatarView>().is_some())
+    }
+
     fn avatar_color_file() -> std::path::PathBuf {
         paths::data_dir().join("avatar-color")
     }
@@ -473,6 +497,7 @@ mod native {
         )
         .log_err();
         cx.defer(crate::capture_menu::sync_notice);
+        cx.defer(crate::sticky::sync);
     }
 
     pub(super) fn alert_avatar(cx: &mut App) {
@@ -636,6 +661,7 @@ mod native {
                     .log_err();
             }
         }
+        cx.defer(crate::sticky::sync);
     }
 
     /// Smoothly 0 → 1 → 0 across `start..end`, holding 1 between the ramps.
@@ -823,6 +849,7 @@ mod native {
             AVATAR_COLOR.store(index, Ordering::Relaxed);
             std::fs::write(avatar_color_file(), name).log_err();
             self.palette_open = false;
+            cx.defer(crate::sticky::refresh);
             cx.notify();
         }
     }

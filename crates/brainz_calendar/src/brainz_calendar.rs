@@ -29,6 +29,7 @@ pub mod permissions;
 pub mod prep;
 mod quick_capture;
 pub mod rich_note;
+mod sticky;
 mod slash;
 pub mod status_decay;
 mod sync_review;
@@ -71,6 +72,7 @@ pub fn init(cx: &mut App) {
     github_sync::init(cx);
     backup::init(cx);
     note_history::init(cx);
+    sticky::init(cx);
     quick_capture::init(cx);
     prep::init(cx);
     brief::init(cx);

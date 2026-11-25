@@ -1572,6 +1572,57 @@ impl Render for MenuView {
                         })),
                 )
             })
+            .child(section("Stickies"))
+            .child(
+                Button::new("brainz-sticky-new", "New sticky")
+                    .label_size(LabelSize::Small)
+                    .on_click(cx.listener(|_, _, _, cx| crate::sticky::add(cx))),
+            )
+            .children(crate::sticky::list(cx).into_iter().map(|sticky| {
+                let id = sticky.id;
+                let shown = sticky.shown;
+                let title = sticky
+                    .text
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .unwrap_or("Empty sticky")
+                    .to_owned();
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Label::new(title)
+                            .size(LabelSize::Small)
+                            .truncate()
+                            .flex_1(),
+                    )
+                    .child(
+                        Button::new(
+                            ("brainz-sticky-toggle", id),
+                            if shown { "Hide" } else { "Show" },
+                        )
+                        .label_size(LabelSize::Small)
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            crate::sticky::set_shown(id, !shown, cx)
+                        })),
+                    )
+                    .child(
+                        IconButton::new(("brainz-sticky-copy", id), IconName::Copy)
+                            .icon_size(IconSize::Small)
+                            .tooltip(ui::Tooltip::text("Duplicate"))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                crate::sticky::duplicate(id, cx)
+                            })),
+                    )
+                    .child(
+                        IconButton::new(("brainz-sticky-remove", id), IconName::Close)
+                            .icon_size(IconSize::Small)
+                            .tooltip(ui::Tooltip::text("Delete"))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                crate::sticky::delete(id, cx)
+                            })),
+                    )
+            }))
             .when_some(self.error.clone(), |this, error| {
                 this.child(Label::new(error).size(LabelSize::Small).color(Color::Error))
             });

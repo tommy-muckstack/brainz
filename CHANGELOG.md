@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Avatar: stickies. Choose "New sticky" in the avatar menu to pin a note over your screen. Drag it by its header, duplicate it, hide it or delete it. Stickies take the avatar's colour and only show while the avatar is on.
+
 ## 0.1.75 (2026-11-23)
 
 ### Added
